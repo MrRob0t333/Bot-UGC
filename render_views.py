@@ -94,13 +94,13 @@ light_data = bpy.data.lights.new("Key_Light", type="AREA")
 light = bpy.data.objects.new("Key_Light", light_data)
 bpy.context.collection.objects.link(light)
 light.location = (0, -4, 4)
-light.data.energy = 650
+light.data.energy = 1200
 light.data.size = 5
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.20, 0.20, 0.20)
+world.color = (0.45, 0.45, 0.45)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
