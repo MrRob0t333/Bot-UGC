@@ -44,13 +44,16 @@ if bsdf:
     if "IOR" in bsdf.inputs:
         bsdf.inputs["IOR"].default_value = 1
 
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0
+
     img = load_fixed_texture(texture_path)
 
     if img:
         tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
         tex.image = img
         tex.extension = "CLIP"
-        tex.interpolation = "Linear"
+        tex.interpolation = "Closest"
         mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
 
 for obj in objs:
@@ -94,7 +97,7 @@ key_data = bpy.data.lights.new("Key_Light", type="AREA")
 key = bpy.data.objects.new("Key_Light", key_data)
 bpy.context.collection.objects.link(key)
 key.location = (0, -6, 5)
-key.data.energy = 4500
+key.data.energy = 2200
 key.data.size = 8
 
 # Luz traseira suave
@@ -102,7 +105,7 @@ fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
 fill = bpy.data.objects.new("Fill_Light", fill_data)
 bpy.context.collection.objects.link(fill)
 fill.location = (0, 5, 4)
-fill.data.energy = 2500
+fill.data.energy = 900
 fill.data.size = 10
 
 # Luz superior suave
@@ -110,7 +113,7 @@ top_data = bpy.data.lights.new("Top_Light", type="AREA")
 top = bpy.data.objects.new("Top_Light", top_data)
 bpy.context.collection.objects.link(top)
 top.location = (0, 0, 6)
-top.data.energy = 1800
+top.data.energy = 700
 top.data.size = 10
 
 # Luz inferior fraca para clarear embaixo
@@ -118,13 +121,13 @@ bottom_data = bpy.data.lights.new("Bottom_Light", type="AREA")
 bottom = bpy.data.objects.new("Bottom_Light", bottom_data)
 bpy.context.collection.objects.link(bottom)
 bottom.location = (0, 0, -5)
-bottom.data.energy = 1200
+bottom.data.energy = 350
 bottom.data.size = 10
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.75, 0.75, 0.75)
+world.color = (0.35, 0.35, 0.35)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -135,7 +138,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 1.4
+scene.view_settings.exposure = 0.45
 scene.view_settings.gamma = 1.0
 
 try:
