@@ -86,29 +86,45 @@ cam.data.type = "ORTHO"
 cam.data.ortho_scale = size * 1.35
 
 # =========================
-# Lightbox profissional
+# Iluminação estilo estúdio natural
 # =========================
 
-light_positions = [
-    ("Front_Light",  (0, -6, 3), 1800, 10),
-    ("Back_Light",   (0,  6, 3), 1200, 10),
-    ("Left_Light",   (-6, 0, 3), 1500, 10),
-    ("Right_Light",  (6,  0, 3), 1500, 10),
-    ("Top_Light",    (0,  0, 6), 900, 12),
-]
+# Luz principal frontal/superior
+key_data = bpy.data.lights.new("Key_Light", type="AREA")
+key = bpy.data.objects.new("Key_Light", key_data)
+bpy.context.collection.objects.link(key)
+key.location = (0, -6, 5)
+key.data.energy = 4500
+key.data.size = 8
 
-for name, location, energy, light_size in light_positions:
-    data = bpy.data.lights.new(name, type="AREA")
-    light = bpy.data.objects.new(name, data)
-    bpy.context.collection.objects.link(light)
-    light.location = location
-    light.data.energy = energy
-    light.data.size = light_size
+# Luz traseira suave
+fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
+fill = bpy.data.objects.new("Fill_Light", fill_data)
+bpy.context.collection.objects.link(fill)
+fill.location = (0, 5, 4)
+fill.data.energy = 2500
+fill.data.size = 10
+
+# Luz superior suave
+top_data = bpy.data.lights.new("Top_Light", type="AREA")
+top = bpy.data.objects.new("Top_Light", top_data)
+bpy.context.collection.objects.link(top)
+top.location = (0, 0, 6)
+top.data.energy = 1800
+top.data.size = 10
+
+# Luz inferior fraca para clarear embaixo
+bottom_data = bpy.data.lights.new("Bottom_Light", type="AREA")
+bottom = bpy.data.objects.new("Bottom_Light", bottom_data)
+bpy.context.collection.objects.link(bottom)
+bottom.location = (0, 0, -5)
+bottom.data.energy = 1200
+bottom.data.size = 10
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.45, 0.45, 0.45)
+world.color = (0.75, 0.75, 0.75)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -119,7 +135,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 0.1
+scene.view_settings.exposure = 1.4
 scene.view_settings.gamma = 1.0
 
 try:
