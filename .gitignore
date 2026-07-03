@@ -1,0 +1,12 @@
+node_modules/
+temp/
+output/
+backup_testes/
+*.obj
+*.glb
+*.rbxm
+*.png
+*.jpg
+*.jpeg
+*.bin
+.env
