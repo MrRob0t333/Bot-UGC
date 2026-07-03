@@ -26,7 +26,6 @@ bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
 bpy.ops.wm.obj_import(filepath=obj_path)
-
 objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
 mat = bpy.data.materials.new("UGC_Material")
@@ -89,46 +88,37 @@ cam.data.type = "ORTHO"
 cam.data.ortho_scale = size * 1.35
 
 # =========================
-# Iluminação natural de estúdio
+# Iluminação uniforme 360°
+# mesma força em todos os lados
 # =========================
 
-# Luz principal frontal/superior
-key_data = bpy.data.lights.new("Key_Light", type="AREA")
-key = bpy.data.objects.new("Key_Light", key_data)
-bpy.context.collection.objects.link(key)
-key.location = (0, -6, 5)
-key.data.energy = 2800
-key.data.size = 8
+light_positions = [
+    ("Front_Light",  (0, -6, 2.5)),
+    ("Back_Light",   (0,  6, 2.5)),
+    ("Left_Light",   (-6, 0, 2.5)),
+    ("Right_Light",  (6,  0, 2.5)),
+    ("Bottom_Light", (0,  0, -6)),
+    ("Top_Light",    (0,  0,  6)),
+]
 
-# Luz traseira suave
-fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
-fill = bpy.data.objects.new("Fill_Light", fill_data)
-bpy.context.collection.objects.link(fill)
-fill.location = (0, 5, 4)
-fill.data.energy = 1500
-fill.data.size = 10
+for name, location in light_positions:
+    data = bpy.data.lights.new(name, type="AREA")
+    light = bpy.data.objects.new(name, data)
+    bpy.context.collection.objects.link(light)
+    light.location = location
+    light.data.energy = 1200
+    light.data.size = 9
 
-# Luz superior suave
-top_data = bpy.data.lights.new("Top_Light", type="AREA")
-top = bpy.data.objects.new("Top_Light", top_data)
-bpy.context.collection.objects.link(top)
-top.location = (0, 0, 6)
-top.data.energy = 1000
-top.data.size = 10
+# Luz de cima mais fraca para não estourar o topo
+bpy.data.objects["Top_Light"].data.energy = 650
 
-# Luz inferior apontando para cima
-bottom_data = bpy.data.lights.new("Bottom_Light", type="AREA")
-bottom = bpy.data.objects.new("Bottom_Light", bottom_data)
-bpy.context.collection.objects.link(bottom)
-bottom.location = (0, 0, -5)
-bottom.rotation_euler = (3.14159, 0, 0)
-bottom.data.energy = 700
-bottom.data.size = 12
+# Luz de baixo um pouco mais forte para pegar embaixo
+bpy.data.objects["Bottom_Light"].data.energy = 1500
 
-# Mundo
+# Mundo neutro
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.35, 0.35, 0.35)
+world.color = (0.42, 0.42, 0.42)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -139,7 +129,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 0.45
+scene.view_settings.exposure = 0.35
 scene.view_settings.gamma = 1.0
 
 try:
