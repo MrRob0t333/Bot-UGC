@@ -196,6 +196,15 @@ function writeObj(mesh, objPath) {
   const uvs = mesh.uvs || [];
   const faces = mesh.faces;
 
+  console.log("[OBJ DEBUG]", {
+  vertices: vertices.length / 3,
+  uvs: uvs.length / 2,
+  normals: normals.length / 3,
+  faces: faces.length / 3,
+  firstFaces: Array.from(faces.slice(0, 30)),
+  firstUvs: Array.from(uvs.slice(0, 20)),
+});
+
   if (!vertices?.length) throw new Error("Mesh sem vértices.");
   if (!faces?.length) throw new Error("Mesh sem faces.");
 
