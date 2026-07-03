@@ -89,7 +89,7 @@ cam.data.type = "ORTHO"
 cam.data.ortho_scale = size * 1.35
 
 # =========================
-# Iluminação estilo estúdio natural
+# Iluminação natural de estúdio
 # =========================
 
 # Luz principal frontal/superior
@@ -97,7 +97,7 @@ key_data = bpy.data.lights.new("Key_Light", type="AREA")
 key = bpy.data.objects.new("Key_Light", key_data)
 bpy.context.collection.objects.link(key)
 key.location = (0, -6, 5)
-key.data.energy = 2200
+key.data.energy = 2800
 key.data.size = 8
 
 # Luz traseira suave
@@ -105,7 +105,7 @@ fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
 fill = bpy.data.objects.new("Fill_Light", fill_data)
 bpy.context.collection.objects.link(fill)
 fill.location = (0, 5, 4)
-fill.data.energy = 900
+fill.data.energy = 1500
 fill.data.size = 10
 
 # Luz superior suave
@@ -113,16 +113,17 @@ top_data = bpy.data.lights.new("Top_Light", type="AREA")
 top = bpy.data.objects.new("Top_Light", top_data)
 bpy.context.collection.objects.link(top)
 top.location = (0, 0, 6)
-top.data.energy = 700
+top.data.energy = 1000
 top.data.size = 10
 
-# Luz inferior fraca para clarear embaixo
+# Luz inferior apontando para cima
 bottom_data = bpy.data.lights.new("Bottom_Light", type="AREA")
 bottom = bpy.data.objects.new("Bottom_Light", bottom_data)
 bpy.context.collection.objects.link(bottom)
 bottom.location = (0, 0, -5)
-bottom.data.energy = 350
-bottom.data.size = 10
+bottom.rotation_euler = (3.14159, 0, 0)
+bottom.data.energy = 700
+bottom.data.size = 12
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
