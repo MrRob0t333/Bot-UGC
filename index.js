@@ -206,6 +206,17 @@ function writeObj(mesh, objPath) {
   for (let i = 0; i < faces.length; i += 3) {
     const faceVerts = [faces[i], faces[i + 1], faces[i + 2]];
 
+if (
+  faceVerts.some(idx =>
+    idx < 0 ||
+    idx * 3 + 2 >= vertices.length ||
+    (uvs.length && idx * 2 + 1 >= uvs.length) ||
+    (normals.length && idx * 3 + 2 >= normals.length)
+  )
+) {
+  continue;
+}
+
     for (const idx of faceVerts) {
       obj += `v ${vertices[idx * 3]} ${vertices[idx * 3 + 1]} ${vertices[idx * 3 + 2]}\n`;
     }
