@@ -14,15 +14,12 @@ def load_fixed_texture(path):
     img = bpy.data.images.load(path)
     img.alpha_mode = "CHANNEL_PACKED"
 
-    # Corrige texturas Roblox com alpha/pixels transparentes ruins
     pixels = list(img.pixels)
-
     for i in range(0, len(pixels), 4):
         pixels[i + 3] = 1.0
 
     img.pixels[:] = pixels
     img.update()
-
     return img
 
 bpy.ops.object.select_all(action="SELECT")
@@ -54,7 +51,6 @@ if bsdf:
         tex.image = img
         tex.extension = "CLIP"
         tex.interpolation = "Linear"
-
         mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
 
 for obj in objs:
@@ -67,13 +63,13 @@ maxs = Vector((-999999, -999999, -999999))
 
 for obj in objs:
     for corner in obj.bound_box:
-        world = obj.matrix_world @ Vector(corner)
-        mins.x = min(mins.x, world.x)
-        mins.y = min(mins.y, world.y)
-        mins.z = min(mins.z, world.z)
-        maxs.x = max(maxs.x, world.x)
-        maxs.y = max(maxs.y, world.y)
-        maxs.z = max(maxs.z, world.z)
+        world_pos = obj.matrix_world @ Vector(corner)
+        mins.x = min(mins.x, world_pos.x)
+        mins.y = min(mins.y, world_pos.y)
+        mins.z = min(mins.z, world_pos.z)
+        maxs.x = max(maxs.x, world_pos.x)
+        maxs.y = max(maxs.y, world_pos.y)
+        maxs.z = max(maxs.z, world_pos.z)
 
 center = (mins + maxs) / 2
 size = max((maxs - mins).x, (maxs - mins).y, (maxs - mins).z)
@@ -89,35 +85,27 @@ bpy.context.scene.camera = cam
 cam.data.type = "ORTHO"
 cam.data.ortho_scale = size * 1.35
 
-# Luz
-# Luz principal frontal
-light_data = bpy.data.lights.new("Key_Light", type="AREA")
-light = bpy.data.objects.new("Key_Light", light_data)
-bpy.context.collection.objects.link(light)
-light.location = (0, -6, 5)
-light.data.energy = 4500
-light.data.size = 8
+# Lightbox: quadrado de luz, iluminação uniforme
+light_positions = [
+    ("Front_Light",  (0, -6, 3), 3800, 9),
+    ("Back_Light",   (0,  6, 3), 3800, 9),
+    ("Left_Light",   (-6, 0, 3), 3800, 9),
+    ("Right_Light",  (6,  0, 3), 3800, 9),
+    ("Top_Light",    (0,  0, 6), 2600, 12),
+]
 
-# Luz de preenchimento para tirar sombra escura
-fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
-fill = bpy.data.objects.new("Fill_Light", fill_data)
-bpy.context.collection.objects.link(fill)
-fill.location = (0, 5, 4)
-fill.data.energy = 2500
-fill.data.size = 10
-
-# Luz superior suave
-top_data = bpy.data.lights.new("Top_Light", type="AREA")
-top = bpy.data.objects.new("Top_Light", top_data)
-bpy.context.collection.objects.link(top)
-top.location = (0, 0, 6)
-top.data.energy = 1800
-top.data.size = 10
+for name, location, energy, light_size in light_positions:
+    data = bpy.data.lights.new(name, type="AREA")
+    light = bpy.data.objects.new(name, data)
+    bpy.context.collection.objects.link(light)
+    light.location = location
+    light.data.energy = energy
+    light.data.size = light_size
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.75, 0.75, 0.75)    
+world.color = (0.85, 0.85, 0.85)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -128,7 +116,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 1.4
+scene.view_settings.exposure = 1.2
 scene.view_settings.gamma = 1
 
 try:
