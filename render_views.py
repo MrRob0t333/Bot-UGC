@@ -85,13 +85,16 @@ bpy.context.scene.camera = cam
 cam.data.type = "ORTHO"
 cam.data.ortho_scale = size * 1.35
 
-# Lightbox: quadrado de luz, iluminação uniforme
+# =========================
+# Lightbox profissional
+# =========================
+
 light_positions = [
-    ("Front_Light",  (0, -6, 3), 3800, 9),
-    ("Back_Light",   (0,  6, 3), 3800, 9),
-    ("Left_Light",   (-6, 0, 3), 3800, 9),
-    ("Right_Light",  (6,  0, 3), 3800, 9),
-    ("Top_Light",    (0,  0, 6), 2600, 12),
+    ("Front_Light",  (0, -6, 3), 1800, 10),
+    ("Back_Light",   (0,  6, 3), 1200, 10),
+    ("Left_Light",   (-6, 0, 3), 1500, 10),
+    ("Right_Light",  (6,  0, 3), 1500, 10),
+    ("Top_Light",    (0,  0, 6), 900, 12),
 ]
 
 for name, location, energy, light_size in light_positions:
@@ -105,7 +108,7 @@ for name, location, energy, light_size in light_positions:
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.85, 0.85, 0.85)
+world.color = (0.45, 0.45, 0.45)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -116,8 +119,8 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 1.2
-scene.view_settings.gamma = 1
+scene.view_settings.exposure = 0.3
+scene.view_settings.gamma = 1.0
 
 try:
     scene.render.engine = "BLENDER_EEVEE_NEXT"
