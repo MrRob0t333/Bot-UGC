@@ -119,7 +119,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 0.3
+scene.view_settings.exposure = 0.1
 scene.view_settings.gamma = 1.0
 
 try:
