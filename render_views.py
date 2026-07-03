@@ -105,20 +105,23 @@ for name, location in light_positions:
     data = bpy.data.lights.new(name, type="AREA")
     light = bpy.data.objects.new(name, data)
     bpy.context.collection.objects.link(light)
+
     light.location = location
-    light.data.energy = 1200
-    light.data.size = 9
 
-# Luz de cima mais fraca para não estourar o topo
-bpy.data.objects["Top_Light"].data.energy = 650
+    # Luz muito mais suave
+    light.data.energy = 450
 
-# Luz de baixo um pouco mais forte para pegar embaixo
-bpy.data.objects["Bottom_Light"].data.energy = 1500
+    # Área muito maior = sombras suaves
+    light.data.size = 18
+
+# Pequenos ajustes
+bpy.data.objects["Top_Light"].data.energy = 350
+bpy.data.objects["Bottom_Light"].data.energy = 550
 
 # Mundo neutro
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.42, 0.42, 0.42)
+world.color = (0.50, 0.50, 0.50)
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -129,7 +132,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 0.35
+scene.view_settings.exposure = 0.15
 scene.view_settings.gamma = 1.0
 
 try:
