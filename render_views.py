@@ -95,7 +95,7 @@ light_data = bpy.data.lights.new("Key_Light", type="AREA")
 light = bpy.data.objects.new("Key_Light", light_data)
 bpy.context.collection.objects.link(light)
 light.location = (0, -6, 5)
-light.data.energy = 6000
+light.data.energy = 4500
 light.data.size = 8
 
 # Luz de preenchimento para tirar sombra escura
@@ -103,7 +103,7 @@ fill_data = bpy.data.lights.new("Fill_Light", type="AREA")
 fill = bpy.data.objects.new("Fill_Light", fill_data)
 bpy.context.collection.objects.link(fill)
 fill.location = (0, 5, 4)
-fill.data.energy = 3500
+fill.data.energy = 2500
 fill.data.size = 10
 
 # Luz superior suave
@@ -111,13 +111,13 @@ top_data = bpy.data.lights.new("Top_Light", type="AREA")
 top = bpy.data.objects.new("Top_Light", top_data)
 bpy.context.collection.objects.link(top)
 top.location = (0, 0, 6)
-top.data.energy = 2500
+top.data.energy = 1800
 top.data.size = 10
 
 # Mundo
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.85, 0.85, 0.85)
+world.color = (0.75, 0.75, 0.75)    
 
 scene = bpy.context.scene
 scene.render.resolution_x = 1024
@@ -128,7 +128,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 2.0
+scene.view_settings.exposure = 1.4
 scene.view_settings.gamma = 1
 
 try:
