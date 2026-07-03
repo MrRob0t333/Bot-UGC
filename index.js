@@ -346,7 +346,7 @@ function getRenderFiles(result) {
     .map(p => new AttachmentBuilder(p));
 }
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
 });
 
