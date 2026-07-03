@@ -408,35 +408,60 @@ const RBXMeshParser = {
 					
 					$.assert_warn(stream.GetRemaining() === 0, "[BTRoblox] Draco bitstream has extra data")
 					
-					for(const attribute of data.attributes) {
-						switch(attribute.uniqueId) {
-						case 0: // Position
-							mesh.vertices = Float32Array.from(attribute.output)
-							break
-						case 1: // Normals
-							mesh.normals = Float32Array.from(attribute.output)
-							break
-						case 2: // UVs
-							const uvs = mesh.uvs = Float32Array.from(attribute.output)
-							
-							for(let i = 1; i < uvs.length; i += 2) {
-								uvs[i] = 1 - uvs[i]
-							}
-							break
-						case 3: // Tangents?
-							const tangents = mesh.tangents = Float32Array.from(attribute.output)
-							
-							for(let i = 0; i < tangents.length; i++) {
-								tangents[i] = tangents[i] / 127 - 1
-							}
-							break
-						case 4: // Colors
-							mesh.vertexColors = Uint8Array.from(attribute.output)
-							break
-						default:
-							console.warn("[BTRoblox] Unknown draco attribute", attribute)
-						}
-					}
+for (const attribute of data.attributes) {
+    console.log("[DRACO ATTRIBUTE]", {
+        uniqueId: attribute.uniqueId,
+        attributeType: attribute.attributeType,
+        dataType: attribute.dataType,
+        numComponents: attribute.numComponents,
+        length: attribute.output?.length
+    });
+
+    switch (attribute.uniqueId) {
+
+        case 0: { // Position
+            mesh.vertices = Float32Array.from(attribute.output);
+            break;
+        }
+
+        case 1: { // Normals
+            mesh.normals = Float32Array.from(attribute.output);
+            break;
+        }
+
+        case 2: { // UV
+            const uvs = mesh.uvs = Float32Array.from(attribute.output);
+
+            for (let i = 1; i < uvs.length; i += 2) {
+                uvs[i] = 1 - uvs[i];
+            }
+
+            break;
+        }
+
+        case 3: { // Tangents
+            const tangents = mesh.tangents = Float32Array.from(attribute.output);
+
+            for (let i = 0; i < tangents.length; i++) {
+                tangents[i] = tangents[i] / 127 - 1;
+            }
+
+            break;
+        }
+
+        case 4: { // Colors
+            mesh.vertexColors = Uint8Array.from(attribute.output);
+            break;
+        }
+
+        default:
+            console.warn("[RBXMeshParser] Unknown Draco attribute", {
+                uniqueId: attribute.uniqueId,
+                attributeType: attribute.attributeType,
+                numComponents: attribute.numComponents
+            });
+    }
+}
 					
 					const faces = mesh.faces = Uint32Array.from(data.faces)
 					
