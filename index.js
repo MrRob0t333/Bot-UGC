@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const fs = require("fs");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
 
@@ -253,6 +253,22 @@ async function renderImages(objPath, texturePath, tempDir) {
   ]);
 
   return renderDir;
+}
+
+function exportGlb(objPath, texturePath, glbPath) {
+  execFileSync(
+    BLENDER_PATH,
+    [
+      "--background",
+      "--python",
+      path.join(__dirname, "export_glb.py"),
+      "--",
+      objPath,
+      texturePath || "",
+      glbPath,
+    ],
+    { stdio: "inherit" }
+  );
 }
 
 async function processUGC(ugcId, shouldRender) {
