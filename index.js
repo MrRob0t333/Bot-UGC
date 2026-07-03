@@ -23,7 +23,10 @@ const ROBLOSECURITY = process.env.ROBLOSECURITY;
 const PREMIUM_ROLE = "1521989120745013459";
 const NORMAL_ROLE = "1521959526394237089";
 
-const BLENDER_PATH = "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
+const BLENDER_PATH =
+    process.env.BLENDER_PATH ||
+    "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
+
 const UPLOAD_COST = 300;
 const MAX_BULK = 20;
 const COOLDOWN_MS = 5000;
