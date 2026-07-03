@@ -195,6 +195,9 @@ function writeObj(mesh, objPath) {
   const normals = mesh.normals || [];
   const uvs = mesh.uvs || [];
   const faces = mesh.faces;
+  const lods = mesh.lods || [0, faces.length / 3];
+const faceStart = (lods[0] || 0) * 3;
+const faceEnd = (lods[1] || faces.length / 3) * 3;
 
   console.log("[OBJ DEBUG]", {
   vertices: vertices.length / 3,
@@ -212,7 +215,7 @@ function writeObj(mesh, objPath) {
 
   let outIndex = 1;
 
-  for (let i = 0; i < faces.length; i += 3) {
+  for (let i = faceStart; i < faceEnd; i += 3) {
     const faceVerts = [faces[i], faces[i + 1], faces[i + 2]];
 
 if (
