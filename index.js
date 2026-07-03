@@ -148,7 +148,21 @@ async function downloadBuffer(url) {
   const res = await fetch(url, { headers });
 
   if (!res.ok) {
-    throw new Error(`Erro ao baixar ${url}: ${res.status} ${res.statusText}`);
+    console.error("[downloadBuffer]", {
+      status: res.status,
+      statusText: res.statusText,
+      url,
+    });
+
+    if (res.status === 404) {
+      throw new Error("Não consegui processar esse item. Ele pode ser um bundle, cabeça dinâmica, emote, corpo ou roupa 3D ainda não suportado.");
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("Não tenho permissão para acessar esse item.");
+    }
+
+    throw new Error(`Falha ao processar o item. Código: ${res.status}`);
   }
 
   return Buffer.from(await res.arrayBuffer());
