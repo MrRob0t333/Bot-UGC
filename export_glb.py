@@ -13,14 +13,17 @@ objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
 mat = bpy.data.materials.new("UGC_Material")
 mat.use_nodes = True
+mat.blend_method = "CLIP"
+mat.alpha_threshold = 0.5
+mat.show_transparent_back = True
 
 bsdf = mat.node_tree.nodes.get("Principled BSDF")
 
 if bsdf:
+    bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
     bsdf.inputs["Metallic"].default_value = 0
     bsdf.inputs["Roughness"].default_value = 1
     bsdf.inputs["Alpha"].default_value = 1
-    bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
 
     if "IOR" in bsdf.inputs:
         bsdf.inputs["IOR"].default_value = 1
@@ -28,6 +31,8 @@ if bsdf:
     if texture_path and os.path.exists(texture_path):
         tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
         tex.image = bpy.data.images.load(texture_path)
+        tex.extension = "CLIP"
+
         mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
 
         if "Alpha" in tex.outputs:
@@ -41,5 +46,5 @@ bpy.ops.export_scene.gltf(
     filepath=glb_path,
     export_format="GLB",
     export_image_format="AUTO",
-    export_materials="EXPORT",
+    export_materials="EXPORT"
 )
