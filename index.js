@@ -201,53 +201,41 @@ function writeObj(mesh, objPath) {
 
   let obj = "";
 
-  for (let i = 0; i < vertices.length; i += 3) {
-    obj += `v ${vertices[i]} ${vertices[i + 1]} ${vertices[i + 2]}\n`;
-  }
-
-  obj += "\n";
-
-  for (let i = 0; i < uvs.length; i += 2) {
-    obj += `vt ${uvs[i]} ${uvs[i + 1]}\n`;
-  }
-
-  obj += "\n";
-
-  for (let i = 0; i < normals.length; i += 3) {
-    obj += `vn ${normals[i]} ${normals[i + 1]} ${normals[i + 2]}\n`;
-  }
-
-  obj += "\n";
+  let outIndex = 1;
 
   for (let i = 0; i < faces.length; i += 3) {
-    const a = faces[i] + 1;
-    const b = faces[i + 1] + 1;
-    const c = faces[i + 2] + 1;
+    const faceVerts = [faces[i], faces[i + 1], faces[i + 2]];
+
+    for (const idx of faceVerts) {
+      obj += `v ${vertices[idx * 3]} ${vertices[idx * 3 + 1]} ${vertices[idx * 3 + 2]}\n`;
+    }
+
+    if (uvs.length) {
+      for (const idx of faceVerts) {
+        obj += `vt ${uvs[idx * 2]} ${uvs[idx * 2 + 1]}\n`;
+      }
+    }
+
+    if (normals.length) {
+      for (const idx of faceVerts) {
+        obj += `vn ${normals[idx * 3]} ${normals[idx * 3 + 1]} ${normals[idx * 3 + 2]}\n`;
+      }
+    }
 
     if (uvs.length && normals.length) {
-      obj += `f ${a}/${a}/${a} ${b}/${b}/${b} ${c}/${c}/${c}\n`;
+      obj += `f ${outIndex}/${outIndex}/${outIndex} ${outIndex + 1}/${outIndex + 1}/${outIndex + 1} ${outIndex + 2}/${outIndex + 2}/${outIndex + 2}\n`;
     } else if (uvs.length) {
-      obj += `f ${a}/${a} ${b}/${b} ${c}/${c}\n`;
+      obj += `f ${outIndex}/${outIndex} ${outIndex + 1}/${outIndex + 1} ${outIndex + 2}/${outIndex + 2}\n`;
     } else if (normals.length) {
-      obj += `f ${a}//${a} ${b}//${b} ${c}//${c}\n`;
+      obj += `f ${outIndex}//${outIndex} ${outIndex + 1}//${outIndex + 1} ${outIndex + 2}//${outIndex + 2}\n`;
     } else {
-      obj += `f ${a} ${b} ${c}\n`;
+      obj += `f ${outIndex} ${outIndex + 1} ${outIndex + 2}\n`;
     }
+
+    outIndex += 3;
   }
 
   fs.writeFileSync(objPath, obj);
-}
-
-async function exportGlb(objPath, texturePath, glbPath) {
-  await execFileAsync(BLENDER_PATH, [
-    "--background",
-    "--python",
-    path.join(__dirname, "export_glb.py"),
-    "--",
-    objPath,
-    texturePath || "",
-    glbPath,
-  ]);
 }
 
 async function renderImages(objPath, texturePath, tempDir) {
