@@ -80,6 +80,7 @@ Subscribe to these events:
 
 ```text
 checkout.session.completed
+invoice.payment_failed
 customer.subscription.updated
 customer.subscription.deleted
 customer.subscription.paused

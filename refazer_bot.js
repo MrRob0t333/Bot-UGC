@@ -614,6 +614,20 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("admin_buy")
+    .setDescription("Admin: creates a discounted Velvet Coins checkout for a user")
+    .addUserOption(o =>
+      o.setName("user").setDescription("User that will receive the credits").setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("price_brl").setDescription("Custom checkout price in BRL").setRequired(true).setMinValue(1)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("admin_remove")
     .setDescription("Admin: removes Velvet Coins from a user")
     .addUserOption(o =>
@@ -1547,9 +1561,9 @@ function createAffiliateWithdrawal({ userId, amount, paymentInfo }) {
   return { ok: true, request, affiliateBalance: user.affiliateBalance };
 }
 
-function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY }) {
+function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy" }) {
   const db = readWalletDb();
-  const brl = Number((amount / WALLET_TOKENS_PER_BRL).toFixed(2));
+  const brl = Number((brlOverride ?? (amount / WALLET_TOKENS_PER_BRL)).toFixed(2));
   const request = {
     id: `compra-${Date.now()}`,
     userId,
@@ -1557,6 +1571,7 @@ function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY }) 
     brl,
     currency,
     currencyAmount: Number((brl / (CURRENCIES[currency]?.brlRate || 1)).toFixed(2)),
+    source,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
@@ -1717,6 +1732,14 @@ async function processStripeWebhook(event) {
 
   if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.paused") {
     await handleStripeSubscription(event.data?.object || {}, false);
+    return;
+  }
+
+  if (event.type === "invoice.payment_failed") {
+    const invoice = event.data?.object || {};
+    if (invoice.subscription) {
+      console.log(`Invoice payment failed for subscription ${invoice.subscription}. Waiting for subscription.updated to sync status.`);
+    }
     return;
   }
 
@@ -2627,7 +2650,8 @@ function formatCommandsHelp(interaction) {
       "🧾 `/velvet_admin_compras` - lista compras pendentes",
       "✅ `/velvet_admin_compra` - aprova ou rejeita compra",
       "🏦 `/velvet_admin_saques` - lista saques pendentes",
-      "☑️ `/velvet_admin_saque` - aprova ou rejeita saque"
+      "☑️ `/velvet_admin_saque` - aprova ou rejeita saque",
+      "🛒 `/admin_buy` - creates a discounted checkout"
     );
   }
 
@@ -2798,6 +2822,7 @@ client.on("interactionCreate", async interaction => {
     "velvet_admin_saques",
     "velvet_admin_saque",
     "admin_add",
+    "admin_buy",
     "admin_remove",
     "admin_purchases",
     "admin_purchase",
@@ -2864,6 +2889,7 @@ client.on("interactionCreate", async interaction => {
       "velvet_admin_saques",
       "velvet_admin_saque",
       "admin_add",
+      "admin_buy",
       "admin_remove",
       "admin_purchases",
       "admin_purchase",
@@ -3186,6 +3212,44 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply({
         content: `## ➕ Saldo Adicionado\n**Usuário:** ${target}\n**Valor:** +${formatTokenAmount(amount)}\n**Novo saldo:** ${formatTokenAmount(balance)}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_buy") {
+      const target = interaction.options.getUser("user");
+      const amount = interaction.options.getInteger("amount");
+      const priceBrl = interaction.options.getNumber("price_brl");
+      const request = createPurchaseRequest({
+        userId: target.id,
+        amount,
+        currency: "BRL",
+        brlOverride: priceBrl,
+        source: "admin_buy",
+      });
+
+      let paymentLink = null;
+
+      if (PAYMENT_PROVIDER === "stripe" && STRIPE_SECRET_KEY) {
+        try {
+          const session = await createStripeCheckoutSession(request);
+          paymentLink = session.url || null;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      await interaction.reply({
+        content:
+          `## 🛒 Admin Checkout Created\n` +
+          `**User:** ${target}\n` +
+          `**Order ID:** \`${request.id}\`\n` +
+          `**Credits:** ${formatTokenAmount(amount)}\n` +
+          `**Price:** R$ ${priceBrl.toFixed(2)}\n\n` +
+          (paymentLink
+            ? `Stripe checkout:\n${paymentLink}`
+            : "Stripe checkout could not be created. Check PM2 logs."),
         flags: 64,
       });
       return;
