@@ -2170,6 +2170,89 @@ function formatTokenAmount(amount) {
   return `${amount} ${WALLET_TOKEN_NAME}`;
 }
 
+function uiLine(label, value) {
+  return `> **${label}:** ${value}`;
+}
+
+function uiMoney(value) {
+  return `**${value}**`;
+}
+
+function formatBalanceMessage({ balance }) {
+  return [
+    "# 💎 Velvet Wallet",
+    "Your available balance is ready to use on copies, remakes and services.",
+    "",
+    uiLine("Balance", formatTokenAmount(balance)),
+    "",
+    "🛒 Need more? Use `/buy` to add Velvet Coins.",
+  ].join("\n");
+}
+
+function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
+  return [
+    "# 🛒 Velvet Coins Checkout",
+    "Your order was created successfully.",
+    "",
+    uiLine("Order ID", `\`${request.id}\``),
+    uiLine("Package", `💎 ${formatTokenAmount(request.amount)}`),
+    uiLine("Price", uiMoney(priceLabel)),
+    uiLine("Status", "Awaiting payment"),
+    "",
+    "## Next Step",
+    paymentLink
+      ? `Pay securely with **${paymentProvider}**:\n${paymentLink}\n\nYour Velvet Coins will be released automatically after confirmation.`
+      : "Send the payment in the channel indicated by the team. Your Velvet Coins will be released after manual confirmation.",
+  ].join("\n");
+}
+
+function formatAffiliateMessage(profile) {
+  return [
+    "# 🤝 Velvet Affiliate",
+    "Share your invite, bring new customers and earn commission automatically.",
+    "",
+    uiLine("Code", `\`${profile.code}\``),
+    uiLine("Invite", profile.inviteUrl || "Not registered yet"),
+    uiLine("Velvet Coins purchases", `${(AFFILIATE_WALLET_PURCHASE_RATE * 100).toFixed(0)}%`),
+    uiLine("AI remake services", `${(AFFILIATE_SERVICE_RATE * 100).toFixed(0)}%`),
+    uiLine("Subscriptions", `${(AFFILIATE_SUBSCRIPTION_RATE * 100).toFixed(0)}% base, ${(AFFILIATE_SUBSCRIPTION_BOOST_RATE * 100).toFixed(0)}% after ${AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS} new subscribers/month`),
+    uiLine("Pending commission", formatTokenAmount(profile.affiliateBalance)),
+    "",
+    "## Actions",
+    "🔗 Register your invite with `/affiliate_register`.",
+    "💎 Move commission to your wallet with `/affiliate_redeem`.",
+    "🏦 Request payout with `/affiliate_withdraw`.",
+  ].join("\n");
+}
+
+function formatSubscriptionMessage({ plan, provider, email, link }) {
+  return [
+    `# ⭐ Velvet ${plan.label}`,
+    "Your subscription checkout is ready.",
+    "",
+    uiLine("Price", `R$ ${plan.brl.toFixed(2)}/month`),
+    uiLine("Provider", provider),
+    uiLine("Email", email),
+    "",
+    link
+      ? `Complete your subscription here:\n${link}`
+      : "The checkout was created, but no payment link was returned. The team can review this manually.",
+  ].join("\n");
+}
+
+function formatInsufficientBalanceMessage({ service, price, balance }) {
+  return [
+    "# ⚠️ Insufficient Balance",
+    "You need more Velvet Coins to continue.",
+    "",
+    uiLine("Service", service),
+    uiLine("Price", formatTokenAmount(price)),
+    uiLine("Your balance", formatTokenAmount(balance)),
+    "",
+    "Use `/buy` to add Velvet Coins.",
+  ].join("\n");
+}
+
 function imageEnhancementIsReady(enhancement) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   return enhancementConfig.model === null || Boolean(NANO_BANANA_PRO_ENDPOINT);
@@ -3041,6 +3124,56 @@ function formatCommandsHelp(interaction) {
   return lines.join("\n");
 }
 
+formatCommandsHelp = function formatCommandsHelpClean(interaction) {
+  const lines = [
+    "# ✨ Velvet UGC",
+    "Choose a service below. Payments and balances use Velvet Coins.",
+    "",
+    "## Wallet",
+    "💎 `/balance` - view your Velvet Coins",
+    "🛒 `/buy` - buy Velvet Coins",
+    "⭐ `/subscribe` - subscribe to Basic or Premium",
+    "",
+    "## Services",
+    "📎 `/steal` - copy original asset files",
+    "🎨 `/remake` - remake a UGC with AI",
+    "🖼️ `/multiview` - remake from front/right/back/left images",
+    "🧾 `/price` - preview the price before ordering",
+    "",
+    "## Affiliate",
+    "🤝 `/affiliate` - view your affiliate dashboard",
+    "🔗 `/affiliate_register` - register your Discord invite",
+    "✅ `/affiliate_apply` - apply an affiliate code or invite",
+    "💎 `/affiliate_redeem` - convert commission to Velvet Coins",
+    "🏦 `/affiliate_withdraw` - request a payout",
+  ];
+
+  if (userIsPremium(interaction) || userIsAdmin(interaction)) {
+    lines.push(
+      "",
+      "## Premium",
+      "📦 `/bulk_steal` - copy up to 10 assets",
+      "🧾 `/bulk_remake` - quote up to 10 remakes"
+    );
+  }
+
+  if (userIsAdmin(interaction)) {
+    lines.push(
+      "",
+      "## Admin",
+      "➕ `/admin_add` - add Velvet Coins",
+      "➖ `/admin_remove` - remove Velvet Coins",
+      "🛒 `/admin_buy` - create a discounted checkout",
+      "🧾 `/admin_purchases` - review purchases",
+      "✅ `/admin_purchase` - approve or reject purchases",
+      "🏦 `/admin_withdrawals` - review withdrawals",
+      "☑️ `/admin_withdrawal` - approve or reject withdrawals"
+    );
+  }
+
+  return lines.join("\n");
+};
+
 function parseWebhookBody(req) {
   return new Promise(resolve => {
     let body = "";
@@ -3302,6 +3435,12 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "velvet_saldo" || interaction.commandName === "balance") {
+      await interaction.reply({
+        content: formatBalanceMessage({ balance: walletBalance(interaction.user.id) }),
+        flags: 64,
+      });
+      return;
+
       const lang = interaction.commandName === "balance" ? "en" : languageFor(interaction);
       await interaction.reply({
         content: lang === "pt-BR"
@@ -3351,6 +3490,12 @@ client.on("interactionCreate", async interaction => {
       }
 
       await interaction.reply({
+        content: formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }),
+        flags: 64,
+      });
+      return;
+
+      await interaction.reply({
         content: lang === "pt-BR"
           ?
           `# 🛒 Pedido de Compra\n` +
@@ -3390,16 +3535,7 @@ client.on("interactionCreate", async interaction => {
 
       const profile = getAffiliateProfile(interaction.user.id);
       await interaction.reply({
-        content:
-          `## Affiliate Program\n` +
-          `**Your code:** \`${profile.code}\`\n` +
-          `**Your invite:** ${profile.inviteUrl || "Not registered yet"}\n` +
-          `**Velvet Coins purchases:** ${(AFFILIATE_WALLET_PURCHASE_RATE * 100).toFixed(0)}%\n` +
-          `**AI remake services:** ${(AFFILIATE_SERVICE_RATE * 100).toFixed(0)}%\n` +
-          `**Subscriptions:** ${(AFFILIATE_SUBSCRIPTION_RATE * 100).toFixed(0)}% base, ${(AFFILIATE_SUBSCRIPTION_BOOST_RATE * 100).toFixed(0)}% after ${AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS} new subscribers/month\n` +
-          `**Pending commission:** ${formatTokenAmount(profile.affiliateBalance)}\n\n` +
-          `Use \`/affiliate_register invite:https://discord.gg/yourcode\` to register your real invite.\n` +
-          `Use \`/affiliate_redeem\` to turn commission into Velvet Coins, or \`/affiliate_withdraw\` after ${formatTokenAmount(AFFILIATE_WITHDRAW_MIN)}.`,
+        content: formatAffiliateMessage(profile),
         flags: 64,
       });
       return;
@@ -3544,6 +3680,12 @@ client.on("interactionCreate", async interaction => {
           });
           link = session.url || null;
         }
+
+        await interaction.reply({
+          content: formatSubscriptionMessage({ plan, provider, email, link }),
+          flags: 64,
+        });
+        return;
 
         await interaction.reply({
           content:
