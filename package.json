@@ -2,9 +2,17 @@
   "name": "bot-ugc",
   "version": "1.0.0",
   "description": "",
-  "main": "decode_draco.js",
+  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "start:refazer": "node refazer_bot.js",
+    "tripo:login": "node scripts/tripo-login.js",
+    "tripo:open-last": "node scripts/tripo-open-last.js",
+    "tripo:inspect": "node scripts/tripo-inspect.js",
+    "tripo:upload-last": "node scripts/tripo-upload-last.js",
+    "tripo:import-latest": "node scripts/tripo-import-latest.js",
+    "test:refazer:playwright": "playwright test tests/refazer-mock.spec.js",
+    "test": "node --check index.js && node --check refazer_bot.js"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +23,8 @@
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
     "draco3d": "^1.5.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

@@ -2,6 +2,10 @@ node_modules/
 temp/
 output/
 backup_testes/
+test-results/
+playwright-report/
+.auth/
+data/
 *.obj
 *.glb
 *.rbxm
