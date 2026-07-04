@@ -26,7 +26,9 @@ const ROBLOSECURITY = process.env.ROBLOSECURITY;
 
 const PREMIUM_ROLE = process.env.REFAZER_PREMIUM_ROLE || "1521989120745013459";
 const NORMAL_ROLE = process.env.REFAZER_NORMAL_ROLE || "1521959526394237089";
+const FREE_ROLE = process.env.REFAZER_FREE_ROLE || "1523104972068356187";
 const ADMIN_ROLE = process.env.REFAZER_ADMIN_ROLE || "1522293475801038868";
+const AFFILIATE_ROLE = process.env.REFAZER_AFFILIATE_ROLE || "1523108378346520607";
 
 const BLENDER_PATH =
   process.env.BLENDER_PATH ||
@@ -57,46 +59,83 @@ const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
 
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
+const inviteUses = new Map();
 
 const PRICE_CONFIG = {
-  baseNormal: 25,
+  baseFree: 30,
+  baseBasic: 25,
   basePremium: 20,
-  copyNormal: 1,
-  copyPremium: 1,
-  multiviewExtra: 5,
-  hdTextureExtra: 5,
-  noTextureDiscount: 3,
+  copyFreeOverLimit: 2,
+  copyBasicOverLimit: 1,
+  multiviewExtra: 7,
+  hdTextureExtra: 8,
+  noTextureDiscount: 2,
   lowPolyExtra: 3,
   maxTriangles: 3950,
 };
 
-const IMAGE_ENHANCEMENTS = {
-  none: {
-    label: "Sem melhoria",
-    model: null,
-    priceExtra: 0,
+const API_COST_ESTIMATE_BRL = {
+  minProfit: Number(process.env.REFAZER_MIN_PROFIT_BRL || 10),
+  modelStandard: Number(process.env.REFAZER_API_COST_MODEL_STANDARD_BRL || 7),
+  modelNoTexture: Number(process.env.REFAZER_API_COST_MODEL_NO_TEXTURE_BRL || 6),
+  modelHd: Number(process.env.REFAZER_API_COST_MODEL_HD_BRL || 9),
+  multiviewExtra: Number(process.env.REFAZER_API_COST_MULTIVIEW_EXTRA_BRL || 2),
+  lowPolyExtra: Number(process.env.REFAZER_API_COST_LOWPOLY_EXTRA_BRL || 1),
+};
+
+const COPY_PLAN_CONFIG = {
+  free: {
+    label: "Free",
+    dailyLimit: 3,
+    overLimitPrice: PRICE_CONFIG.copyFreeOverLimit,
   },
-  economy: {
-    label: "Melhoria economica",
-    model: "gemini-3.1-flash-lite-image",
-    priceExtra: 2,
-  },
-  standard: {
-    label: "Melhoria padrao",
-    model: "gemini-3.1-flash-image",
-    priceExtra: 3,
+  basic: {
+    label: "Basic",
+    dailyLimit: 10,
+    overLimitPrice: PRICE_CONFIG.copyBasicOverLimit,
   },
   premium: {
-    label: "Melhoria premium",
+    label: "Premium",
+    dailyLimit: null,
+    overLimitPrice: 0,
+  },
+};
+
+const IMAGE_ENHANCEMENTS = {
+  none: {
+    label: "No enhancement",
+    model: null,
+    priceExtra: 0,
+    estimatedCostBrl: 0,
+  },
+  economy: {
+    label: "Economy enhancement",
+    model: "gemini-3.1-flash-lite-image",
+    priceExtra: 3,
+    estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_ECONOMY_BRL || 1),
+  },
+  standard: {
+    label: "Standard enhancement",
+    model: "gemini-3.1-flash-image",
+    priceExtra: 5,
+    estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_STANDARD_BRL || 2),
+  },
+  premium: {
+    label: "Premium enhancement",
     model: "gemini-3-pro-image",
-    priceExtra: 6,
+    priceExtra: 9,
+    estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_PREMIUM_BRL || 5),
   },
 };
 
 const WALLET_TOKEN_NAME = "Velvet Coins";
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
-const AFFILIATE_COMMISSION_RATE = 0.10;
+const AFFILIATE_WALLET_PURCHASE_RATE = Number(process.env.REFAZER_AFFILIATE_WALLET_RATE || 0.10);
+const AFFILIATE_SERVICE_RATE = Number(process.env.REFAZER_AFFILIATE_SERVICE_RATE || 0.05);
+const AFFILIATE_SUBSCRIPTION_RATE = Number(process.env.REFAZER_AFFILIATE_SUBSCRIPTION_RATE || 0.20);
+const AFFILIATE_SUBSCRIPTION_BOOST_RATE = Number(process.env.REFAZER_AFFILIATE_SUBSCRIPTION_BOOST_RATE || 0.50);
+const AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS = Number(process.env.REFAZER_AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS || 100);
 const AFFILIATE_WITHDRAW_MIN = 1000;
 const SUBSCRIPTION_PLANS = {
   basic: {
@@ -258,10 +297,18 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
-    .setName("affiliate_apply")
-    .setDescription("Applies an affiliate code to your account")
+    .setName("affiliate_register")
+    .setDescription("Affiliate only: registers your Discord invite link")
     .addStringOption(o =>
-      o.setName("code").setDescription("Affiliate code").setRequired(true)
+      o.setName("invite").setDescription("Your Discord invite link or code").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("affiliate_apply")
+    .setDescription("Applies an affiliate code or invite to your account")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Affiliate code or invite link").setRequired(true)
     )
     .toJSON(),
 
@@ -1000,11 +1047,42 @@ function apiCreditsFor({ mode, texture, lowPoly }) {
   return credits;
 }
 
-function calculatePrice(interaction, { mode, texture, triangles, enhancement }) {
-  const premium = userIsPremium(interaction);
+function userRemakePlan(interaction) {
+  if (userIsPremium(interaction)) return "premium";
+  if (hasRole(interaction, NORMAL_ROLE)) return "basic";
+  return "free";
+}
+
+function remakeBasePriceForPlan(plan) {
+  if (plan === "premium") return PRICE_CONFIG.basePremium;
+  if (plan === "basic") return PRICE_CONFIG.baseBasic;
+  return PRICE_CONFIG.baseFree;
+}
+
+function remakePlanLabel(plan) {
+  if (plan === "premium") return "Premium";
+  if (plan === "basic") return "Basic";
+  return "No subscription";
+}
+
+function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
-  let price = premium ? PRICE_CONFIG.basePremium : PRICE_CONFIG.baseNormal;
-  const lines = [`Base ${premium ? "premium" : "normal"}: ${formatWalletAmount(price)}`];
+  let cost = API_COST_ESTIMATE_BRL.modelStandard;
+
+  if (texture === "none") cost = API_COST_ESTIMATE_BRL.modelNoTexture;
+  if (texture === "hd") cost = API_COST_ESTIMATE_BRL.modelHd;
+  if (mode === "multiview") cost += API_COST_ESTIMATE_BRL.multiviewExtra;
+  if (lowPoly) cost += API_COST_ESTIMATE_BRL.lowPolyExtra;
+  cost += enhancementConfig.estimatedCostBrl || 0;
+
+  return cost;
+}
+
+function calculatePrice(interaction, { mode, texture, triangles, enhancement }) {
+  const plan = userRemakePlan(interaction);
+  const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
+  let price = remakeBasePriceForPlan(plan);
+  const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(price)}`];
 
   if (mode === "multiview") {
     price += PRICE_CONFIG.multiviewExtra;
@@ -1013,17 +1091,17 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
 
   if (texture === "hd") {
     price += PRICE_CONFIG.hdTextureExtra;
-    lines.push(`Textura HD: +${formatWalletAmount(PRICE_CONFIG.hdTextureExtra)}`);
+    lines.push(`HD texture: +${formatWalletAmount(PRICE_CONFIG.hdTextureExtra)}`);
   } else if (texture === "none") {
     price -= PRICE_CONFIG.noTextureDiscount;
-    lines.push(`Sem textura: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
+    lines.push(`No texture: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
   }
 
   const lowPoly = Boolean(triangles);
 
   if (lowPoly) {
     price += PRICE_CONFIG.lowPolyExtra;
-    lines.push(`Limite de triangulos (${triangles}): +${formatWalletAmount(PRICE_CONFIG.lowPolyExtra)}`);
+    lines.push(`Triangle limit (${triangles}): +${formatWalletAmount(PRICE_CONFIG.lowPolyExtra)}`);
   }
 
   if (enhancementConfig.priceExtra > 0) {
@@ -1031,24 +1109,110 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     lines.push(`${enhancementConfig.label}: +${formatWalletAmount(enhancementConfig.priceExtra)}`);
   }
 
+  const estimatedCost = estimatedApiCostBrl({ mode, texture, lowPoly, enhancement });
+  const minimumSafePrice = Math.ceil(estimatedCost + API_COST_ESTIMATE_BRL.minProfit);
+
+  if (price < minimumSafePrice) {
+    const safetyExtra = minimumSafePrice - price;
+    price = minimumSafePrice;
+    lines.push(`Protected minimum margin: +${formatWalletAmount(safetyExtra)}`);
+  }
+
   return {
-    premium,
+    premium: plan === "premium",
+    plan,
+    planLabel: remakePlanLabel(plan),
     price,
     walletAmount: brlToWalletTokens(price),
     lines,
     apiCredits: apiCreditsFor({ mode, texture, lowPoly }),
+    estimatedApiCostBrl: estimatedCost,
+    estimatedProfitBrl: price - estimatedCost,
   };
 }
 
-function calculateCopyPrice(interaction) {
-  const premium = userIsPremium(interaction) || userIsAdmin(interaction);
-  const price = premium ? 0 : PRICE_CONFIG.copyNormal;
+function getSaoPauloDayKey() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function userCopyPlan(interaction) {
+  if (userIsPremium(interaction) || userIsAdmin(interaction)) return "premium";
+  if (hasRole(interaction, NORMAL_ROLE)) return "basic";
+  return "free";
+}
+
+function copyUsageFor(user) {
+  const dayKey = getSaoPauloDayKey();
+  user.copyUsage ||= { day: dayKey, count: 0 };
+
+  if (user.copyUsage.day !== dayKey) {
+    user.copyUsage = { day: dayKey, count: 0 };
+  }
+
+  return user.copyUsage;
+}
+
+function walletCopyUsage(userId) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = copyUsageFor(user);
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function addCopyUsage(userId, count = 1) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = copyUsageFor(user);
+  usage.count += count;
+  walletTransaction(db, {
+    userId,
+    type: "usage",
+    amount: 0,
+    actorId: client.user.id,
+    reason: "Daily copy usage",
+    meta: { day: usage.day, count, totalToday: usage.count },
+  });
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function calculateCopyPrice(interaction, usedTodayOverride) {
+  const planKey = userCopyPlan(interaction);
+  const plan = COPY_PLAN_CONFIG[planKey];
+  const usedToday = usedTodayOverride ?? walletCopyUsage(interaction.user.id).count;
+  const freeRemaining = plan.dailyLimit === null ? null : Math.max(plan.dailyLimit - usedToday, 0);
+  const price = plan.dailyLimit === null || freeRemaining > 0 ? 0 : plan.overLimitPrice;
 
   return {
-    premium,
+    plan: planKey,
+    planLabel: plan.label,
+    dailyLimit: plan.dailyLimit,
+    usedToday,
+    freeRemaining,
     price,
     walletAmount: brlToWalletTokens(price),
   };
+}
+
+function formatCopyAllowance(quote) {
+  if (quote.dailyLimit === null) {
+    return [
+      `**Plan:** ${quote.planLabel}`,
+      "**Daily copies:** unlimited",
+    ].join("\n");
+  }
+
+  return [
+    `**Plan:** ${quote.planLabel}`,
+    `**Free copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+    `**Free remaining before this copy:** ${quote.freeRemaining}`,
+  ].join("\n");
 }
 
 function brlToWalletTokens(value) {
@@ -1101,6 +1265,7 @@ function walletUser(db, userId) {
   db.users[userId].language ||= DEFAULT_LANGUAGE;
   db.users[userId].currency ||= DEFAULT_CURRENCY;
   db.users[userId].affiliateBalance ||= 0;
+  copyUsageFor(db.users[userId]);
 
   return db.users[userId];
 }
@@ -1452,9 +1617,27 @@ function makeAffiliateCode(userId) {
   return `VELVET${String(userId).slice(-6)}`;
 }
 
-function findAffiliateOwner(db, code) {
-  const normalized = String(code || "").trim().toUpperCase();
-  return Object.entries(db.users).find(([, user]) => user.affiliateCode === normalized)?.[0] || null;
+function parseDiscordInviteCode(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/(?:discord\.gg\/|discord\.com\/invite\/|discordapp\.com\/invite\/)?([a-zA-Z0-9-]+)/);
+  return match ? match[1] : "";
+}
+
+function normalizeAffiliateLookup(value) {
+  const raw = String(value || "").trim();
+  const inviteCode = parseDiscordInviteCode(raw);
+  return {
+    code: raw.toUpperCase(),
+    inviteCode,
+  };
+}
+
+function findAffiliateOwner(db, value) {
+  const normalized = normalizeAffiliateLookup(value);
+  return Object.entries(db.users).find(([, user]) =>
+    user.affiliateCode === normalized.code ||
+    String(user.affiliateInviteCode || "").toLowerCase() === String(normalized.inviteCode || "").toLowerCase()
+  )?.[0] || null;
 }
 
 function getAffiliateProfile(userId) {
@@ -1468,42 +1651,152 @@ function getAffiliateProfile(userId) {
 
   return {
     code: user.affiliateCode,
+    inviteCode: user.affiliateInviteCode || null,
+    inviteUrl: user.affiliateInviteCode ? `https://discord.gg/${user.affiliateInviteCode}` : null,
     referredBy: user.referredBy,
     affiliateBalance: user.affiliateBalance || 0,
+    affiliateStats: user.affiliateStats || {},
   };
+}
+
+function registerAffiliateInvite(userId, invite) {
+  const inviteCode = parseDiscordInviteCode(invite);
+  if (!inviteCode) return { ok: false, reason: "Invalid invite link or code." };
+
+  const db = readWalletDb();
+  const existingOwner = findAffiliateOwner(db, inviteCode);
+  if (existingOwner && existingOwner !== userId) {
+    return { ok: false, reason: "This invite is already registered by another affiliate." };
+  }
+
+  const user = walletUser(db, userId);
+  if (!user.affiliateCode) user.affiliateCode = makeAffiliateCode(userId);
+  user.affiliateInviteCode = inviteCode;
+  user.affiliateInviteUrl = `https://discord.gg/${inviteCode}`;
+  writeWalletDb(db);
+  return { ok: true, inviteCode, inviteUrl: user.affiliateInviteUrl, code: user.affiliateCode };
 }
 
 function applyAffiliateCode(userId, code) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
-  const normalized = String(code || "").trim().toUpperCase();
-  const ownerId = findAffiliateOwner(db, normalized);
+  const ownerId = findAffiliateOwner(db, code);
 
-  if (!ownerId) return { ok: false, reason: "Affiliate code not found." };
-  if (ownerId === userId) return { ok: false, reason: "You cannot use your own affiliate code." };
-  if (user.referredBy) return { ok: false, reason: "An affiliate code is already applied to this account." };
+  if (!ownerId) return { ok: false, reason: "Affiliate code or invite not found." };
+  if (ownerId === userId) return { ok: false, reason: "You cannot use your own affiliate link." };
+  if (user.referredBy) return { ok: false, reason: "An affiliate is already linked to this account." };
 
   user.referredBy = ownerId;
+  user.referredAt = new Date().toISOString();
+  user.referredSource = parseDiscordInviteCode(code) ? "invite_or_code" : "code";
   writeWalletDb(db);
   return { ok: true, ownerId };
 }
 
-function creditAffiliateCommission(db, purchaseRequest, actorId) {
-  const buyer = walletUser(db, purchaseRequest.userId);
+function applyAffiliateInviteReferral(userId, inviteCode) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const ownerId = findAffiliateOwner(db, inviteCode);
+
+  if (!ownerId || ownerId === userId || user.referredBy) return null;
+
+  user.referredBy = ownerId;
+  user.referredAt = new Date().toISOString();
+  user.referredSource = "discord_invite";
+  user.referredInviteCode = inviteCode;
+  writeWalletDb(db);
+  return ownerId;
+}
+
+async function refreshInviteCache(guild) {
+  try {
+    const invites = await guild.invites.fetch();
+    inviteUses.clear();
+    invites.forEach(invite => {
+      inviteUses.set(invite.code, invite.uses || 0);
+    });
+  } catch (err) {
+    console.warn("Nao consegui ler convites do Discord. Atribuicao automatica de afiliado ficou indisponivel:", err.message);
+  }
+}
+
+async function detectUsedInvite(guild) {
+  try {
+    const invites = await guild.invites.fetch();
+    let usedInvite = null;
+
+    invites.forEach(invite => {
+      const previousUses = inviteUses.get(invite.code) || 0;
+      const currentUses = invite.uses || 0;
+      if (currentUses > previousUses) usedInvite = invite;
+      inviteUses.set(invite.code, currentUses);
+    });
+
+    return usedInvite;
+  } catch (err) {
+    console.warn("Nao consegui detectar convite usado:", err.message);
+    return null;
+  }
+}
+
+function currentMonthKey() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  }).format(new Date());
+}
+
+function affiliateMonthStats(affiliate, month = currentMonthKey()) {
+  affiliate.affiliateStats ||= {};
+  affiliate.affiliateStats[month] ||= {
+    walletPurchases: 0,
+    servicePurchases: 0,
+    subscriptionCustomers: [],
+    commission: 0,
+  };
+  affiliate.affiliateStats[month].subscriptionCustomers ||= [];
+  return affiliate.affiliateStats[month];
+}
+
+function creditAffiliateCommission(db, { buyerId, amountTokens = 0, brl = null, source, actorId, meta = {} }) {
+  const buyer = walletUser(db, buyerId);
   if (!buyer.referredBy) return null;
 
   const affiliate = walletUser(db, buyer.referredBy);
-  const commission = Math.floor(purchaseRequest.amount * AFFILIATE_COMMISSION_RATE);
+  const stats = affiliateMonthStats(affiliate);
+  let rate = AFFILIATE_WALLET_PURCHASE_RATE;
+
+  if (source === "subscription") {
+    rate = stats.subscriptionCustomers.length >= AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS
+      ? AFFILIATE_SUBSCRIPTION_BOOST_RATE
+      : AFFILIATE_SUBSCRIPTION_RATE;
+  } else if (source === "service") {
+    rate = AFFILIATE_SERVICE_RATE;
+  }
+
+  const baseTokens = amountTokens || brlToWalletTokens(brl || 0);
+  const commission = Math.floor(baseTokens * rate);
   if (commission <= 0) return null;
 
   affiliate.affiliateBalance = (affiliate.affiliateBalance || 0) + commission;
+
+  if (source === "subscription" && !stats.subscriptionCustomers.includes(buyerId)) {
+    stats.subscriptionCustomers.push(buyerId);
+  } else if (source === "service") {
+    stats.servicePurchases += 1;
+  } else {
+    stats.walletPurchases += 1;
+  }
+  stats.commission += commission;
+
   walletTransaction(db, {
     userId: buyer.referredBy,
     type: "affiliate_commission",
     amount: commission,
     actorId,
     reason: "Affiliate commission",
-    meta: { purchaseId: purchaseRequest.id, buyerId: purchaseRequest.userId },
+    meta: { buyerId, source, rate, ...meta },
   });
 
   return { affiliateId: buyer.referredBy, commission };
@@ -1561,6 +1854,20 @@ function createAffiliateWithdrawal({ userId, amount, paymentInfo }) {
   return { ok: true, request, affiliateBalance: user.affiliateBalance };
 }
 
+function creditAffiliateServiceCommission({ buyerId, walletAmount, priceBrl, source, actorId, meta }) {
+  const db = readWalletDb();
+  const credited = creditAffiliateCommission(db, {
+    buyerId,
+    amountTokens: walletAmount,
+    brl: priceBrl,
+    source: "service",
+    actorId,
+    meta: { service: source, ...meta },
+  });
+  writeWalletDb(db);
+  return credited;
+}
+
 function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy" }) {
   const db = readWalletDb();
   const brl = Number((brlOverride ?? (amount / WALLET_TOKENS_PER_BRL)).toFixed(2));
@@ -1597,7 +1904,14 @@ function resolvePurchase({ requestId, action, actorId, reason }) {
       reason,
       meta: { requestId, brl: request.brl },
     });
-    creditAffiliateCommission(db, request, actorId);
+    creditAffiliateCommission(db, {
+      buyerId: request.userId,
+      amountTokens: request.amount,
+      brl: request.brl,
+      source: "wallet_purchase",
+      actorId,
+      meta: { purchaseId: request.id },
+    });
   }
 
   request.status = action === "aprovar" ? "approved" : "rejected";
@@ -1708,6 +2022,18 @@ async function handleStripeCheckoutSession(session) {
       roleId: metadata.role_id || SUBSCRIPTION_PLANS[metadata.plan]?.roleId,
       active: true,
     });
+    const plan = SUBSCRIPTION_PLANS[metadata.plan];
+    if (plan) {
+      const db = readWalletDb();
+      creditAffiliateCommission(db, {
+        buyerId: metadata.user_id,
+        brl: plan.brl,
+        source: "subscription",
+        actorId: client.user.id,
+        meta: { plan: metadata.plan, sessionId: session.id },
+      });
+      writeWalletDb(db);
+    }
     console.log(`Assinatura Stripe ativada: ${session.id}`);
   }
 }
@@ -1724,9 +2050,44 @@ async function handleStripeSubscription(subscription, active) {
   console.log(`Assinatura Stripe sincronizada: ${subscription.id} active=${active}`);
 }
 
+async function handleStripeSubscriptionInvoice(invoice) {
+  if (!invoice || invoice.billing_reason === "subscription_create") return;
+
+  const metadata =
+    invoice.subscription_details?.metadata ||
+    invoice.lines?.data?.find(line => line.metadata?.type === "velvet_subscription")?.metadata ||
+    {};
+
+  if (metadata.type !== "velvet_subscription") return;
+
+  const db = readWalletDb();
+  const invoiceId = invoice.id;
+  const alreadyCredited = db.transactions.some(transaction =>
+    transaction.type === "affiliate_commission" &&
+    transaction.meta?.source === "subscription" &&
+    transaction.meta?.invoiceId === invoiceId
+  );
+  if (alreadyCredited) return;
+
+  const amountPaidBrl = Number(invoice.amount_paid || 0) / 100;
+  creditAffiliateCommission(db, {
+    buyerId: metadata.user_id,
+    brl: amountPaidBrl || SUBSCRIPTION_PLANS[metadata.plan]?.brl || 0,
+    source: "subscription",
+    actorId: client.user.id,
+    meta: { plan: metadata.plan, invoiceId },
+  });
+  writeWalletDb(db);
+}
+
 async function processStripeWebhook(event) {
   if (event.type === "checkout.session.completed") {
     await handleStripeCheckoutSession(event.data?.object || {});
+    return;
+  }
+
+  if (event.type === "invoice.payment_succeeded") {
+    await handleStripeSubscriptionInvoice(event.data?.object || {});
     return;
   }
 
@@ -1815,21 +2176,39 @@ function imageEnhancementIsReady(enhancement) {
 }
 
 function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
-  const textureLabel = texture === "none" ? "sem textura" : texture === "hd" ? "HD" : "padrao";
+  const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
   const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
 
   return [
     "## 💎 Orçamento do Refazer",
     `**Modo:** ${mode === "multiview" ? "Multiview" : "Imagem única"}`,
-    `**Textura:** ${textureLabel}`,
-    `**Melhoria:** ${enhancementLabel}`,
-    `**Triangles:** ${triangles || "sem limite especial"}`,
+    `**Texture:** ${textureLabel}`,
+    `**Enhancement:** ${enhancementLabel}`,
+    `**Triangles:** ${triangles || "No special limit"}`,
     "",
     ...quote.lines,
     "",
     `### Total: **${formatTokenAmount(quote.walletAmount)}**`,
   ].join("\n");
 }
+
+formatPriceQuote = function formatPriceQuoteClean({ mode, texture, triangles, enhancement, quote }) {
+  const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
+  const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
+
+  return [
+    "## Remake Quote",
+    `**Plan:** ${quote.planLabel}`,
+    `**Mode:** ${mode === "multiview" ? "Multiview" : "Single image"}`,
+    `**Texture:** ${textureLabel}`,
+    `**Enhancement:** ${enhancementLabel}`,
+    `**Triangles:** ${triangles || "No special limit"}`,
+    "",
+    ...quote.lines,
+    "",
+    `### Total: **${formatTokenAmount(quote.walletAmount)}**`,
+  ].join("\n");
+};
 
 function newestDirectory(parentDir) {
   if (!fs.existsSync(parentDir)) return null;
@@ -1882,8 +2261,12 @@ function userIsAdmin(interaction) {
   return hasRole(interaction, ADMIN_ROLE);
 }
 
+function userIsAffiliate(interaction) {
+  return userIsAdmin(interaction) || hasRole(interaction, AFFILIATE_ROLE);
+}
+
 function userIsAllowed(interaction) {
-  return userIsAdmin(interaction) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, NORMAL_ROLE);
+  return userIsAdmin(interaction) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
 async function checkCooldown(interaction) {
@@ -2793,9 +3176,23 @@ function startWebhookServer() {
   });
 }
 
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
   console.log(`Bot laboratorio online como ${client.user.tag}`);
+  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (guild) await refreshInviteCache(guild);
   startWebhookServer();
+});
+
+client.on("guildMemberAdd", async member => {
+  if (member.guild.id !== GUILD_ID) return;
+
+  const usedInvite = await detectUsedInvite(member.guild);
+  if (!usedInvite) return;
+
+  const ownerId = applyAffiliateInviteReferral(member.id, usedInvite.code);
+  if (ownerId) {
+    console.log(`Afiliado aplicado por invite: user=${member.id} affiliate=${ownerId} invite=${usedInvite.code}`);
+  }
 });
 
 client.on("interactionCreate", async interaction => {
@@ -2809,6 +3206,7 @@ client.on("interactionCreate", async interaction => {
     "velvet_comprar",
     "buy",
     "affiliate",
+    "affiliate_register",
     "affiliate_apply",
     "affiliate_redeem",
     "affiliate_withdraw",
@@ -2982,8 +3380,33 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "affiliate") {
+      if (!userIsAffiliate(interaction)) {
+        await interaction.reply({
+          content: "## Affiliate Program\nYou need the affiliate role to access this area.",
+          flags: 64,
+        });
+        return;
+      }
+
       const profile = getAffiliateProfile(interaction.user.id);
-      const link = `https://discord.com/channels/${GUILD_ID}?ref=${profile.code}`;
+      await interaction.reply({
+        content:
+          `## Affiliate Program\n` +
+          `**Your code:** \`${profile.code}\`\n` +
+          `**Your invite:** ${profile.inviteUrl || "Not registered yet"}\n` +
+          `**Velvet Coins purchases:** ${(AFFILIATE_WALLET_PURCHASE_RATE * 100).toFixed(0)}%\n` +
+          `**AI remake services:** ${(AFFILIATE_SERVICE_RATE * 100).toFixed(0)}%\n` +
+          `**Subscriptions:** ${(AFFILIATE_SUBSCRIPTION_RATE * 100).toFixed(0)}% base, ${(AFFILIATE_SUBSCRIPTION_BOOST_RATE * 100).toFixed(0)}% after ${AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS} new subscribers/month\n` +
+          `**Pending commission:** ${formatTokenAmount(profile.affiliateBalance)}\n\n` +
+          `Use \`/affiliate_register invite:https://discord.gg/yourcode\` to register your real invite.\n` +
+          `Use \`/affiliate_redeem\` to turn commission into Velvet Coins, or \`/affiliate_withdraw\` after ${formatTokenAmount(AFFILIATE_WITHDRAW_MIN)}.`,
+        flags: 64,
+      });
+      return;
+
+      /*
+      const oldProfile = getAffiliateProfile(interaction.user.id);
+      const link = `https://discord.com/channels/${GUILD_ID}?ref=${oldProfile.code}`;
 
       await interaction.reply({
         content:
@@ -2993,6 +3416,27 @@ client.on("interactionCreate", async interaction => {
           `**Commission:** ${(AFFILIATE_COMMISSION_RATE * 100).toFixed(0)}%\n` +
           `**Pending commission:** ${formatTokenAmount(profile.affiliateBalance)}\n\n` +
           `Use \`/affiliate_redeem\` to turn commission into Velvet Coins, or \`/affiliate_withdraw\` after ${formatTokenAmount(AFFILIATE_WITHDRAW_MIN)}.`,
+        flags: 64,
+      });
+      return;
+      */
+    }
+
+    if (interaction.commandName === "affiliate_register") {
+      if (!userIsAffiliate(interaction)) {
+        await interaction.reply({
+          content: "## Affiliate Program\nYou need the affiliate role to register an invite.",
+          flags: 64,
+        });
+        return;
+      }
+
+      const invite = interaction.options.getString("invite");
+      const registered = registerAffiliateInvite(interaction.user.id, invite);
+      await interaction.reply({
+        content: registered.ok
+          ? `## Affiliate Invite Registered\n**Code:** \`${registered.code}\`\n**Invite:** ${registered.inviteUrl}\n\nNew members using this invite can be linked to you automatically.`
+          : `## Invite Not Registered\n${registered.reason}`,
         flags: 64,
       });
       return;
@@ -3380,6 +3824,7 @@ client.on("interactionCreate", async interaction => {
       const lang = interaction.commandName === "steal" ? "en" : languageFor(interaction);
       const id = interaction.options.getString("id").trim();
       const quote = calculateCopyPrice(interaction);
+      const allowanceText = formatCopyAllowance(quote);
       const balanceBefore = walletBalance(interaction.user.id);
 
       if (balanceBefore < quote.walletAmount) {
@@ -3394,6 +3839,7 @@ client.on("interactionCreate", async interaction => {
             :
             `## ⚠️ Insufficient Balance\n` +
             `**Service:** Copy original asset\n` +
+            `${allowanceText}\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
             "Use `/buy` to create a purchase request.",
@@ -3410,6 +3856,7 @@ client.on("interactionCreate", async interaction => {
             "⏳ Preparando arquivos originais..."
           : `## 📎 Copy Asset\n` +
             `**UGC:** \`${id}\`\n` +
+            `${allowanceText}\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
             "⏳ Preparing original files..."
       );
@@ -3430,6 +3877,8 @@ client.on("interactionCreate", async interaction => {
           reason: "Copia de modelo original",
           meta: { command: "copiar", ugcId: id, priceBrl: quote.price },
         });
+        const usage = addCopyUsage(interaction.user.id, 1);
+        const finalQuote = calculateCopyPrice(interaction, usage.count);
 
         await interaction.editReply({
           content: lang === "pt-BR"
@@ -3442,6 +3891,7 @@ client.on("interactionCreate", async interaction => {
             :
             `## ✅ Asset Copied\n` +
             `**UGC:** \`${id}\`\n` +
+            `${formatCopyAllowance(finalQuote)}\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
             "📦 Original files are attached below.",
@@ -3664,6 +4114,16 @@ client.on("interactionCreate", async interaction => {
         reason: "Modelo multiview gerado",
         meta: { command: "refazer_multiview", priceBrl: quote.price },
       });
+      if (debit.ok) {
+        creditAffiliateServiceCommission({
+          buyerId: interaction.user.id,
+          walletAmount: quote.walletAmount,
+          priceBrl: quote.price,
+          source: "remake_multiview",
+          actorId: client.user.id,
+          meta: { mode: "multiview" },
+        });
+      }
 
       await interaction.followUp({
         content:
@@ -3855,6 +4315,16 @@ client.on("interactionCreate", async interaction => {
         reason: "Modelo por imagem unica gerado",
         meta: { command: "refazer", ugcId: id, priceBrl: quote.price },
       });
+      if (debit.ok) {
+        creditAffiliateServiceCommission({
+          buyerId: interaction.user.id,
+          walletAmount: quote.walletAmount,
+          priceBrl: quote.price,
+          source: "remake_single",
+          actorId: client.user.id,
+          meta: { ugcId: id, mode: "single" },
+        });
+      }
 
       await interaction.followUp({
         content:
