@@ -1305,9 +1305,6 @@ async function createStripeCheckoutSession(request) {
         quantity: 1,
       },
     ],
-    automatic_payment_methods: {
-      enabled: true,
-    },
   });
 }
 
@@ -1346,9 +1343,6 @@ async function createStripeSubscriptionSession({ userId, planKey, email }) {
         quantity: 1,
       },
     ],
-    automatic_payment_methods: {
-      enabled: true,
-    },
   });
 }
 
