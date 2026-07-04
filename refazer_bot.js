@@ -741,6 +741,38 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("admin_post_guide")
+    .setDescription("Admin: posts the official bot usage guide in this channel")
+    .addStringOption(o =>
+      o
+        .setName("language")
+        .setDescription("Guide language")
+        .setRequired(true)
+        .addChoices(
+          { name: "Portuguese", value: "pt-BR" },
+          { name: "English", value: "en" },
+          { name: "Both", value: "both" }
+        )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_post_terms")
+    .setDescription("Admin: posts the official purchase and service terms in this channel")
+    .addStringOption(o =>
+      o
+        .setName("language")
+        .setDescription("Terms language")
+        .setRequired(true)
+        .addChoices(
+          { name: "Portuguese", value: "pt-BR" },
+          { name: "English", value: "en" },
+          { name: "Both", value: "both" }
+        )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("multiview")
     .setDescription("Creates a multiview remake request")
     .addAttachmentOption(o =>
@@ -2253,6 +2285,162 @@ function formatInsufficientBalanceMessage({ service, price, balance }) {
   ].join("\n");
 }
 
+function formatOfficialGuide(language) {
+  if (language === "pt-BR") {
+    return [
+      "# ✨ Como utilizar a Velvet UGC",
+      "Bem-vindo. Este canal mostra o passo a passo oficial para usar o bot com segurança, rapidez e clareza.",
+      "",
+      "## 1. Configure sua conta",
+      "Use `/settings` para escolher idioma e moeda de preferência.",
+      "Use `/balance` para consultar seu saldo de Velvet Coins.",
+      "",
+      "## 2. Compre Velvet Coins",
+      "Use `/buy` e escolha a quantidade de Velvet Coins.",
+      "O bot cria um checkout seguro. Assim que o pagamento for confirmado, o saldo é liberado automaticamente.",
+      "",
+      "## 3. Copiar um UGC original",
+      "Use `/steal id:ID_DO_UGC` para receber os arquivos originais do item.",
+      "Usuários sem assinatura têm limite grátis diário. Basic tem limite maior. Premium tem cópias ilimitadas com cooldown.",
+      "",
+      "## 4. Refazer um modelo com IA",
+      "Use `/price` antes de comprar para ver o valor final.",
+      "Use `/remake` para refazer por ID usando uma imagem de referência renderizada pelo bot.",
+      "Use `/multiview` quando tiver imagens de frente, direita, costas e esquerda. Esse modo costuma dar resultado melhor.",
+      "",
+      "## 5. Escolhas disponíveis",
+      "**Texture:** sem textura, padrão ou HD.",
+      "**Enhancement:** sem melhoria, economy, standard ou premium.",
+      "**Triangles:** limite opcional para deixar o modelo mais leve e compatível.",
+      "",
+      "## 6. Planos",
+      "**Basic:** melhora preço e limites diários.",
+      "**Premium:** melhor preço, cópias ilimitadas e acesso a recursos em lote.",
+      "",
+      "## 7. Afiliados",
+      "Afiliados autorizados podem usar `/affiliate` e cadastrar um convite com `/affiliate_register`.",
+      "Quando clientes entram ou compram usando o afiliado, a comissão é registrada automaticamente quando possível.",
+      "",
+      "## Suporte",
+      "Se algo falhar, envie o ID do pedido, o ID do UGC e um print do erro para a equipe.",
+      "Não feche tickets antes de baixar seus arquivos finais.",
+    ].join("\n");
+  }
+
+  return [
+    "# ✨ How to Use Velvet UGC",
+    "Welcome. This channel explains the official workflow for using the bot safely, quickly and clearly.",
+    "",
+    "## 1. Set up your account",
+    "Use `/settings` to choose your language and preferred currency.",
+    "Use `/balance` to check your Velvet Coins balance.",
+    "",
+    "## 2. Buy Velvet Coins",
+    "Use `/buy` and choose how many Velvet Coins you want.",
+    "The bot creates a secure checkout. Once payment is confirmed, your balance is released automatically.",
+    "",
+    "## 3. Copy an original UGC",
+    "Use `/steal id:UGC_ID` to receive the original files.",
+    "Free users have a daily free limit. Basic gets a higher limit. Premium gets unlimited copies with cooldown.",
+    "",
+    "## 4. Remake a model with AI",
+    "Use `/price` before ordering to preview the final price.",
+    "Use `/remake` to remake by ID using a reference image rendered by the bot.",
+    "Use `/multiview` when you have front, right, back and left images. This usually gives better results.",
+    "",
+    "## 5. Available choices",
+    "**Texture:** no texture, standard or HD.",
+    "**Enhancement:** none, economy, standard or premium.",
+    "**Triangles:** optional limit to make the model lighter and more compatible.",
+    "",
+    "## 6. Plans",
+    "**Basic:** better pricing and higher daily limits.",
+    "**Premium:** best pricing, unlimited copies and bulk features.",
+    "",
+    "## 7. Affiliates",
+    "Approved affiliates can use `/affiliate` and register an invite with `/affiliate_register`.",
+    "When customers join or purchase through an affiliate, commission is tracked automatically when possible.",
+    "",
+    "## Support",
+    "If anything fails, send the order ID, UGC ID and a screenshot of the error to the team.",
+    "Do not close tickets before downloading your final files.",
+  ].join("\n");
+}
+
+function formatOfficialTerms(language) {
+  if (language === "pt-BR") {
+    return [
+      "# 📜 Termos de Compra e Serviço",
+      "Ao comprar Velvet Coins, assinar um plano ou solicitar um serviço, você concorda com estes termos.",
+      "",
+      "## Pagamentos e Velvet Coins",
+      "Velvet Coins são créditos internos usados para pagar serviços dentro da Velvet UGC.",
+      "O saldo é liberado após confirmação do pagamento. Pagamentos em análise, pendentes ou contestados não liberam saldo até confirmação final.",
+      "",
+      "## Entrega dos serviços",
+      "Cópias de UGC entregam arquivos originais disponíveis para o item informado.",
+      "Modelos refeitos com IA dependem da qualidade das referências, do ID enviado e das opções escolhidas pelo cliente.",
+      "Resultados de IA podem variar. A equipe pode orientar ajustes quando necessário.",
+      "",
+      "## Responsabilidade do cliente",
+      "Confira IDs, imagens, vistas multiview e opções antes de confirmar.",
+      "Em multiview, envie apenas frente, direita, costas e esquerda, com nomes corretos e boa qualidade.",
+      "",
+      "## Reembolsos",
+      "Pedidos já processados, arquivos já entregues ou créditos já utilizados normalmente não são reembolsáveis.",
+      "Casos de erro técnico podem ser revisados manualmente pela equipe.",
+      "",
+      "## Assinaturas",
+      "Planos são cobrados mensalmente. Caso o pagamento falhe ou a assinatura seja cancelada, os benefícios e cargos podem ser removidos.",
+      "",
+      "## Afiliados",
+      "Comissões são registradas conforme as regras do programa. Saques passam por revisão manual e podem exigir confirmação de dados.",
+      "",
+      "## Uso adequado",
+      "Não use o bot para fraude, spam, abuso de pagamentos, chargeback indevido ou violação das regras do Discord, Roblox ou da comunidade.",
+      "A equipe pode limitar, pausar ou bloquear acesso em caso de abuso.",
+    ].join("\n");
+  }
+
+  return [
+    "# 📜 Purchase and Service Terms",
+    "By buying Velvet Coins, subscribing to a plan or ordering a service, you agree to these terms.",
+    "",
+    "## Payments and Velvet Coins",
+    "Velvet Coins are internal credits used to pay for services inside Velvet UGC.",
+    "Balance is released after payment confirmation. Pending, under-review or disputed payments do not release balance until final confirmation.",
+    "",
+    "## Service delivery",
+    "UGC copies deliver the original files available for the provided item.",
+    "AI remakes depend on reference quality, submitted ID and the options selected by the customer.",
+    "AI results may vary. The team may guide adjustments when needed.",
+    "",
+    "## Customer responsibility",
+    "Check IDs, images, multiview sides and options before confirming.",
+    "For multiview, send only front, right, back and left, with correct names and good quality.",
+    "",
+    "## Refunds",
+    "Processed orders, delivered files or already used credits are normally non-refundable.",
+    "Technical error cases may be reviewed manually by the team.",
+    "",
+    "## Subscriptions",
+    "Plans are billed monthly. If payment fails or the subscription is canceled, benefits and roles may be removed.",
+    "",
+    "## Affiliates",
+    "Commissions are tracked according to the affiliate program rules. Payouts are manually reviewed and may require data confirmation.",
+    "",
+    "## Fair use",
+    "Do not use the bot for fraud, spam, payment abuse, wrongful chargebacks or violations of Discord, Roblox or community rules.",
+    "The team may limit, pause or block access in case of abuse.",
+  ].join("\n");
+}
+
+function officialMessagesFor(kind, language) {
+  const formatter = kind === "terms" ? formatOfficialTerms : formatOfficialGuide;
+  if (language === "both") return [formatter("pt-BR"), formatter("en")];
+  return [formatter(language)];
+}
+
 function imageEnhancementIsReady(enhancement) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   return enhancementConfig.model === null || Boolean(NANO_BANANA_PRO_ENDPOINT);
@@ -3167,7 +3355,9 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
       "🧾 `/admin_purchases` - review purchases",
       "✅ `/admin_purchase` - approve or reject purchases",
       "🏦 `/admin_withdrawals` - review withdrawals",
-      "☑️ `/admin_withdrawal` - approve or reject withdrawals"
+      "☑️ `/admin_withdrawal` - approve or reject withdrawals",
+      "📌 `/admin_post_guide` - post the official usage guide",
+      "📜 `/admin_post_terms` - post the official purchase terms"
     );
   }
 
@@ -3359,6 +3549,8 @@ client.on("interactionCreate", async interaction => {
     "admin_purchase",
     "admin_withdrawals",
     "admin_withdrawal",
+    "admin_post_guide",
+    "admin_post_terms",
     "copiar",
     "steal",
     "bulk_steal",
@@ -3426,6 +3618,8 @@ client.on("interactionCreate", async interaction => {
       "admin_purchase",
       "admin_withdrawals",
       "admin_withdrawal",
+      "admin_post_guide",
+      "admin_post_terms",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Esse comando e reservado para a equipe.",
@@ -3937,6 +4131,26 @@ client.on("interactionCreate", async interaction => {
           `**ID:** \`${requestId}\`\n` +
           `**Usuário:** <@${resolved.request.userId}>\n` +
           `**Quantidade:** ${formatTokenAmount(resolved.request.amount)}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_post_guide" || interaction.commandName === "admin_post_terms") {
+      const language = interaction.options.getString("language");
+      const kind = interaction.commandName === "admin_post_terms" ? "terms" : "guide";
+      const messages = officialMessagesFor(kind, language);
+
+      for (const message of messages) {
+        await interaction.channel.send({ content: message });
+      }
+
+      await interaction.reply({
+        content:
+          `## Published\n` +
+          `**Type:** ${kind === "terms" ? "Purchase terms" : "Usage guide"}\n` +
+          `**Language:** ${language}\n` +
+          `**Channel:** ${interaction.channel}`,
         flags: 64,
       });
       return;
