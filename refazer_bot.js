@@ -5,6 +5,7 @@ console.log("Iniciando bot laboratorio /refazer...");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const crypto = require("crypto");
 const { execFile, execFileSync } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
@@ -40,6 +41,7 @@ const TRIPO_API_BASE = process.env.TRIPO_API_BASE || "https://api.tripo3d.ai/v2/
 const MERCADO_PAGO_ACCESS_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
 const MERCADO_PAGO_PUBLIC_KEY = process.env.MERCADO_PAGO_PUBLIC_KEY;
 const MERCADO_PAGO_WEBHOOK_URL = process.env.MERCADO_PAGO_WEBHOOK_URL;
+const MERCADO_PAGO_WEBHOOK_SECRET = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 const MERCADO_PAGO_SUCCESS_URL = process.env.MERCADO_PAGO_SUCCESS_URL || "https://discord.com";
 const MERCADO_PAGO_FAILURE_URL = process.env.MERCADO_PAGO_FAILURE_URL || "https://discord.com";
 const MERCADO_PAGO_PENDING_URL = process.env.MERCADO_PAGO_PENDING_URL || "https://discord.com";
@@ -2459,6 +2461,41 @@ async function processMercadoPagoWebhook(url, body) {
   console.log(`Webhook Mercado Pago ignorado. type=${type} id=${id}`);
 }
 
+function parseMercadoPagoSignature(header) {
+  return Object.fromEntries(
+    String(header || "")
+      .split(",")
+      .map(part => part.trim().split("="))
+      .filter(([key, value]) => key && value)
+  );
+}
+
+function safeEqualHex(a, b) {
+  const left = Buffer.from(String(a || ""), "hex");
+  const right = Buffer.from(String(b || ""), "hex");
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function verifyMercadoPagoWebhook(req, url, body) {
+  if (!MERCADO_PAGO_WEBHOOK_SECRET) return true;
+
+  const signature = parseMercadoPagoSignature(req.headers["x-signature"]);
+  const requestId = req.headers["x-request-id"];
+  const dataId = body.data?.id || body.id || url.searchParams.get("data.id") || url.searchParams.get("id");
+
+  if (!signature.ts || !signature.v1 || !requestId || !dataId) {
+    return false;
+  }
+
+  const manifest = `id:${dataId};request-id:${requestId};ts:${signature.ts};`;
+  const expected = crypto
+    .createHmac("sha256", MERCADO_PAGO_WEBHOOK_SECRET)
+    .update(manifest)
+    .digest("hex");
+
+  return safeEqualHex(expected, signature.v1);
+}
+
 function startWebhookServer() {
   if (!MERCADO_PAGO_ACCESS_TOKEN) {
     console.log("Webhook Mercado Pago nao iniciado: MERCADO_PAGO_ACCESS_TOKEN ausente.");
@@ -2481,6 +2518,14 @@ function startWebhookServer() {
     }
 
     const body = await parseWebhookBody(req);
+
+    if (!verifyMercadoPagoWebhook(req, url, body)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false }));
+      console.warn("Webhook Mercado Pago recusado: assinatura invalida.");
+      return;
+    }
+
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
 
