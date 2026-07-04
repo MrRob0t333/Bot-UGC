@@ -38,6 +38,7 @@ const TRIPO_AI_ENDPOINT = process.env.TRIPO_AI_ENDPOINT;
 const TRIPO_AI_API_KEY = process.env.TRIPO_AI_API_KEY;
 const TRIPO_API_KEY = process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY;
 const TRIPO_API_BASE = process.env.TRIPO_API_BASE || "https://api.tripo3d.ai/v2/openapi";
+const PAYMENT_PROVIDER = (process.env.PAYMENT_PROVIDER || "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
 const MERCADO_PAGO_PUBLIC_KEY = process.env.MERCADO_PAGO_PUBLIC_KEY;
 const MERCADO_PAGO_WEBHOOK_URL = process.env.MERCADO_PAGO_WEBHOOK_URL;
@@ -45,6 +46,11 @@ const MERCADO_PAGO_WEBHOOK_SECRET = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 const MERCADO_PAGO_SUCCESS_URL = process.env.MERCADO_PAGO_SUCCESS_URL || "https://discord.com";
 const MERCADO_PAGO_FAILURE_URL = process.env.MERCADO_PAGO_FAILURE_URL || "https://discord.com";
 const MERCADO_PAGO_PENDING_URL = process.env.MERCADO_PAGO_PENDING_URL || "https://discord.com";
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_WEBHOOK_URL = process.env.STRIPE_WEBHOOK_URL;
+const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL || "https://discord.com";
+const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL || "https://discord.com";
 const WEBHOOK_HOST = process.env.WEBHOOK_HOST || "0.0.0.0";
 const WEBHOOK_PORT = Number(process.env.WEBHOOK_PORT || 3001);
 const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
@@ -1222,6 +1228,157 @@ async function mercadoPagoGet(endpoint) {
   return json;
 }
 
+function toFormDataParams(data, prefix) {
+  const params = new URLSearchParams();
+
+  function append(value, key) {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => append(item, `${key}[${index}]`));
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [childKey, childValue] of Object.entries(value)) {
+        append(childValue, key ? `${key}[${childKey}]` : childKey);
+      }
+      return;
+    }
+    params.append(key, String(value));
+  }
+
+  append(data, prefix || "");
+  return params;
+}
+
+async function stripeRequest(endpoint, data) {
+  if (!STRIPE_SECRET_KEY) {
+    throw new Error("STRIPE_SECRET_KEY nao configurado.");
+  }
+
+  const res = await fetch(`https://api.stripe.com${endpoint}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: toFormDataParams(data),
+  });
+
+  const text = await res.text();
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Stripe falhou (${res.status}): ${text || res.statusText}`);
+  }
+
+  return json;
+}
+
+async function createStripeCheckoutSession(request) {
+  return stripeRequest("/v1/checkout/sessions", {
+    mode: "payment",
+    success_url: STRIPE_SUCCESS_URL,
+    cancel_url: STRIPE_CANCEL_URL,
+    client_reference_id: request.id,
+    metadata: {
+      type: "velvet_coins",
+      user_id: request.userId,
+      amount: request.amount,
+      request_id: request.id,
+    },
+    line_items: [
+      {
+        price_data: {
+          currency: "brl",
+          unit_amount: Math.round(request.brl * 100),
+          product_data: {
+            name: `${request.amount} Velvet Coins`,
+            description: "Velvet Coins wallet top-up",
+          },
+        },
+        quantity: 1,
+      },
+    ],
+    automatic_payment_methods: {
+      enabled: true,
+    },
+  });
+}
+
+async function createStripeSubscriptionSession({ userId, planKey, email }) {
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan) throw new Error("Plano invalido.");
+
+  return stripeRequest("/v1/checkout/sessions", {
+    mode: "subscription",
+    success_url: STRIPE_SUCCESS_URL,
+    cancel_url: STRIPE_CANCEL_URL,
+    customer_email: email,
+    client_reference_id: `sub-${planKey}-${userId}-${Date.now()}`,
+    metadata: {
+      type: "velvet_subscription",
+      user_id: userId,
+      plan: planKey,
+      role_id: plan.roleId,
+    },
+    subscription_data: {
+      metadata: {
+        type: "velvet_subscription",
+        user_id: userId,
+        plan: planKey,
+        role_id: plan.roleId,
+      },
+    },
+    line_items: [
+      {
+        price_data: {
+          currency: "brl",
+          unit_amount: Math.round(plan.brl * 100),
+          recurring: { interval: "month" },
+          product_data: { name: `Velvet ${plan.label}` },
+        },
+        quantity: 1,
+      },
+    ],
+    automatic_payment_methods: {
+      enabled: true,
+    },
+  });
+}
+
+function verifyStripeWebhook(rawBody, signature) {
+  if (!STRIPE_WEBHOOK_SECRET) return JSON.parse(rawBody || "{}");
+
+  const parts = Object.fromEntries(
+    String(signature || "")
+      .split(",")
+      .map(part => part.split("="))
+      .filter(([key, value]) => key && value)
+  );
+  const timestamp = parts.t;
+  const expected = parts.v1;
+
+  if (!timestamp || !expected) throw new Error("Stripe signature ausente.");
+
+  const signedPayload = `${timestamp}.${rawBody}`;
+  const computed = crypto
+    .createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+    .update(signedPayload)
+    .digest("hex");
+
+  if (!safeEqualHex(computed, expected)) {
+    throw new Error("Stripe signature invalida.");
+  }
+
+  return JSON.parse(rawBody || "{}");
+}
+
 async function createMercadoPagoPreference(request) {
   const payload = {
     items: [
@@ -1514,6 +1671,69 @@ async function handleMercadoPagoSubscription(preapprovalId) {
     await syncSubscriptionRole({ userId, roleId, active });
     console.log(`Assinatura ${preapprovalId} sincronizada. Status: ${subscription.status}`);
   }
+}
+
+async function handleStripeCheckoutSession(session) {
+  const metadata = session.metadata || {};
+
+  if (metadata.type === "velvet_coins" && session.payment_status === "paid") {
+    const requestId = metadata.request_id || session.client_reference_id;
+    const resolved = resolvePurchase({
+      requestId,
+      action: "aprovar",
+      actorId: "stripe",
+      reason: `Stripe checkout session ${session.id}`,
+    });
+
+    if (resolved.ok) {
+      console.log(`Compra Stripe aprovada automaticamente: ${requestId}`);
+    } else {
+      console.log(`Compra Stripe nao aprovada automaticamente: ${requestId} - ${resolved.reason}`);
+    }
+    return;
+  }
+
+  if (metadata.type === "velvet_subscription") {
+    await syncSubscriptionRole({
+      userId: metadata.user_id,
+      roleId: metadata.role_id || SUBSCRIPTION_PLANS[metadata.plan]?.roleId,
+      active: true,
+    });
+    console.log(`Assinatura Stripe ativada: ${session.id}`);
+  }
+}
+
+async function handleStripeSubscription(subscription, active) {
+  const metadata = subscription.metadata || {};
+  if (metadata.type !== "velvet_subscription") return;
+
+  await syncSubscriptionRole({
+    userId: metadata.user_id,
+    roleId: metadata.role_id || SUBSCRIPTION_PLANS[metadata.plan]?.roleId,
+    active,
+  });
+  console.log(`Assinatura Stripe sincronizada: ${subscription.id} active=${active}`);
+}
+
+async function processStripeWebhook(event) {
+  if (event.type === "checkout.session.completed") {
+    await handleStripeCheckoutSession(event.data?.object || {});
+    return;
+  }
+
+  if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.paused") {
+    await handleStripeSubscription(event.data?.object || {}, false);
+    return;
+  }
+
+  if (event.type === "customer.subscription.updated") {
+    const subscription = event.data?.object || {};
+    const active = ["active", "trialing"].includes(subscription.status);
+    await handleStripeSubscription(subscription, active);
+    return;
+  }
+
+  console.log(`Webhook Stripe ignorado: ${event.type}`);
 }
 
 function createWithdrawalRequest({ userId, amount, robloxUsername, groupConfirmed }) {
@@ -2431,9 +2651,9 @@ function parseWebhookBody(req) {
 
     req.on("end", () => {
       try {
-        resolve(body ? JSON.parse(body) : {});
+        resolve({ raw: body, json: body ? JSON.parse(body) : {} });
       } catch {
-        resolve({});
+        resolve({ raw: body, json: {} });
       }
     });
   });
@@ -2511,7 +2731,7 @@ function startWebhookServer() {
       return;
     }
 
-    if (req.method !== "POST" || url.pathname !== "/mercadopago/webhook") {
+    if (req.method !== "POST" || !["/mercadopago/webhook", "/stripe/webhook"].includes(url.pathname)) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("not found");
       return;
@@ -2519,7 +2739,23 @@ function startWebhookServer() {
 
     const body = await parseWebhookBody(req);
 
-    if (!verifyMercadoPagoWebhook(req, url, body)) {
+    if (url.pathname === "/stripe/webhook") {
+      try {
+        const event = verifyStripeWebhook(body.raw, req.headers["stripe-signature"]);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        processStripeWebhook(event).catch(err => {
+          console.error("Erro no webhook Stripe:", err);
+        });
+      } catch (err) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false }));
+        console.warn("Webhook Stripe recusado:", err.message);
+      }
+      return;
+    }
+
+    if (!verifyMercadoPagoWebhook(req, url, body.json)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false }));
       console.warn("Webhook Mercado Pago recusado: assinatura invalida.");
@@ -2529,7 +2765,7 @@ function startWebhookServer() {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
 
-    processMercadoPagoWebhook(url, body).catch(err => {
+    processMercadoPagoWebhook(url, body.json).catch(err => {
       console.error("Erro no webhook Mercado Pago:", err);
     });
   });
@@ -2676,11 +2912,21 @@ client.on("interactionCreate", async interaction => {
       const request = createPurchaseRequest({ userId: interaction.user.id, amount, currency });
       const priceLabel = formatCurrencyFromBrl(request.brl, currency);
       let paymentLink = null;
+      let paymentProvider = "manual";
 
-      if (MERCADO_PAGO_ACCESS_TOKEN) {
+      if (PAYMENT_PROVIDER === "stripe" && STRIPE_SECRET_KEY) {
+        try {
+          const session = await createStripeCheckoutSession(request);
+          paymentLink = session.url || null;
+          paymentProvider = "Stripe";
+        } catch (err) {
+          console.error(err);
+        }
+      } else if (PAYMENT_PROVIDER === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
         try {
           const preference = await createMercadoPagoPreference(request);
           paymentLink = preference.init_point || preference.sandbox_init_point || null;
+          paymentProvider = "Mercado Pago";
         } catch (err) {
           console.error(err);
         }
@@ -2697,7 +2943,7 @@ client.on("interactionCreate", async interaction => {
           `> **Status:** ⏳ aguardando pagamento\n\n` +
           `📌 **Próximo passo**\n` +
           (paymentLink
-            ? `Pague pelo Mercado Pago:\n${paymentLink}\n\nAssim que for confirmado, seus **Velvet Coins** serão liberados pela equipe.`
+            ? `Pague pelo ${paymentProvider}:\n${paymentLink}\n\nAssim que for confirmado, seus **Velvet Coins** serão liberados automaticamente.`
             : `Envie o pagamento no canal indicado pela equipe. Assim que for confirmado, seus **Velvet Coins** caem na carteira automaticamente.`)
           :
           `# 🛒 Purchase Request\n` +
@@ -2708,7 +2954,7 @@ client.on("interactionCreate", async interaction => {
           `> **Status:** ⏳ awaiting payment\n\n` +
           `📌 **Next step**\n` +
           (paymentLink
-            ? `Pay with Mercado Pago:\n${paymentLink}\n\nOnce confirmed, the team will release your **Velvet Coins**.`
+            ? `Pay with ${paymentProvider}:\n${paymentLink}\n\nOnce confirmed, your **Velvet Coins** will be released automatically.`
             : `Send the payment in the channel indicated by the team. Once confirmed, your **Velvet Coins** will be added to your wallet automatically.`),
         flags: 64,
       });
@@ -2791,7 +3037,18 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (!MERCADO_PAGO_ACCESS_TOKEN) {
+      if (PAYMENT_PROVIDER === "stripe" && !STRIPE_SECRET_KEY) {
+        await interaction.reply({
+          content:
+            `## ⚠️ Stripe checkout is not configured\n` +
+            `Plan: **${plan.label}**\n` +
+            `Price: **R$ ${plan.brl.toFixed(2)}/month**`,
+          flags: 64,
+        });
+        return;
+      }
+
+      if (PAYMENT_PROVIDER === "mercadopago" && !MERCADO_PAGO_ACCESS_TOKEN) {
         await interaction.reply({
           content:
             `## ⚠️ Subscription checkout is not configured\n` +
@@ -2804,17 +3061,31 @@ client.on("interactionCreate", async interaction => {
       }
 
       try {
-        const subscription = await createMercadoPagoSubscription({
-          userId: interaction.user.id,
-          planKey,
-          email,
-        });
-        const link = subscription.init_point || subscription.sandbox_init_point || null;
+        let link = null;
+        let provider = "Stripe";
+
+        if (PAYMENT_PROVIDER === "mercadopago") {
+          const subscription = await createMercadoPagoSubscription({
+            userId: interaction.user.id,
+            planKey,
+            email,
+          });
+          link = subscription.init_point || subscription.sandbox_init_point || null;
+          provider = "Mercado Pago";
+        } else {
+          const session = await createStripeSubscriptionSession({
+            userId: interaction.user.id,
+            planKey,
+            email,
+          });
+          link = session.url || null;
+        }
 
         await interaction.reply({
           content:
             `# ⭐ Velvet ${plan.label}\n` +
             `**Price:** R$ ${plan.brl.toFixed(2)}/month\n` +
+            `**Provider:** ${provider}\n` +
             `**Email:** ${email}\n\n` +
             (link
               ? `Complete your subscription here:\n${link}`

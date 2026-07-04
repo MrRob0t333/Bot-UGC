@@ -57,6 +57,36 @@ MERCADO_PAGO_WEBHOOK_SECRET=
 
 Rotate the access token before production if it was ever pasted in chat.
 
+## Stripe
+
+Set the payment provider:
+
+```env
+PAYMENT_PROVIDER=stripe
+STRIPE_SECRET_KEY=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_WEBHOOK_URL=https://api.seudominio.com/stripe/webhook
+STRIPE_SUCCESS_URL=https://discord.com
+STRIPE_CANCEL_URL=https://discord.com
+```
+
+In Stripe Dashboard, create a webhook endpoint:
+
+```text
+https://api.seudominio.com/stripe/webhook
+```
+
+Subscribe to these events:
+
+```text
+checkout.session.completed
+customer.subscription.updated
+customer.subscription.deleted
+customer.subscription.paused
+```
+
+Enable Pix in Stripe Dashboard payment methods if it is available for your account.
+
 ## Backups
 
 ```bash
