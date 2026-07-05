@@ -2881,6 +2881,7 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY nao configurado.");
 
   const imageBuffer = fs.readFileSync(imagePath);
+  const finalOutputPath = outputPath.replace(/\.[^.]+$/i, ".jpg");
   const res = await fetch(`${GEMINI_API_BASE}/interactions`, {
     method: "POST",
     headers: {
@@ -2899,7 +2900,7 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
       ],
       response_format: {
         type: "image",
-        mime_type: "image/png",
+        mime_type: "image/jpeg",
       },
     }),
   });
@@ -2919,12 +2920,12 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
 
   const outputImage = extractGeminiOutputImage(json);
   if (!outputImage?.data) {
-    fs.writeFileSync(outputPath.replace(/\.png$/i, ".json"), JSON.stringify(json, null, 2));
+    fs.writeFileSync(finalOutputPath.replace(/\.jpe?g$/i, ".json"), JSON.stringify(json, null, 2));
     throw new Error("Gemini nao retornou imagem melhorada.");
   }
 
-  fs.writeFileSync(outputPath, Buffer.from(outputImage.data, "base64"));
-  return outputPath;
+  fs.writeFileSync(finalOutputPath, Buffer.from(outputImage.data, "base64"));
+  return finalOutputPath;
 }
 
 async function tripoRequest(endpoint, options = {}) {
@@ -4810,10 +4811,15 @@ client.on("interactionCreate", async interaction => {
   } catch (err) {
     console.error(err);
 
+    const failureMessage =
+      "## ⚠️ Model generation failed\n" +
+      "No remake charge was deducted because no final model was delivered.\n\n" +
+      "The team can review this manually. If this keeps happening, check the API balance/limits and server logs.";
+
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp("Erro ao gerar o modelo. O pedido sera revisado manualmente.");
+      await interaction.followUp(failureMessage);
     } else {
-      await interaction.reply("Erro ao gerar o modelo. O pedido sera revisado manualmente.");
+      await interaction.reply(failureMessage);
     }
   }
   } catch (err) {
