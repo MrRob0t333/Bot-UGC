@@ -1651,8 +1651,28 @@ function makeAffiliateCode(userId) {
 
 function parseDiscordInviteCode(value) {
   const text = String(value || "").trim();
-  const match = text.match(/(?:discord\.gg\/|discord\.com\/invite\/|discordapp\.com\/invite\/)?([a-zA-Z0-9-]+)/);
-  return match ? match[1] : "";
+
+  try {
+    const url = new URL(text.startsWith("http") ? text : `https://discord.gg/${text}`);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "discord.gg") {
+      return (url.pathname.split("/").filter(Boolean)[0] || "").trim();
+    }
+
+    if (host === "discord.com" || host === "discordapp.com") {
+      const parts = url.pathname.split("/").filter(Boolean);
+      const inviteIndex = parts.findIndex(part => part.toLowerCase() === "invite");
+      return inviteIndex >= 0 ? (parts[inviteIndex + 1] || "").trim() : "";
+    }
+  } catch {
+    // Fall through and treat the raw value as a bare invite code.
+  }
+
+  const clean = text.split(/[/?#\s]/).filter(Boolean).pop() || "";
+  return /^[a-zA-Z0-9-]{2,64}$/.test(clean) && !["http", "https", "discord", "discord.gg"].includes(clean.toLowerCase())
+    ? clean
+    : "";
 }
 
 function normalizeAffiliateLookup(value) {
@@ -1684,7 +1704,7 @@ function getAffiliateProfile(userId) {
   return {
     code: user.affiliateCode,
     inviteCode: user.affiliateInviteCode || null,
-    inviteUrl: user.affiliateInviteCode ? `https://discord.gg/${user.affiliateInviteCode}` : null,
+    inviteUrl: parseDiscordInviteCode(user.affiliateInviteCode) ? `https://discord.gg/${user.affiliateInviteCode}` : null,
     referredBy: user.referredBy,
     affiliateBalance: user.affiliateBalance || 0,
     affiliateStats: user.affiliateStats || {},
