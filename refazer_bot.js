@@ -4848,6 +4848,14 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp(failureMessage);
+      if (userIsAdmin(interaction)) {
+        await interaction.followUp({
+          content:
+            "## Admin diagnostic\n" +
+            `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+          flags: 64,
+        }).catch(() => {});
+      }
     } else {
       await interaction.reply(failureMessage);
     }
