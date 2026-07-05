@@ -5210,15 +5210,35 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      const model = await generateMultiviewWithOfficialTripo({
-        viewPaths,
-        texture,
-        triangles,
-        tempDir,
-        onProgress: async ({ status, progress }) => {
-          await interaction.followUp(`Geracao: ${status || "processando"} ${progress || 0}%`).catch(() => {});
-        },
-      });
+      let model;
+
+      try {
+        model = await generateMultiviewWithOfficialTripo({
+          viewPaths,
+          texture,
+          triangles,
+          tempDir,
+          onProgress: async ({ status, progress }) => {
+            await interaction.followUp(`Geracao: ${status || "processando"} ${progress || 0}%`).catch(() => {});
+          },
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.followUp(
+          "## Model generation failed\n" +
+          "No charge was deducted because no final model was delivered."
+        );
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+        return;
+      }
 
       const debit = removeWalletBalance({
         userId: interaction.user.id,
