@@ -57,6 +57,7 @@ const TRIPO_AI_API_KEY = cleanEnv(process.env.TRIPO_AI_API_KEY);
 const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
 const RAW_TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://api.tripo3d.ai/v2/openapi");
 const TRIPO_API_BASE = normalizeTripoApiBase(RAW_TRIPO_API_BASE);
+const TRIPO_MODEL_VERSION = cleanEnv(process.env.TRIPO_MODEL_VERSION, "P1-20260311");
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -3352,7 +3353,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
       type: "image",
       file_token: imageToken,
     },
-    model_version: "P1-20260311",
+    model_version: TRIPO_MODEL_VERSION,
     texture: texture !== "none",
     pbr: texture !== "none",
   };
@@ -3410,7 +3411,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const payload = {
     type: "multiview_to_model",
     files,
-    model_version: "P1-20260311",
+    model_version: TRIPO_MODEL_VERSION,
     texture: texture !== "none",
     pbr: texture !== "none",
   };
@@ -3455,7 +3456,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const payload = {
     type: "text_to_model",
     prompt,
-    model_version: "P1-20260311",
+    model_version: TRIPO_MODEL_VERSION,
     texture: texture !== "none",
     pbr: texture !== "none",
   };
@@ -5101,7 +5102,7 @@ client.on("interactionCreate", async interaction => {
       const texture = interaction.options.getString("textura") || interaction.options.getString("texture");
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement");
       const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
-      const triangles = interaction.options.getInteger("triangles") || PRICE_CONFIG.maxTriangles;
+      const triangles = interaction.options.getInteger("triangles");
       const quote = calculatePrice(interaction, {
         mode: "multiview",
         texture,
