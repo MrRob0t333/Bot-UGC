@@ -23,6 +23,16 @@ function cleanEnv(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
 
+function normalizeTripoApiBase(value) {
+  const base = cleanEnv(value, "https://api.tripo3d.ai/v2/openapi").replace(/\/+$/, "");
+
+  if (/^https:\/\/openapi\.tripo3d\.ai\/v3$/i.test(base)) {
+    return "https://api.tripo3d.ai/v2/openapi";
+  }
+
+  return base;
+}
+
 const TOKEN = cleanEnv(process.env.REFAZER_DISCORD_TOKEN || process.env.DISCORD_TOKEN);
 const CLIENT_ID = cleanEnv(process.env.REFAZER_CLIENT_ID || process.env.CLIENT_ID);
 const GUILD_ID = cleanEnv(process.env.REFAZER_GUILD_ID || process.env.GUILD_ID);
@@ -45,7 +55,8 @@ const GEMINI_API_BASE = cleanEnv(process.env.GEMINI_API_BASE, "https://generativ
 const TRIPO_AI_ENDPOINT = cleanEnv(process.env.TRIPO_AI_ENDPOINT);
 const TRIPO_AI_API_KEY = cleanEnv(process.env.TRIPO_AI_API_KEY);
 const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
-const TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://openapi.tripo3d.ai/v3");
+const RAW_TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://api.tripo3d.ai/v2/openapi");
+const TRIPO_API_BASE = normalizeTripoApiBase(RAW_TRIPO_API_BASE);
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
