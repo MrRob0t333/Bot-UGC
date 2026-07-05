@@ -57,7 +57,7 @@ const TRIPO_AI_API_KEY = cleanEnv(process.env.TRIPO_AI_API_KEY);
 const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
 const RAW_TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://api.tripo3d.ai/v2/openapi");
 const TRIPO_API_BASE = normalizeTripoApiBase(RAW_TRIPO_API_BASE);
-const TRIPO_MODEL_VERSION = cleanEnv(process.env.TRIPO_MODEL_VERSION, "P1-20260311");
+const TRIPO_MODEL_VERSION = cleanEnv(process.env.TRIPO_MODEL_VERSION, "v3.1-20260211");
 const TRIPO_GEOMETRY_QUALITY = cleanEnv(process.env.TRIPO_GEOMETRY_QUALITY, "detailed");
 const TRIPO_SMART_LOW_POLY = cleanEnv(process.env.TRIPO_SMART_LOW_POLY, "false") === "true";
 const TRIPO_QUAD = cleanEnv(process.env.TRIPO_QUAD, "false") === "true";
@@ -181,6 +181,7 @@ const CURRENCIES = {
   GBP: { symbol: "£", brlRate: 7 },
 };
 const MULTIVIEW_VIEW_ORDER = ["frente", "direita", "costas", "esquerda"];
+const MULTIVIEW_API_ORDER = ["frente", "esquerda", "costas", "direita"];
 const MULTIVIEW_UPLOAD_ORDER = parseMultiviewUploadOrder(process.env.REFAZER_MULTIVIEW_UPLOAD_ORDER);
 const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 
@@ -229,7 +230,7 @@ function parseMultiviewUploadOrder(raw) {
     return order;
   }
 
-  return MULTIVIEW_VIEW_ORDER;
+  return MULTIVIEW_API_ORDER;
 }
 
 const commands = [
