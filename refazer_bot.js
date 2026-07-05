@@ -177,6 +177,7 @@ const CURRENCIES = {
   GBP: { symbol: "£", brlRate: 7 },
 };
 const MULTIVIEW_VIEW_ORDER = ["frente", "direita", "costas", "esquerda"];
+const MULTIVIEW_UPLOAD_ORDER = parseMultiviewUploadOrder(process.env.REFAZER_MULTIVIEW_UPLOAD_ORDER);
 const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
@@ -212,6 +213,20 @@ function loadMeshParser() {
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
+
+function parseMultiviewUploadOrder(raw) {
+  const valid = new Set(MULTIVIEW_VIEW_ORDER);
+  const order = String(raw || "")
+    .split(/[,\s;]+/)
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (order.length === 4 && order.every(item => valid.has(item)) && new Set(order).size === 4) {
+    return order;
+  }
+
+  return MULTIVIEW_VIEW_ORDER;
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -3382,7 +3397,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
 
-  const viewOrder = MULTIVIEW_VIEW_ORDER;
+  const viewOrder = MULTIVIEW_UPLOAD_ORDER;
   const files = [];
 
   for (const view of viewOrder) {
@@ -3405,6 +3420,8 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
 
   fs.writeFileSync(path.join(tripoDir, "tripo_payload.json"), JSON.stringify({
     ...payload,
+    review_order: MULTIVIEW_VIEW_ORDER,
+    upload_order: viewOrder,
     files: viewOrder.map(view => ({ type: "image", file_token: "[hidden]", view, file: path.basename(viewPaths[view]) })),
   }, null, 2));
 
