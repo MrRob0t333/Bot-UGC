@@ -3549,8 +3549,8 @@ function verifyMercadoPagoWebhook(req, url, body) {
 }
 
 function startWebhookServer() {
-  if (!MERCADO_PAGO_ACCESS_TOKEN) {
-    console.log("Webhook Mercado Pago nao iniciado: MERCADO_PAGO_ACCESS_TOKEN ausente.");
+  if (!STRIPE_SECRET_KEY && !MERCADO_PAGO_ACCESS_TOKEN) {
+    console.log("Webhook server nao iniciado: Stripe e Mercado Pago ausentes.");
     return;
   }
 
@@ -3603,7 +3603,13 @@ function startWebhookServer() {
   });
 
   server.listen(WEBHOOK_PORT, WEBHOOK_HOST, () => {
-    console.log(`Webhook Mercado Pago online em http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/mercadopago/webhook`);
+    console.log(`Webhook server online em http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/health`);
+    if (STRIPE_SECRET_KEY) {
+      console.log(`Webhook Stripe online em http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/stripe/webhook`);
+    }
+    if (MERCADO_PAGO_ACCESS_TOKEN) {
+      console.log(`Webhook Mercado Pago online em http://${WEBHOOK_HOST}:${WEBHOOK_PORT}/mercadopago/webhook`);
+    }
   });
 }
 
