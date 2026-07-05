@@ -517,6 +517,14 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("views")
+    .setDescription("Renders front, side, back and isometric reference images from a UGC")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Original UGC ID").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("bulk_remake")
     .setDescription("Premium: creates a quote/request for up to 10 remakes")
     .addStringOption(o =>
@@ -3676,6 +3684,25 @@ function multiviewReviewAttachments(viewPaths) {
     .filter(Boolean);
 }
 
+function ugcViewAttachments(renderDir) {
+  const views = [
+    ["frente", "front"],
+    ["direita", "right"],
+    ["costas", "back"],
+    ["esquerda", "left"],
+    ["isometrica", "isometric"],
+  ];
+
+  return views
+    .map(([fileName, publicName], index) => {
+      const file = path.join(renderDir, `${fileName}.png`);
+      if (!fs.existsSync(file)) return null;
+      const label = String(index + 1).padStart(2, "0");
+      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+    })
+    .filter(Boolean);
+}
+
 function parseBulkIds(raw) {
   return [...new Set(String(raw || "")
     .split(/[\s,;]+/)
@@ -3982,6 +4009,7 @@ client.on("interactionCreate", async interaction => {
     "copiar",
     "steal",
     "bulk_steal",
+    "views",
     "bulk_remake",
     "remake",
     "price",
@@ -4836,6 +4864,39 @@ client.on("interactionCreate", async interaction => {
         `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
         `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
       ).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName === "views") {
+      const id = interaction.options.getString("id").trim();
+      await interaction.deferReply();
+
+      try {
+        await interaction.editReply(
+          "## Rendering UGC Views\n" +
+          `**UGC:** \`${id}\`\n\n` +
+          "Preparing front, right, back, left and isometric reference images..."
+        );
+
+        const result = await processUGC(id, { exportGlb: false, render: true });
+        const files = ugcViewAttachments(result.renderDir);
+
+        await interaction.editReply({
+          content:
+            "## UGC Views Ready\n" +
+            `**UGC:** \`${id}\`\n` +
+            `**MeshId:** \`${result.meshId}\`\n` +
+            `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
+            "Use these images to check the item from multiple angles or as references for `/multiview`.",
+          files,
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply(
+          "## View Rendering Failed\n" +
+          "I could not render this UGC. Check if the ID is valid or try another item."
+        );
+      }
       return;
     }
 
