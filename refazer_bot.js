@@ -19,44 +19,48 @@ const {
   AttachmentBuilder,
 } = require("discord.js");
 
-const TOKEN = process.env.REFAZER_DISCORD_TOKEN || process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.REFAZER_CLIENT_ID || process.env.CLIENT_ID;
-const GUILD_ID = process.env.REFAZER_GUILD_ID || process.env.GUILD_ID;
-const ROBLOSECURITY = process.env.ROBLOSECURITY;
+function cleanEnv(value, fallback = "") {
+  return String(value ?? fallback).trim();
+}
 
-const PREMIUM_ROLE = process.env.REFAZER_PREMIUM_ROLE || "1521989120745013459";
-const NORMAL_ROLE = process.env.REFAZER_NORMAL_ROLE || "1521959526394237089";
-const FREE_ROLE = process.env.REFAZER_FREE_ROLE || "1523104972068356187";
-const ADMIN_ROLE = process.env.REFAZER_ADMIN_ROLE || "1522293475801038868";
-const AFFILIATE_ROLE = process.env.REFAZER_AFFILIATE_ROLE || "1523108378346520607";
+const TOKEN = cleanEnv(process.env.REFAZER_DISCORD_TOKEN || process.env.DISCORD_TOKEN);
+const CLIENT_ID = cleanEnv(process.env.REFAZER_CLIENT_ID || process.env.CLIENT_ID);
+const GUILD_ID = cleanEnv(process.env.REFAZER_GUILD_ID || process.env.GUILD_ID);
+const ROBLOSECURITY = cleanEnv(process.env.ROBLOSECURITY);
+
+const PREMIUM_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_ROLE, "1521989120745013459");
+const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "1521959526394237089");
+const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
+const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
+const AFFILIATE_ROLE = cleanEnv(process.env.REFAZER_AFFILIATE_ROLE, "1523108378346520607");
 
 const BLENDER_PATH =
-  process.env.BLENDER_PATH ||
+  cleanEnv(process.env.BLENDER_PATH) ||
   "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
 
-const NANO_BANANA_PRO_ENDPOINT = process.env.NANO_BANANA_PRO_ENDPOINT;
-const NANO_BANANA_PRO_API_KEY = process.env.NANO_BANANA_PRO_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_API_BASE = process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com/v1beta";
-const TRIPO_AI_ENDPOINT = process.env.TRIPO_AI_ENDPOINT;
-const TRIPO_AI_API_KEY = process.env.TRIPO_AI_API_KEY;
-const TRIPO_API_KEY = process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY;
-const TRIPO_API_BASE = process.env.TRIPO_API_BASE || "https://openapi.tripo3d.ai/v3";
-const PAYMENT_PROVIDER = (process.env.PAYMENT_PROVIDER || "stripe").toLowerCase();
-const MERCADO_PAGO_ACCESS_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
-const MERCADO_PAGO_PUBLIC_KEY = process.env.MERCADO_PAGO_PUBLIC_KEY;
-const MERCADO_PAGO_WEBHOOK_URL = process.env.MERCADO_PAGO_WEBHOOK_URL;
-const MERCADO_PAGO_WEBHOOK_SECRET = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
-const MERCADO_PAGO_SUCCESS_URL = process.env.MERCADO_PAGO_SUCCESS_URL || "https://discord.com";
-const MERCADO_PAGO_FAILURE_URL = process.env.MERCADO_PAGO_FAILURE_URL || "https://discord.com";
-const MERCADO_PAGO_PENDING_URL = process.env.MERCADO_PAGO_PENDING_URL || "https://discord.com";
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-const STRIPE_WEBHOOK_URL = process.env.STRIPE_WEBHOOK_URL;
-const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL || "https://discord.com";
-const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL || "https://discord.com";
-const WEBHOOK_HOST = process.env.WEBHOOK_HOST || "0.0.0.0";
-const WEBHOOK_PORT = Number(process.env.WEBHOOK_PORT || 3001);
+const NANO_BANANA_PRO_ENDPOINT = cleanEnv(process.env.NANO_BANANA_PRO_ENDPOINT);
+const NANO_BANANA_PRO_API_KEY = cleanEnv(process.env.NANO_BANANA_PRO_API_KEY);
+const GEMINI_API_KEY = cleanEnv(process.env.GEMINI_API_KEY);
+const GEMINI_API_BASE = cleanEnv(process.env.GEMINI_API_BASE, "https://generativelanguage.googleapis.com/v1beta");
+const TRIPO_AI_ENDPOINT = cleanEnv(process.env.TRIPO_AI_ENDPOINT);
+const TRIPO_AI_API_KEY = cleanEnv(process.env.TRIPO_AI_API_KEY);
+const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
+const TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://openapi.tripo3d.ai/v3");
+const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
+const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
+const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
+const MERCADO_PAGO_WEBHOOK_URL = cleanEnv(process.env.MERCADO_PAGO_WEBHOOK_URL);
+const MERCADO_PAGO_WEBHOOK_SECRET = cleanEnv(process.env.MERCADO_PAGO_WEBHOOK_SECRET);
+const MERCADO_PAGO_SUCCESS_URL = cleanEnv(process.env.MERCADO_PAGO_SUCCESS_URL, "https://discord.com");
+const MERCADO_PAGO_FAILURE_URL = cleanEnv(process.env.MERCADO_PAGO_FAILURE_URL, "https://discord.com");
+const MERCADO_PAGO_PENDING_URL = cleanEnv(process.env.MERCADO_PAGO_PENDING_URL, "https://discord.com");
+const STRIPE_SECRET_KEY = cleanEnv(process.env.STRIPE_SECRET_KEY);
+const STRIPE_WEBHOOK_SECRET = cleanEnv(process.env.STRIPE_WEBHOOK_SECRET);
+const STRIPE_WEBHOOK_URL = cleanEnv(process.env.STRIPE_WEBHOOK_URL);
+const STRIPE_SUCCESS_URL = cleanEnv(process.env.STRIPE_SUCCESS_URL, "https://discord.com");
+const STRIPE_CANCEL_URL = cleanEnv(process.env.STRIPE_CANCEL_URL, "https://discord.com");
+const WEBHOOK_HOST = cleanEnv(process.env.WEBHOOK_HOST, "0.0.0.0");
+const WEBHOOK_PORT = Number(cleanEnv(process.env.WEBHOOK_PORT, "3001"));
 const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
 
 const COOLDOWN_MS = 10000;
