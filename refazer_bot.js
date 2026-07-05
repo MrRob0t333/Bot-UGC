@@ -39,6 +39,7 @@ const GUILD_ID = cleanEnv(process.env.REFAZER_GUILD_ID || process.env.GUILD_ID);
 const ROBLOSECURITY = cleanEnv(process.env.ROBLOSECURITY);
 
 const PREMIUM_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_ROLE, "1521989120745013459");
+const ELITE_ROLE = cleanEnv(process.env.REFAZER_ELITE_ROLE, "1523463473328292013");
 const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "1521959526394237089");
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
@@ -86,9 +87,11 @@ const PRICE_CONFIG = {
   baseFree: 30,
   baseBasic: 25,
   basePremium: 20,
+  baseElite: 20,
   copyFreeOverLimit: 2,
   copyBasicOverLimit: 1,
   multiviewExtra: 7,
+  eliteMultiviewExtra: 0,
   hdTextureExtra: 8,
   noTextureDiscount: 2,
   lowPolyExtra: 3,
@@ -117,6 +120,11 @@ const COPY_PLAN_CONFIG = {
   },
   premium: {
     label: "Premium",
+    dailyLimit: null,
+    overLimitPrice: 0,
+  },
+  elite: {
+    label: "Elite",
     dailyLimit: null,
     overLimitPrice: 0,
   },
@@ -170,6 +178,11 @@ const SUBSCRIPTION_PLANS = {
     label: "Premium",
     brl: 199,
     roleId: PREMIUM_ROLE,
+  },
+  elite: {
+    label: "Elite",
+    brl: 349,
+    roleId: ELITE_ROLE,
   },
 };
 const DEFAULT_CURRENCY = "BRL";
@@ -372,7 +385,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("subscribe")
-    .setDescription("Creates a Basic or Premium subscription link")
+    .setDescription("Creates a Basic, Premium or Elite subscription link")
     .addStringOption(o =>
       o
         .setName("plan")
@@ -380,7 +393,8 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Basic - R$ 99/month", value: "basic" },
-          { name: "Premium - R$ 199/month", value: "premium" }
+          { name: "Premium - R$ 199/month", value: "premium" },
+          { name: "Elite - R$ 349/month", value: "elite" }
         )
     )
     .addStringOption(o =>
@@ -1206,18 +1220,21 @@ function apiCreditsFor({ mode, texture, lowPoly }) {
 }
 
 function userRemakePlan(interaction) {
+  if (userIsElite(interaction)) return "elite";
   if (userIsPremium(interaction)) return "premium";
   if (hasRole(interaction, NORMAL_ROLE)) return "basic";
   return "free";
 }
 
 function remakeBasePriceForPlan(plan) {
+  if (plan === "elite") return PRICE_CONFIG.baseElite;
   if (plan === "premium") return PRICE_CONFIG.basePremium;
   if (plan === "basic") return PRICE_CONFIG.baseBasic;
   return PRICE_CONFIG.baseFree;
 }
 
 function remakePlanLabel(plan) {
+  if (plan === "elite") return "Elite";
   if (plan === "premium") return "Premium";
   if (plan === "basic") return "Basic";
   return "No subscription";
@@ -1243,8 +1260,9 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
   const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(price)}`];
 
   if (mode === "multiview") {
-    price += PRICE_CONFIG.multiviewExtra;
-    lines.push(`Multiview: +${formatWalletAmount(PRICE_CONFIG.multiviewExtra)}`);
+    const multiviewExtra = plan === "elite" ? PRICE_CONFIG.eliteMultiviewExtra : PRICE_CONFIG.multiviewExtra;
+    price += multiviewExtra;
+    lines.push(`Multiview: +${formatWalletAmount(multiviewExtra)}`);
   }
 
   if (texture === "hd") {
@@ -1299,7 +1317,8 @@ function getSaoPauloDayKey() {
 }
 
 function userCopyPlan(interaction) {
-  if (userIsPremium(interaction) || userIsAdmin(interaction)) return "premium";
+  if (userIsElite(interaction)) return "elite";
+  if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) return "premium";
   if (hasRole(interaction, NORMAL_ROLE)) return "basic";
   return "free";
 }
@@ -2790,6 +2809,14 @@ function userIsPremium(interaction) {
   return hasRole(interaction, PREMIUM_ROLE);
 }
 
+function userIsElite(interaction) {
+  return hasRole(interaction, ELITE_ROLE);
+}
+
+function userHasPremiumAccess(interaction) {
+  return userIsPremium(interaction) || userIsElite(interaction);
+}
+
 function userIsAdmin(interaction) {
   return hasRole(interaction, ADMIN_ROLE);
 }
@@ -2799,7 +2826,7 @@ function userIsAffiliate(interaction) {
 }
 
 function userIsAllowed(interaction) {
-  return userIsAdmin(interaction) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
+  return userIsAdmin(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
 async function checkCooldown(interaction) {
@@ -3812,7 +3839,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "## Wallet",
     "💎 `/balance` - view your Velvet Coins",
     "🛒 `/buy` - buy Velvet Coins",
-    "⭐ `/subscribe` - subscribe to Basic or Premium",
+    "⭐ `/subscribe` - subscribe to Basic, Premium or Elite",
     "",
     "## Services",
     "📎 `/steal` - copy original asset files",
@@ -3828,10 +3855,10 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "🏦 `/affiliate_withdraw` - request a payout",
   ];
 
-  if (userIsPremium(interaction) || userIsAdmin(interaction)) {
+  if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
     lines.push(
       "",
-      "## Premium",
+      "## Premium / Elite",
       "📦 `/bulk_steal` - copy up to 10 assets",
       "🧾 `/bulk_remake` - quote up to 10 remakes"
     );
@@ -4859,9 +4886,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "bulk_steal") {
-      if (!userIsPremium(interaction) && !userIsAdmin(interaction)) {
+      if (!userHasPremiumAccess(interaction) && !userIsAdmin(interaction)) {
         await interaction.reply({
-          content: "## 🔒 Premium only\nBulk copy is available for premium members.",
+          content: "## 🔒 Premium / Elite only\nBulk copy is available for Premium and Elite members.",
           flags: 64,
         });
         return;
@@ -4877,7 +4904,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply(
         `## 📦 Bulk Copy Started\n` +
         `**Assets:** ${ids.length}/10\n` +
-        `**Price:** Free for premium\n\n` +
+        `**Price:** Free for Premium and Elite\n\n` +
         "I will send each asset as soon as it is ready."
       );
 
@@ -4948,9 +4975,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "bulk_remake") {
-      if (!userIsPremium(interaction) && !userIsAdmin(interaction)) {
+      if (!userHasPremiumAccess(interaction) && !userIsAdmin(interaction)) {
         await interaction.reply({
-          content: "## 🔒 Premium only\nBulk remake is available for premium members.",
+          content: "## 🔒 Premium / Elite only\nBulk remake is available for Premium and Elite members.",
           flags: 64,
         });
         return;
