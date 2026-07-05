@@ -157,6 +157,22 @@ const IMAGE_ENHANCEMENTS = {
   },
 };
 
+const IMAGE_RESOLUTIONS = {
+  "1K": {
+    label: "1K",
+    priceExtra: 0,
+  },
+  "2K": {
+    label: "2K",
+    priceExtra: 2,
+  },
+  "4K": {
+    label: "4K",
+    priceExtra: 4,
+  },
+};
+
+const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"]);
 const WALLET_TOKEN_NAME = "Velvet Coins";
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
@@ -722,6 +738,30 @@ const commands = [
           { name: "Economy", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("resolution")
+        .setDescription("Output resolution")
+        .setRequired(false)
+        .addChoices(
+          { name: "1K", value: "1K" },
+          { name: "2K", value: "2K" },
+          { name: "4K", value: "4K" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("aspect_ratio")
+        .setDescription("Image shape")
+        .setRequired(false)
+        .addChoices(
+          { name: "Square 1:1", value: "1:1" },
+          { name: "Landscape 3:2", value: "3:2" },
+          { name: "Portrait 2:3", value: "2:3" },
+          { name: "Wide 16:9", value: "16:9" },
+          { name: "Vertical 9:16", value: "9:16" }
         )
     )
     .toJSON(),
@@ -3195,7 +3235,7 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
   return finalOutputPath;
 }
 
-async function generateImageWithGemini({ prompt, outputPath, model }) {
+async function generateImageWithGemini({ prompt, outputPath, model, imageSize = "1K", aspectRatio = "1:1" }) {
   if (!GEMINI_API_KEY) throw new Error("Image generation is not configured.");
 
   const res = await fetch(`${GEMINI_API_BASE}/interactions`, {
@@ -3218,6 +3258,8 @@ async function generateImageWithGemini({ prompt, outputPath, model }) {
       response_format: {
         type: "image",
         mime_type: "image/jpeg",
+        image_size: imageSize,
+        aspect_ratio: aspectRatio,
       },
     }),
   });
@@ -5019,11 +5061,29 @@ client.on("interactionCreate", async interaction => {
 
       const prompt = interaction.options.getString("prompt").trim();
       const quality = interaction.options.getString("quality") || "standard";
+      const resolution = interaction.options.getString("resolution") || "1K";
+      const aspectRatio = interaction.options.getString("aspect_ratio") || "1:1";
       const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
-      const price = IMAGE_GENERATION_PRICE + brlToWalletTokens(enhancementConfig.priceExtra || 0);
+      const resolutionConfig = IMAGE_RESOLUTIONS[resolution] || IMAGE_RESOLUTIONS["1K"];
+      const price = IMAGE_GENERATION_PRICE +
+        brlToWalletTokens(enhancementConfig.priceExtra || 0) +
+        brlToWalletTokens(resolutionConfig.priceExtra || 0);
 
       if (!GEMINI_API_KEY || !enhancementConfig.model) {
         await interaction.editReply("## Image generation unavailable\nThis service is not configured yet.");
+        return;
+      }
+
+      if (quality === "economy" && resolution !== "1K") {
+        await interaction.editReply(
+          "## Resolution unavailable\n" +
+          "Economy image generation supports 1K only. Choose Standard or Premium for 2K/4K."
+        );
+        return;
+      }
+
+      if (!IMAGE_ASPECT_RATIOS.has(aspectRatio)) {
+        await interaction.editReply("## Invalid aspect ratio\nChoose one of the available image shapes.");
         return;
       }
 
@@ -5043,20 +5103,28 @@ client.on("interactionCreate", async interaction => {
 
       try {
         await interaction.editReply("## Generating Reference Image\nYour image is being prepared...");
-        await generateImageWithGemini({ prompt, outputPath: imagePath, model: enhancementConfig.model });
+        await generateImageWithGemini({
+          prompt,
+          outputPath: imagePath,
+          model: enhancementConfig.model,
+          imageSize: resolution,
+          aspectRatio,
+        });
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
           amount: price,
           actorId: client.user.id,
           reason: "Reference image generated",
-          meta: { command: "generate_image", quality },
+          meta: { command: "generate_image", quality, resolution, aspectRatio },
         });
 
         await interaction.editReply({
           content:
             "## Reference Image Ready\n" +
             `**Quality:** ${enhancementConfig.label}\n` +
+            `**Resolution:** ${resolutionConfig.label}\n` +
+            `**Aspect ratio:** ${aspectRatio}\n` +
             `**Price:** ${formatTokenAmount(price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
             "You can use this image with `/remake` as inspiration, or with `/multiview` if you generate the needed views.",
