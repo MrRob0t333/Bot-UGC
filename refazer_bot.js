@@ -692,6 +692,44 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("code_redeem")
+    .setDescription("Redeems a Velvet Coins promo code")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Promo code").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_code_create")
+    .setDescription("Admin: creates a limited Velvet Coins promo code")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Code name, for example VELVET100").setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("amount").setDescription("Velvet Coins given per redeem").setRequired(true).setMinValue(1)
+    )
+    .addIntegerOption(o =>
+      o.setName("uses").setDescription("Maximum number of users that can redeem it").setRequired(true).setMinValue(1)
+    )
+    .addStringOption(o =>
+      o.setName("note").setDescription("Internal note").setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_code_disable")
+    .setDescription("Admin: disables a promo code")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Promo code").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_codes")
+    .setDescription("Admin: lists active and recent promo codes")
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("admin_remove")
     .setDescription("Admin: removes Velvet Coins from a user")
     .addUserOption(o =>
@@ -1278,6 +1316,7 @@ function emptyWalletDb() {
     purchaseRequests: [],
     withdrawalRequests: [],
     affiliateWithdrawals: [],
+    promoCodes: {},
     transactions: [],
   };
 }
@@ -1317,6 +1356,121 @@ function walletUser(db, userId) {
   copyUsageFor(db.users[userId]);
 
   return db.users[userId];
+}
+
+function normalizePromoCode(code) {
+  return String(code || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "")
+    .slice(0, 32);
+}
+
+function promoCodeList(db) {
+  db.promoCodes ||= {};
+  return db.promoCodes;
+}
+
+function createPromoCode({ code, amount, maxUses, actorId, note }) {
+  const normalized = normalizePromoCode(code);
+  if (!normalized) return { ok: false, reason: "Invalid code. Use letters, numbers, _ or -." };
+
+  const db = readWalletDb();
+  const codes = promoCodeList(db);
+  if (codes[normalized]?.active) {
+    return { ok: false, reason: "This code already exists and is active." };
+  }
+
+  codes[normalized] = {
+    code: normalized,
+    amount,
+    maxUses,
+    usedBy: [],
+    active: true,
+    note: note || "",
+    createdBy: actorId,
+    createdAt: new Date().toISOString(),
+    disabledAt: null,
+  };
+
+  walletTransaction(db, {
+    userId: actorId,
+    type: "promo_code_created",
+    amount: 0,
+    actorId,
+    reason: `Promo code ${normalized} created`,
+    meta: { code: normalized, amount, maxUses, note: note || "" },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, promo: codes[normalized] };
+}
+
+function disablePromoCode({ code, actorId }) {
+  const normalized = normalizePromoCode(code);
+  const db = readWalletDb();
+  const codes = promoCodeList(db);
+  const promo = codes[normalized];
+
+  if (!promo) return { ok: false, reason: "Code not found." };
+  if (!promo.active) return { ok: false, reason: "Code is already disabled." };
+
+  promo.active = false;
+  promo.disabledBy = actorId;
+  promo.disabledAt = new Date().toISOString();
+
+  walletTransaction(db, {
+    userId: actorId,
+    type: "promo_code_disabled",
+    amount: 0,
+    actorId,
+    reason: `Promo code ${normalized} disabled`,
+    meta: { code: normalized },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, promo };
+}
+
+function redeemPromoCode({ userId, code }) {
+  const normalized = normalizePromoCode(code);
+  const db = readWalletDb();
+  const codes = promoCodeList(db);
+  const promo = codes[normalized];
+
+  if (!promo || !promo.active) return { ok: false, reason: "This code is invalid or inactive." };
+
+  promo.usedBy ||= [];
+  if (promo.usedBy.includes(userId)) {
+    return { ok: false, reason: "You already redeemed this code." };
+  }
+
+  if (promo.usedBy.length >= promo.maxUses) {
+    promo.active = false;
+    promo.disabledAt = new Date().toISOString();
+    writeWalletDb(db);
+    return { ok: false, reason: "This code reached its usage limit." };
+  }
+
+  const user = walletUser(db, userId);
+  user.balance += promo.amount;
+  promo.usedBy.push(userId);
+  if (promo.usedBy.length >= promo.maxUses) {
+    promo.active = false;
+    promo.disabledAt = new Date().toISOString();
+  }
+
+  walletTransaction(db, {
+    userId,
+    type: "promo_code_redeemed",
+    amount: promo.amount,
+    actorId: userId,
+    reason: `Promo code ${normalized} redeemed`,
+    meta: { code: normalized },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, promo, balance: user.balance };
 }
 
 function walletBalance(userId) {
@@ -3257,7 +3411,7 @@ async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhanc
     });
 
     if (!res.ok) {
-      throw new Error(`Nano Banana Pro falhou em ${path.basename(inputPath)}. Codigo: ${res.status}`);
+      throw new Error(`Image enhancement failed for ${path.basename(inputPath)}. Status: ${res.status}`);
     }
 
     const savedPath = await writeResponseAsset(res, outputPath, jsonPath);
@@ -3321,7 +3475,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   if (!TRIPO_AI_ENDPOINT) {
     return {
       skipped: true,
-      reason: "TRIPO_AI_ENDPOINT nao configurado",
+      reason: "Real model generation endpoint is not configured",
       outputDir: tripoDir,
       modelPath: null,
     };
@@ -3663,6 +3817,7 @@ client.on("interactionCreate", async interaction => {
     "affiliate_redeem",
     "affiliate_withdraw",
     "subscribe",
+    "code_redeem",
     "velvet_transferir",
     "velvet_sacar",
     "velvet_admin_add",
@@ -3673,6 +3828,9 @@ client.on("interactionCreate", async interaction => {
     "velvet_admin_saque",
     "admin_add",
     "admin_buy",
+    "admin_code_create",
+    "admin_code_disable",
+    "admin_codes",
     "admin_remove",
     "admin_purchases",
     "admin_purchase",
@@ -3742,6 +3900,9 @@ client.on("interactionCreate", async interaction => {
       "velvet_admin_saque",
       "admin_add",
       "admin_buy",
+      "admin_code_create",
+      "admin_code_disable",
+      "admin_codes",
       "admin_remove",
       "admin_purchases",
       "admin_purchase",
@@ -4159,6 +4320,94 @@ client.on("interactionCreate", async interaction => {
           (paymentLink
             ? `Stripe checkout:\n${paymentLink}`
             : "Stripe checkout could not be created. Check PM2 logs."),
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "code_redeem") {
+      const code = interaction.options.getString("code");
+      const redeemed = redeemPromoCode({ userId: interaction.user.id, code });
+
+      if (!redeemed.ok) {
+        await interaction.reply({
+          content:
+            "## Code Not Redeemed\n" +
+            `${redeemed.reason}`,
+          flags: 64,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content:
+          "## Velvet Code Redeemed\n" +
+          `**Code:** \`${redeemed.promo.code}\`\n` +
+          `**Added:** ${formatTokenAmount(redeemed.promo.amount)}\n` +
+          `**New balance:** ${formatTokenAmount(redeemed.balance)}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_code_create") {
+      const code = interaction.options.getString("code");
+      const amount = interaction.options.getInteger("amount");
+      const maxUses = interaction.options.getInteger("uses");
+      const note = interaction.options.getString("note") || "";
+      const created = createPromoCode({
+        code,
+        amount,
+        maxUses,
+        actorId: interaction.user.id,
+        note,
+      });
+
+      if (!created.ok) {
+        await interaction.reply({ content: `## Code Not Created\n${created.reason}`, flags: 64 });
+        return;
+      }
+
+      await interaction.reply({
+        content:
+          "## Promo Code Created\n" +
+          `**Code:** \`${created.promo.code}\`\n` +
+          `**Reward:** ${formatTokenAmount(created.promo.amount)}\n` +
+          `**Uses:** 0/${created.promo.maxUses}\n` +
+          `**Status:** Active`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_code_disable") {
+      const code = interaction.options.getString("code");
+      const disabled = disablePromoCode({ code, actorId: interaction.user.id });
+
+      await interaction.reply({
+        content: disabled.ok
+          ? `## Promo Code Disabled\n**Code:** \`${disabled.promo.code}\``
+          : `## Code Not Disabled\n${disabled.reason}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_codes") {
+      const db = readWalletDb();
+      const codes = Object.values(promoCodeList(db))
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .slice(0, 15);
+
+      await interaction.reply({
+        content: codes.length
+          ? [
+            "## Promo Codes",
+            ...codes.map(code =>
+              `\`${code.code}\` | ${formatTokenAmount(code.amount)} | ${code.usedBy?.length || 0}/${code.maxUses} | ${code.active ? "Active" : "Disabled"}`
+            ),
+          ].join("\n")
+          : "## Promo Codes\nNo codes created yet.",
         flags: 64,
       });
       return;
