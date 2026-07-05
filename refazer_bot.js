@@ -148,6 +148,8 @@ const IMAGE_ENHANCEMENTS = {
 const WALLET_TOKEN_NAME = "Velvet Coins";
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
+const IMAGE_GENERATION_PRICE = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE || 100);
+const PROMPT_MODEL_PRICE = Number(process.env.REFAZER_PROMPT_MODEL_PRICE || 1100);
 const AFFILIATE_WALLET_PURCHASE_RATE = Number(process.env.REFAZER_AFFILIATE_WALLET_RATE || 0.10);
 const AFFILIATE_SERVICE_RATE = Number(process.env.REFAZER_AFFILIATE_SERVICE_RATE || 0.05);
 const AFFILIATE_SUBSCRIPTION_RATE = Number(process.env.REFAZER_AFFILIATE_SUBSCRIPTION_RATE || 0.20);
@@ -660,6 +662,47 @@ const commands = [
         .setRequired(false)
         .setMinValue(500)
         .setMaxValue(3950)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("generate_image")
+    .setDescription("Generates a reference image from a prompt")
+    .addStringOption(o =>
+      o.setName("prompt").setDescription("Describe the image you want").setRequired(true).setMaxLength(1000)
+    )
+    .addStringOption(o =>
+      o
+        .setName("quality")
+        .setDescription("Image generation quality")
+        .setRequired(false)
+        .addChoices(
+          { name: "Economy", value: "economy" },
+          { name: "Standard", value: "standard" },
+          { name: "Premium", value: "premium" }
+        )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("prompt_model")
+    .setDescription("Generates a 3D model from a text prompt")
+    .addStringOption(o =>
+      o.setName("prompt").setDescription("Describe the 3D model you want").setRequired(true).setMaxLength(1000)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture")
+        .setDescription("Texture quality")
+        .setRequired(false)
+        .addChoices(
+          { name: "No texture", value: "none" },
+          { name: "Standard", value: "standard" },
+          { name: "HD", value: "hd" }
+        )
+    )
+    .addIntegerOption(o =>
+      o.setName("triangles").setDescription("Triangle limit. Max: 3950").setRequired(false).setMinValue(500).setMaxValue(3950)
     )
     .toJSON(),
 
@@ -3097,6 +3140,56 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
   return finalOutputPath;
 }
 
+async function generateImageWithGemini({ prompt, outputPath, model }) {
+  if (!GEMINI_API_KEY) throw new Error("Image generation is not configured.");
+
+  const res = await fetch(`${GEMINI_API_BASE}/interactions`, {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": GEMINI_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          type: "text",
+          text:
+            "Create a clean product-style reference image for a Roblox UGC accessory. " +
+            "Use a simple background, clear silhouette, visible material details, no text, no watermark. " +
+            `Prompt: ${prompt}`,
+        },
+      ],
+      response_format: {
+        type: "image",
+        mime_type: "image/jpeg",
+      },
+    }),
+  });
+
+  const text = await res.text();
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Image generation failed (${res.status}): ${text || res.statusText}`);
+  }
+
+  const outputImage = extractGeminiOutputImage(json);
+  if (!outputImage?.data) {
+    fs.writeFileSync(outputPath.replace(/\.jpe?g$/i, ".json"), JSON.stringify(json, null, 2));
+    throw new Error("Image generation finished without an image.");
+  }
+
+  fs.writeFileSync(outputPath, Buffer.from(outputImage.data, "base64"));
+  return outputPath;
+}
+
 async function tripoRequest(endpoint, options = {}) {
   if (!TRIPO_API_KEY) {
     throw new Error("TRIPO_API_KEY nao configurado no .env");
@@ -3330,6 +3423,46 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   };
 }
 
+async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles, tempDir, onProgress }) {
+  const tripoDir = path.join(tempDir, "text_model");
+  fs.mkdirSync(tripoDir, { recursive: true });
+
+  const payload = {
+    type: "text_to_model",
+    prompt,
+    model_version: "P1-20260311",
+    texture: texture !== "none",
+    pbr: texture !== "none",
+  };
+
+  if (texture === "hd") payload.texture_quality = "detailed";
+  if (triangles) payload.face_limit = triangles;
+
+  fs.writeFileSync(path.join(tripoDir, "model_payload.json"), JSON.stringify(payload, null, 2));
+
+  const taskId = await createTripoTask(payload);
+  fs.writeFileSync(path.join(tripoDir, "model_task_id.txt"), taskId);
+
+  const task = await pollTripoTask(taskId, onProgress);
+  fs.writeFileSync(path.join(tripoDir, "model_result.json"), JSON.stringify(task, null, 2));
+
+  const modelUrl = selectBestTripoModelUrl(task.output);
+  if (!modelUrl) {
+    throw new Error("The generation finished without a model file.");
+  }
+
+  const modelBuffer = await downloadPublicUrl(modelUrl);
+  const modelPath = path.join(tripoDir, "velvet_model.glb");
+  fs.writeFileSync(modelPath, modelBuffer);
+
+  return {
+    taskId,
+    consumedCredit: task.consumed_credit,
+    outputDir: tripoDir,
+    modelPath,
+  };
+}
+
 async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhancement = "none") {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   const enhancedDir = path.join(tempDir, "nano_banana_pro");
@@ -3521,6 +3654,14 @@ function attachmentsFromPaths(paths) {
     .filter(Boolean)
     .filter(file => fs.existsSync(file))
     .map(file => new AttachmentBuilder(file));
+}
+
+function publicModelAttachment(file, name = "velvet_model.glb") {
+  return new AttachmentBuilder(file, { name });
+}
+
+function publicImageAttachment(file, name = "velvet_image.jpg") {
+  return new AttachmentBuilder(file, { name });
 }
 
 function multiviewReviewAttachments(viewPaths) {
@@ -3844,6 +3985,8 @@ client.on("interactionCreate", async interaction => {
     "bulk_remake",
     "remake",
     "price",
+    "generate_image",
+    "prompt_model",
     "multiview",
     "refazer",
     "refazer_mock",
@@ -4736,6 +4879,135 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (interaction.commandName === "generate_image") {
+      await interaction.deferReply();
+
+      const prompt = interaction.options.getString("prompt").trim();
+      const quality = interaction.options.getString("quality") || "standard";
+      const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
+      const price = IMAGE_GENERATION_PRICE + brlToWalletTokens(enhancementConfig.priceExtra || 0);
+
+      if (!GEMINI_API_KEY || !enhancementConfig.model) {
+        await interaction.editReply("## Image generation unavailable\nThis service is not configured yet.");
+        return;
+      }
+
+      const balanceBefore = walletBalance(interaction.user.id);
+      if (balanceBefore < price) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Reference image generation",
+          price,
+          balance: balanceBefore,
+        }));
+        return;
+      }
+
+      const tempDir = path.join(__dirname, "temp", "refazer", `image-${interaction.id}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      const imagePath = path.join(tempDir, "velvet_image.jpg");
+
+      try {
+        await interaction.editReply("## Generating Reference Image\nYour image is being prepared...");
+        await generateImageWithGemini({ prompt, outputPath: imagePath, model: enhancementConfig.model });
+
+        const debit = removeWalletBalance({
+          userId: interaction.user.id,
+          amount: price,
+          actorId: client.user.id,
+          reason: "Reference image generated",
+          meta: { command: "generate_image", quality },
+        });
+
+        await interaction.editReply({
+          content:
+            "## Reference Image Ready\n" +
+            `**Quality:** ${enhancementConfig.label}\n` +
+            `**Price:** ${formatTokenAmount(price)}\n` +
+            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+            "You can use this image with `/remake` as inspiration, or with `/multiview` if you generate the needed views.",
+          files: [publicImageAttachment(imagePath)],
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply("## Image generation failed\nNo charge was deducted because no image was delivered.");
+      }
+      return;
+    }
+
+    if (interaction.commandName === "prompt_model") {
+      await interaction.deferReply();
+
+      const prompt = interaction.options.getString("prompt").trim();
+      const texture = interaction.options.getString("texture") || "standard";
+      const triangles = interaction.options.getInteger("triangles");
+      const price = PROMPT_MODEL_PRICE +
+        (texture === "hd" ? brlToWalletTokens(PRICE_CONFIG.hdTextureExtra) : 0) +
+        (triangles ? brlToWalletTokens(PRICE_CONFIG.lowPolyExtra) : 0);
+
+      if (!TRIPO_API_KEY) {
+        await interaction.editReply("## Model generation unavailable\nThis service is not configured yet.");
+        return;
+      }
+
+      const balanceBefore = walletBalance(interaction.user.id);
+      if (balanceBefore < price) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Prompt model generation",
+          price,
+          balance: balanceBefore,
+        }));
+        return;
+      }
+
+      const tempDir = path.join(__dirname, "temp", "refazer", `prompt-model-${interaction.id}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+
+      try {
+        await interaction.editReply("## Generating Model\nYour prompt is being converted into a 3D model...");
+
+        const model = await generatePromptModelWithOfficialTripo({
+          prompt,
+          texture,
+          triangles,
+          tempDir,
+          onProgress: async ({ status, progress }) => {
+            await interaction.followUp(`Generation: ${status || "processing"} ${progress || 0}%`).catch(() => {});
+          },
+        });
+
+        const debit = removeWalletBalance({
+          userId: interaction.user.id,
+          amount: price,
+          actorId: client.user.id,
+          reason: "Prompt model generated",
+          meta: { command: "prompt_model", priceTokens: price },
+        });
+
+        if (debit.ok) {
+          creditAffiliateServiceCommission({
+            buyerId: interaction.user.id,
+            walletAmount: price,
+            priceBrl: price / WALLET_TOKENS_PER_BRL,
+            source: "prompt_model",
+            actorId: client.user.id,
+            meta: { mode: "prompt" },
+          });
+        }
+
+        await interaction.followUp({
+          content:
+            "## Model Ready\n" +
+            `**Price:** ${formatTokenAmount(price)}\n` +
+            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+          files: [publicModelAttachment(model.modelPath)],
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply("## Model generation failed\nNo charge was deducted because no final model was delivered.");
+      }
+      return;
+    }
+
     if (interaction.commandName === "refazer_multiview" || interaction.commandName === "multiview") {
       await interaction.deferReply();
 
@@ -4864,7 +5136,7 @@ client.on("interactionCreate", async interaction => {
           `## ✅ Modelo Final Gerado\n` +
           `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
           `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-        files: attachmentsFromPaths([model.modelPath]).slice(0, 1),
+        files: [publicModelAttachment(model.modelPath)],
       });
       return;
     }
@@ -4882,8 +5154,8 @@ client.on("interactionCreate", async interaction => {
     }
 
     await interaction.editReply({
-      content: `Ultimo modelo finalizado:\n${path.basename(latest.modelPath)}`,
-      files: [new AttachmentBuilder(latest.modelPath)],
+      content: "Ultimo modelo finalizado:",
+      files: [publicModelAttachment(latest.modelPath)],
     });
     return;
   }
@@ -5087,7 +5359,7 @@ client.on("interactionCreate", async interaction => {
           `**Imagem usada:** ${tripo.sourceImage || "não informado"}\n` +
           `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
           `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-        files: attachmentsFromPaths([tripo.modelPath]).slice(0, 1),
+        files: [publicModelAttachment(tripo.modelPath)],
       });
     } else {
       await interaction.followUp({
