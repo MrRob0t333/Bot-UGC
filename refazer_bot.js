@@ -36,6 +36,8 @@ const BLENDER_PATH =
 
 const NANO_BANANA_PRO_ENDPOINT = process.env.NANO_BANANA_PRO_ENDPOINT;
 const NANO_BANANA_PRO_API_KEY = process.env.NANO_BANANA_PRO_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_BASE = process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com/v1beta";
 const TRIPO_AI_ENDPOINT = process.env.TRIPO_AI_ENDPOINT;
 const TRIPO_AI_API_KEY = process.env.TRIPO_AI_API_KEY;
 const TRIPO_API_KEY = process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY;
@@ -2463,7 +2465,7 @@ function officialMessagesFor(kind, language) {
 
 function imageEnhancementIsReady(enhancement) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
-  return enhancementConfig.model === null || Boolean(NANO_BANANA_PRO_ENDPOINT);
+  return enhancementConfig.model === null || Boolean(GEMINI_API_KEY || NANO_BANANA_PRO_ENDPOINT);
 }
 
 function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
@@ -2852,6 +2854,79 @@ function getImageContentType(imagePath) {
   return "image/png";
 }
 
+function extractGeminiOutputImage(json) {
+  const direct =
+    json?.output_image ||
+    json?.outputImage ||
+    json?.output?.image ||
+    json?.response?.output_image;
+
+  if (direct?.data) return direct;
+
+  const candidates = [
+    ...(Array.isArray(json?.steps) ? json.steps : []),
+    ...(Array.isArray(json?.output) ? json.output : []),
+    ...(Array.isArray(json?.outputs) ? json.outputs : []),
+  ];
+
+  for (const item of candidates) {
+    const image = item?.output_image || item?.outputImage || item?.image || item;
+    if (image?.data) return image;
+  }
+
+  return null;
+}
+
+async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY nao configurado.");
+
+  const imageBuffer = fs.readFileSync(imagePath);
+  const res = await fetch(`${GEMINI_API_BASE}/interactions`, {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": GEMINI_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        { type: "text", text: prompt },
+        {
+          type: "image",
+          mime_type: getImageContentType(imagePath),
+          data: imageBuffer.toString("base64"),
+        },
+      ],
+      response_format: {
+        type: "image",
+        mime_type: "image/png",
+      },
+    }),
+  });
+
+  const text = await res.text();
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Gemini image enhancement failed (${res.status}): ${text || res.statusText}`);
+  }
+
+  const outputImage = extractGeminiOutputImage(json);
+  if (!outputImage?.data) {
+    fs.writeFileSync(outputPath.replace(/\.png$/i, ".json"), JSON.stringify(json, null, 2));
+    throw new Error("Gemini nao retornou imagem melhorada.");
+  }
+
+  fs.writeFileSync(outputPath, Buffer.from(outputImage.data, "base64"));
+  return outputPath;
+}
+
 async function tripoRequest(endpoint, options = {}) {
   if (!TRIPO_API_KEY) {
     throw new Error("TRIPO_API_KEY nao configurado no .env");
@@ -3121,10 +3196,10 @@ async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhanc
     };
   }
 
-  if (!NANO_BANANA_PRO_ENDPOINT) {
+  if (!GEMINI_API_KEY && !NANO_BANANA_PRO_ENDPOINT) {
     return {
       skipped: true,
-      reason: "NANO_BANANA_PRO_ENDPOINT nao configurado",
+      reason: "GEMINI_API_KEY ou NANO_BANANA_PRO_ENDPOINT nao configurado",
       imagePaths: inputPaths,
       outputDir: enhancedDir,
     };
@@ -3133,9 +3208,23 @@ async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhanc
   const imagePaths = [];
 
   for (const inputPath of inputPaths) {
+    const outputPath = path.join(enhancedDir, path.basename(inputPath));
+    const jsonPath = path.join(enhancedDir, `${path.parse(inputPath).name}.json`);
+
+    if (GEMINI_API_KEY) {
+      const savedPath = await enhanceImageWithGemini({
+        imagePath: inputPath,
+        outputPath,
+        prompt: variationPrompt(difference),
+        model: enhancementConfig.model,
+      });
+      imagePaths.push(savedPath);
+      continue;
+    }
+
     const form = new FormData();
     const imageBuffer = fs.readFileSync(inputPath);
-    const imageBlob = new Blob([imageBuffer], { type: "image/png" });
+    const imageBlob = new Blob([imageBuffer], { type: getImageContentType(inputPath) });
 
     form.append("image", imageBlob, path.basename(inputPath));
     form.append("difference", String(difference));
@@ -3155,8 +3244,6 @@ async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhanc
       throw new Error(`Nano Banana Pro falhou em ${path.basename(inputPath)}. Codigo: ${res.status}`);
     }
 
-    const outputPath = path.join(enhancedDir, path.basename(inputPath));
-    const jsonPath = path.join(enhancedDir, `${path.parse(inputPath).name}.json`);
     const savedPath = await writeResponseAsset(res, outputPath, jsonPath);
 
     if (savedPath) imagePaths.push(savedPath);
