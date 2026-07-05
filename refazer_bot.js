@@ -4647,6 +4647,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     const id = interaction.options.getString("id").trim();
+  await interaction.deferReply();
   const difference = interaction.options.getInteger("diferenca") || interaction.options.getInteger("difference");
   const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
   const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
@@ -4661,6 +4662,25 @@ client.on("interactionCreate", async interaction => {
   const mockIa = interaction.commandName === "refazer_mock"
     ? true
     : interaction.options.getBoolean("mock_ia") ?? interaction.options.getBoolean("mock_ai") ?? REFAZER_MOCK_IA;
+
+  if (!mockIa && !imageEnhancementIsReady(enhancement)) {
+    await interaction.editReply("## ⚠️ Enhancement unavailable\nThis option is not configured yet. Use **No enhancement** or contact the team.");
+    return;
+  }
+
+  if (!mockIa && TRIPO_API_KEY) {
+    const balanceBefore = walletBalance(interaction.user.id);
+    if (balanceBefore < quote.walletAmount) {
+      await interaction.editReply(
+        formatInsufficientBalanceMessage({
+          service: "AI remake",
+          price: quote.walletAmount,
+          balance: balanceBefore,
+        })
+      );
+      return;
+    }
+  }
 
   if (!mockIa && !imageEnhancementIsReady(enhancement)) {
     await interaction.reply({
@@ -4685,7 +4705,7 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
-  await interaction.reply(
+  await interaction.editReply(
     `## 🎨 Refazer UGC\n` +
     `**UGC:** \`${id}\`\n` +
     `**Diferença:** ${difference}/10\n` +
