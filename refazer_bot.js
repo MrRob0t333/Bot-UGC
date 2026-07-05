@@ -58,6 +58,9 @@ const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
 const RAW_TRIPO_API_BASE = cleanEnv(process.env.TRIPO_API_BASE, "https://api.tripo3d.ai/v2/openapi");
 const TRIPO_API_BASE = normalizeTripoApiBase(RAW_TRIPO_API_BASE);
 const TRIPO_MODEL_VERSION = cleanEnv(process.env.TRIPO_MODEL_VERSION, "P1-20260311");
+const TRIPO_GEOMETRY_QUALITY = cleanEnv(process.env.TRIPO_GEOMETRY_QUALITY, "detailed");
+const TRIPO_SMART_LOW_POLY = cleanEnv(process.env.TRIPO_SMART_LOW_POLY, "false") === "true";
+const TRIPO_QUAD = cleanEnv(process.env.TRIPO_QUAD, "false") === "true";
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -3324,6 +3327,28 @@ function selectBestTripoModelUrl(output) {
   return output?.model || output?.pbr_model || output?.base_model;
 }
 
+function tripoModelSupportsSmartOptions() {
+  return !/^P1(?:-|$)/i.test(TRIPO_MODEL_VERSION);
+}
+
+function applyTripoGenerationOptions(payload) {
+  if (!tripoModelSupportsSmartOptions()) return payload;
+
+  if (TRIPO_GEOMETRY_QUALITY) {
+    payload.geometry_quality = TRIPO_GEOMETRY_QUALITY;
+  }
+
+  if (TRIPO_SMART_LOW_POLY) {
+    payload.smart_low_poly = true;
+  }
+
+  if (TRIPO_QUAD) {
+    payload.quad = true;
+  }
+
+  return payload;
+}
+
 function selectImageForTripo(imagePaths, preferredView) {
   if (preferredView) {
     const preferred = imagePaths.find(file =>
@@ -3360,6 +3385,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
 
   if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
+  applyTripoGenerationOptions(payload);
 
   fs.writeFileSync(path.join(tripoDir, "tripo_payload.json"), JSON.stringify({
     ...payload,
@@ -3418,6 +3444,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
 
   if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
+  applyTripoGenerationOptions(payload);
 
   fs.writeFileSync(path.join(tripoDir, "tripo_payload.json"), JSON.stringify({
     ...payload,
@@ -3463,6 +3490,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
 
   if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
+  applyTripoGenerationOptions(payload);
 
   fs.writeFileSync(path.join(tripoDir, "model_payload.json"), JSON.stringify(payload, null, 2));
 
