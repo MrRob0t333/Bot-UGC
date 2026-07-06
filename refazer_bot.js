@@ -91,10 +91,15 @@ const PRICE_CONFIG = {
   copyFreeOverLimit: 2,
   copyBasicOverLimit: 1,
   multiviewExtra: 7,
+  premiumMultiviewExtra: 5,
   eliteMultiviewExtra: 0,
   hdTextureExtra: 8,
+  premiumHdTextureExtra: 6,
+  eliteHdTextureExtra: 5,
   noTextureDiscount: 2,
   lowPolyExtra: 3,
+  premiumLowPolyExtra: 2,
+  eliteLowPolyExtra: 0,
   maxTriangles: 3950,
 };
 
@@ -1280,6 +1285,50 @@ function remakePlanLabel(plan) {
   return "No subscription";
 }
 
+function planForInteraction(interaction) {
+  return userRemakePlan(interaction);
+}
+
+function multiviewExtraForPlan(plan) {
+  if (plan === "elite") return PRICE_CONFIG.eliteMultiviewExtra;
+  if (plan === "premium") return PRICE_CONFIG.premiumMultiviewExtra;
+  return PRICE_CONFIG.multiviewExtra;
+}
+
+function hdTextureExtraForPlan(plan) {
+  if (plan === "elite") return PRICE_CONFIG.eliteHdTextureExtra;
+  if (plan === "premium") return PRICE_CONFIG.premiumHdTextureExtra;
+  return PRICE_CONFIG.hdTextureExtra;
+}
+
+function lowPolyExtraForPlan(plan) {
+  if (plan === "elite") return PRICE_CONFIG.eliteLowPolyExtra;
+  if (plan === "premium") return PRICE_CONFIG.premiumLowPolyExtra;
+  return PRICE_CONFIG.lowPolyExtra;
+}
+
+function enhancementExtraForPlan(plan, enhancementConfig) {
+  const base = enhancementConfig.priceExtra || 0;
+  if (!base) return 0;
+  if (plan === "elite") return Math.ceil(base * 0.5);
+  if (plan === "premium") return Math.ceil(base * 0.8);
+  return base;
+}
+
+function imageGenerationDiscountForPlan(plan) {
+  if (plan === "elite") return 0.65;
+  if (plan === "premium") return 0.8;
+  if (plan === "basic") return 0.9;
+  return 1;
+}
+
+function promptModelBaseBrlForPlan(plan) {
+  if (plan === "elite") return 20;
+  if (plan === "premium") return 25;
+  if (plan === "basic") return 28;
+  return PROMPT_MODEL_PRICE / WALLET_TOKENS_PER_BRL;
+}
+
 function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   let cost = API_COST_ESTIMATE_BRL.modelStandard;
@@ -1300,14 +1349,15 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
   const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(price)}`];
 
   if (mode === "multiview") {
-    const multiviewExtra = plan === "elite" ? PRICE_CONFIG.eliteMultiviewExtra : PRICE_CONFIG.multiviewExtra;
+    const multiviewExtra = multiviewExtraForPlan(plan);
     price += multiviewExtra;
     lines.push(`Multiview: +${formatWalletAmount(multiviewExtra)}`);
   }
 
   if (texture === "hd") {
-    price += PRICE_CONFIG.hdTextureExtra;
-    lines.push(`HD texture: +${formatWalletAmount(PRICE_CONFIG.hdTextureExtra)}`);
+    const hdTextureExtra = hdTextureExtraForPlan(plan);
+    price += hdTextureExtra;
+    lines.push(`HD texture: +${formatWalletAmount(hdTextureExtra)}`);
   } else if (texture === "none") {
     price -= PRICE_CONFIG.noTextureDiscount;
     lines.push(`No texture: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
@@ -1316,13 +1366,15 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
   const lowPoly = Boolean(triangles);
 
   if (lowPoly) {
-    price += PRICE_CONFIG.lowPolyExtra;
-    lines.push(`Triangle limit (${triangles}): +${formatWalletAmount(PRICE_CONFIG.lowPolyExtra)}`);
+    const lowPolyExtra = lowPolyExtraForPlan(plan);
+    price += lowPolyExtra;
+    lines.push(`Triangle limit (${triangles}): +${formatWalletAmount(lowPolyExtra)}`);
   }
 
-  if (enhancementConfig.priceExtra > 0) {
-    price += enhancementConfig.priceExtra;
-    lines.push(`${enhancementConfig.label}: +${formatWalletAmount(enhancementConfig.priceExtra)}`);
+  const enhancementExtra = enhancementExtraForPlan(plan, enhancementConfig);
+  if (enhancementExtra > 0) {
+    price += enhancementExtra;
+    lines.push(`${enhancementConfig.label}: +${formatWalletAmount(enhancementExtra)}`);
   }
 
   const estimatedCost = estimatedApiCostBrl({ mode, texture, lowPoly, enhancement });
@@ -1344,6 +1396,67 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     apiCredits: apiCreditsFor({ mode, texture, lowPoly }),
     estimatedApiCostBrl: estimatedCost,
     estimatedProfitBrl: price - estimatedCost,
+  };
+}
+
+function calculateImageGenerationPrice(interaction, { quality, resolution }) {
+  const plan = planForInteraction(interaction);
+  const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
+  const resolutionConfig = IMAGE_RESOLUTIONS[resolution] || IMAGE_RESOLUTIONS["1K"];
+  const rawPrice = IMAGE_GENERATION_PRICE +
+    brlToWalletTokens(enhancementConfig.priceExtra || 0) +
+    brlToWalletTokens(resolutionConfig.priceExtra || 0);
+  const price = Math.ceil(rawPrice * imageGenerationDiscountForPlan(plan));
+
+  return {
+    plan,
+    planLabel: remakePlanLabel(plan),
+    price,
+    rawPrice,
+    discountTokens: Math.max(0, rawPrice - price),
+    enhancementConfig,
+    resolutionConfig,
+  };
+}
+
+function calculatePromptModelPrice(interaction, { texture, triangles }) {
+  const plan = planForInteraction(interaction);
+  const lowPoly = Boolean(triangles);
+  let priceBrl = promptModelBaseBrlForPlan(plan);
+  const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(priceBrl)}`];
+
+  if (texture === "hd") {
+    const hdTextureExtra = hdTextureExtraForPlan(plan);
+    priceBrl += hdTextureExtra;
+    lines.push(`HD texture: +${formatWalletAmount(hdTextureExtra)}`);
+  } else if (texture === "none") {
+    priceBrl -= PRICE_CONFIG.noTextureDiscount;
+    lines.push(`No texture: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
+  }
+
+  if (lowPoly) {
+    const lowPolyExtra = lowPolyExtraForPlan(plan);
+    priceBrl += lowPolyExtra;
+    lines.push(`Triangle limit (${triangles}): +${formatWalletAmount(lowPolyExtra)}`);
+  }
+
+  const estimatedCost = estimatedApiCostBrl({ mode: "single", texture, lowPoly, enhancement: "none" });
+  const minimumSafePrice = Math.ceil(estimatedCost + API_COST_ESTIMATE_BRL.minProfit);
+
+  if (priceBrl < minimumSafePrice) {
+    const safetyExtra = minimumSafePrice - priceBrl;
+    priceBrl = minimumSafePrice;
+    lines.push(`Protected minimum margin: +${formatWalletAmount(safetyExtra)}`);
+  }
+
+  return {
+    plan,
+    planLabel: remakePlanLabel(plan),
+    priceBrl,
+    walletAmount: brlToWalletTokens(priceBrl),
+    lines,
+    estimatedApiCostBrl: estimatedCost,
+    estimatedProfitBrl: priceBrl - estimatedCost,
   };
 }
 
@@ -5109,11 +5222,8 @@ client.on("interactionCreate", async interaction => {
       const quality = interaction.options.getString("quality") || "standard";
       const resolution = interaction.options.getString("resolution") || "1K";
       const aspectRatio = interaction.options.getString("aspect_ratio") || "1:1";
-      const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
-      const resolutionConfig = IMAGE_RESOLUTIONS[resolution] || IMAGE_RESOLUTIONS["1K"];
-      const price = IMAGE_GENERATION_PRICE +
-        brlToWalletTokens(enhancementConfig.priceExtra || 0) +
-        brlToWalletTokens(resolutionConfig.priceExtra || 0);
+      const quote = calculateImageGenerationPrice(interaction, { quality, resolution });
+      const { enhancementConfig, resolutionConfig, price } = quote;
 
       if (!GEMINI_API_KEY || !enhancementConfig.model) {
         await interaction.editReply("## Image generation unavailable\nThis service is not configured yet.");
@@ -5168,9 +5278,11 @@ client.on("interactionCreate", async interaction => {
         await interaction.editReply({
           content:
             "## Reference Image Ready\n" +
+            `**Plan:** ${quote.planLabel}\n` +
             `**Quality:** ${enhancementConfig.label}\n` +
             `**Resolution:** ${resolutionConfig.label}\n` +
             `**Aspect ratio:** ${aspectRatio}\n` +
+            (quote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(quote.discountTokens)}\n` : "") +
             `**Price:** ${formatTokenAmount(price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
             "You can use this image with `/remake` as inspiration, or with `/multiview` if you generate the needed views.",
@@ -5189,9 +5301,8 @@ client.on("interactionCreate", async interaction => {
       const prompt = interaction.options.getString("prompt").trim();
       const texture = interaction.options.getString("texture") || "standard";
       const triangles = interaction.options.getInteger("triangles");
-      const price = PROMPT_MODEL_PRICE +
-        (texture === "hd" ? brlToWalletTokens(PRICE_CONFIG.hdTextureExtra) : 0) +
-        (triangles ? brlToWalletTokens(PRICE_CONFIG.lowPolyExtra) : 0);
+      const quote = calculatePromptModelPrice(interaction, { texture, triangles });
+      const price = quote.walletAmount;
 
       if (!TRIPO_API_KEY) {
         await interaction.editReply("## Model generation unavailable\nThis service is not configured yet.");
@@ -5246,6 +5357,8 @@ client.on("interactionCreate", async interaction => {
         await interaction.followUp({
           content:
             "## Model Ready\n" +
+            `**Plan:** ${quote.planLabel}\n` +
+            `${quote.lines.map(line => `**${line}**`).join("\n")}\n` +
             `**Price:** ${formatTokenAmount(price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
           files: [publicModelAttachment(model.modelPath)],
