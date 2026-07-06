@@ -1451,8 +1451,8 @@ function calculateImageEnhancementPrice(interaction, { quality, count }) {
   const plan = planForInteraction(interaction);
   const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
   const baseTokensPerImage = brlToWalletTokens(enhancementConfig.priceExtra || 0);
-  const rawPrice = Math.max(1, count) * baseTokensPerImage;
-  const price = Math.max(1, Math.ceil(rawPrice * imageGenerationDiscountForPlan(plan)));
+  const rawPrice = Math.max(0, count) * baseTokensPerImage;
+  const price = rawPrice > 0 ? Math.max(1, Math.ceil(rawPrice * imageGenerationDiscountForPlan(plan))) : 0;
 
   return {
     plan,
@@ -3439,6 +3439,40 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
   return finalOutputPath;
 }
 
+async function enhanceImageLocally({ imagePath, outputPath }) {
+  const finalOutputPath = outputPath.replace(/\.[^.]+$/i, ".png");
+  const scriptPath = path.join(path.dirname(finalOutputPath), "local_image_enhance.py");
+  const script = [
+    "import bpy, sys, shutil",
+    "src = sys.argv[-2]",
+    "dst = sys.argv[-1]",
+    "try:",
+    "    img = bpy.data.images.load(src)",
+    "    w, h = img.size",
+    "    target = 2048",
+    "    scale = min(2.0, target / max(w, h)) if max(w, h) else 1.0",
+    "    if scale > 1.0:",
+    "        img.scale(max(1, int(w * scale)), max(1, int(h * scale)))",
+    "    img.save_render(dst)",
+    "except Exception:",
+    "    shutil.copyfile(src, dst)",
+  ].join("\n");
+
+  fs.writeFileSync(scriptPath, script);
+
+  try {
+    await execFileAsync(BLENDER_PATH, ["--background", "--python", scriptPath, "--", imagePath, finalOutputPath], {
+      timeout: 60000,
+      maxBuffer: 1024 * 1024 * 4,
+    });
+  } catch (err) {
+    console.warn(`Local image enhancement fallback copied original: ${err.message}`);
+    fs.copyFileSync(imagePath, finalOutputPath);
+  }
+
+  return finalOutputPath;
+}
+
 async function generateImageWithGemini({ prompt, outputPath, model, imageSize = "1K", aspectRatio = "1:1" }) {
   if (!GEMINI_API_KEY) throw new Error("Image generation is not configured.");
 
@@ -5406,6 +5440,7 @@ client.on("interactionCreate", async interaction => {
         const orderedViews = MULTIVIEW_VIEW_ORDER.filter(view => viewPaths[view]);
         const failedViews = [];
         const enhancedViews = [];
+        const fallbackViews = [];
 
         for (const view of orderedViews) {
           try {
@@ -5421,15 +5456,25 @@ client.on("interactionCreate", async interaction => {
             enhancedViews.push(view);
           } catch (err) {
             console.error(`Enhancement failed for ${view}:`, err);
-            failedViews.push(view);
+            try {
+              const fallbackPath = await enhanceImageLocally({
+                imagePath: viewPaths[view],
+                outputPath: path.join(enhancedDir, `${view}_local.png`),
+              });
+              viewPaths[view] = fallbackPath;
+              fallbackViews.push(view);
+            } catch (fallbackErr) {
+              console.error(`Local enhancement fallback failed for ${view}:`, fallbackErr);
+              failedViews.push(view);
+            }
           }
         }
 
-        if (!enhancedViews.length) {
+        if (!enhancedViews.length && !fallbackViews.length) {
           await interaction.editReply(
             "## Enhancement failed\n" +
-            "The image provider refused or failed to enhance these references. No charge was deducted.\n\n" +
-            "Try Economy quality, a simpler image, or use the original files directly in `/multiview`."
+            "The image provider refused these references and local cleanup also failed. No charge was deducted.\n\n" +
+            "Use the original files directly in `/multiview`."
           );
           return;
         }
@@ -5458,7 +5503,8 @@ client.on("interactionCreate", async interaction => {
             "## Enhanced References Ready\n" +
             `**Plan:** ${finalQuote.planLabel}\n` +
             `**Quality:** ${enhancementConfig.label}\n` +
-            `**Enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
+            `**AI enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
+            (fallbackViews.length ? `**Local cleanup:** ${fallbackViews.join(", ")}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
             `**Price:** ${formatTokenAmount(finalQuote.price)}\n` +
