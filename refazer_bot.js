@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
+const zlib = require("zlib");
 const { execFile, execFileSync } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
@@ -135,6 +136,29 @@ const COPY_PLAN_CONFIG = {
     label: "Elite",
     dailyLimit: null,
     overLimitPrice: 0,
+  },
+};
+
+const CLOTHING_COPY_PLAN_CONFIG = {
+  free: {
+    label: "Free",
+    dailyLimit: 6,
+    overLimitTokens: 10,
+  },
+  basic: {
+    label: "Basic",
+    dailyLimit: 20,
+    overLimitTokens: 5,
+  },
+  premium: {
+    label: "Premium",
+    dailyLimit: null,
+    overLimitTokens: 0,
+  },
+  elite: {
+    label: "Elite",
+    dailyLimit: null,
+    overLimitTokens: 0,
   },
 };
 
@@ -564,6 +588,14 @@ const commands = [
     .setDescription("Copies the original asset files without recreating")
     .addStringOption(o =>
       o.setName("id").setDescription("Original UGC ID").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("steal_clothing")
+    .setDescription("Copies a classic clothing template")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Clothing catalog ID or URL").setRequired(true)
     )
     .toJSON(),
 
@@ -1533,10 +1565,29 @@ function copyUsageFor(user) {
   return user.copyUsage;
 }
 
+function clothingUsageFor(user) {
+  const dayKey = getSaoPauloDayKey();
+  user.clothingUsage ||= { day: dayKey, count: 0 };
+
+  if (user.clothingUsage.day !== dayKey) {
+    user.clothingUsage = { day: dayKey, count: 0 };
+  }
+
+  return user.clothingUsage;
+}
+
 function walletCopyUsage(userId) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
   const usage = copyUsageFor(user);
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function walletClothingUsage(userId) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = clothingUsageFor(user);
   writeWalletDb(db);
   return { day: usage.day, count: usage.count };
 }
@@ -1552,6 +1603,23 @@ function addCopyUsage(userId, count = 1) {
     amount: 0,
     actorId: client.user.id,
     reason: "Daily copy usage",
+    meta: { day: usage.day, count, totalToday: usage.count },
+  });
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function addClothingUsage(userId, count = 1) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = clothingUsageFor(user);
+  usage.count += count;
+  walletTransaction(db, {
+    userId,
+    type: "usage",
+    amount: 0,
+    actorId: client.user.id,
+    reason: "Daily clothing copy usage",
     meta: { day: usage.day, count, totalToday: usage.count },
   });
   writeWalletDb(db);
@@ -1576,6 +1644,23 @@ function calculateCopyPrice(interaction, usedTodayOverride) {
   };
 }
 
+function calculateClothingCopyPrice(interaction, usedTodayOverride) {
+  const planKey = userCopyPlan(interaction);
+  const plan = CLOTHING_COPY_PLAN_CONFIG[planKey];
+  const usedToday = usedTodayOverride ?? walletClothingUsage(interaction.user.id).count;
+  const freeRemaining = plan.dailyLimit === null ? null : Math.max(plan.dailyLimit - usedToday, 0);
+  const walletAmount = plan.dailyLimit === null || freeRemaining > 0 ? 0 : plan.overLimitTokens;
+
+  return {
+    plan: planKey,
+    planLabel: plan.label,
+    dailyLimit: plan.dailyLimit,
+    usedToday,
+    freeRemaining,
+    walletAmount,
+  };
+}
+
 function formatCopyAllowance(quote) {
   if (quote.dailyLimit === null) {
     return [
@@ -1587,6 +1672,21 @@ function formatCopyAllowance(quote) {
   return [
     `**Plan:** ${quote.planLabel}`,
     `**Free copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+    `**Free remaining before this copy:** ${quote.freeRemaining}`,
+  ].join("\n");
+}
+
+function formatClothingAllowance(quote) {
+  if (quote.dailyLimit === null) {
+    return [
+      `**Plan:** ${quote.planLabel}`,
+      "**Daily clothing copies:** unlimited",
+    ].join("\n");
+  }
+
+  return [
+    `**Plan:** ${quote.planLabel}`,
+    `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
     `**Free remaining before this copy:** ${quote.freeRemaining}`,
   ].join("\n");
 }
@@ -1643,6 +1743,7 @@ function walletUser(db, userId) {
   db.users[userId].currency ||= DEFAULT_CURRENCY;
   db.users[userId].affiliateBalance ||= 0;
   copyUsageFor(db.users[userId]);
+  clothingUsageFor(db.users[userId]);
 
   return db.users[userId];
 }
@@ -2821,6 +2922,7 @@ function formatOfficialGuide(language) {
       "",
       "## 3. Copiar um UGC original",
       "Use `/steal id:ID_DO_UGC` para receber os arquivos originais do item.",
+      "Use `/steal_clothing id:ID_OU_LINK` para receber templates de roupas clássicas.",
       "Usuários sem assinatura têm limite grátis diário. Basic tem limite maior. Premium tem cópias ilimitadas com cooldown.",
       "",
       "## 4. Refazer um modelo com IA",
@@ -2861,6 +2963,7 @@ function formatOfficialGuide(language) {
     "",
     "## 3. Copy an original UGC",
     "Use `/steal id:UGC_ID` to receive the original files.",
+    "Use `/steal_clothing id:ID_OR_LINK` to receive classic clothing templates.",
     "Free users have a daily free limit. Basic gets a higher limit. Premium gets unlimited copies with cooldown.",
     "",
     "## 4. Remake a model with AI",
@@ -3114,6 +3217,148 @@ async function downloadBuffer(url) {
 
 async function downloadRobloxAsset(assetId) {
   return downloadBuffer(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`);
+}
+
+function robloxHeaders(extra = {}) {
+  const headers = {
+    "User-Agent": "Mozilla/5.0",
+    ...extra,
+  };
+
+  if (ROBLOSECURITY) {
+    headers.Cookie = `.ROBLOSECURITY=${ROBLOSECURITY}`;
+  }
+
+  return headers;
+}
+
+async function fetchRobloxJson(url) {
+  const res = await fetch(url, { headers: robloxHeaders() });
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`Roblox request failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  return JSON.parse(text);
+}
+
+async function fetchRobloxAssetSource(assetId) {
+  const delivery = await fetchRobloxJson(`https://assetdelivery.roblox.com/v2/asset/?id=${assetId}`);
+  const location = (delivery.locations || []).find(item => item.assetFormat === "source")?.location
+    || delivery.locations?.[0]?.location;
+
+  if (!location) {
+    throw new Error("No downloadable source found for this asset.");
+  }
+
+  const res = await fetch(location, { headers: robloxHeaders() });
+
+  if (!res.ok) {
+    throw new Error(`Roblox source download failed (${res.status}).`);
+  }
+
+  const rawBuffer = Buffer.from(await res.arrayBuffer());
+  let buffer = rawBuffer;
+
+  try {
+    buffer = zlib.gunzipSync(rawBuffer);
+  } catch {
+    buffer = rawBuffer;
+  }
+
+  return {
+    buffer,
+    contentType: res.headers.get("content-type") || "",
+  };
+}
+
+function parseRobloxNumericId(raw) {
+  const text = String(raw || "").trim();
+  const urlMatch = text.match(/(?:catalog|library|asset|bundles)\/(\d+)/i);
+  if (urlMatch) return urlMatch[1];
+  const idMatch = text.match(/\d{3,}/);
+  return idMatch ? idMatch[0] : null;
+}
+
+function clothingTypeLabel(assetTypeId) {
+  if (assetTypeId === 11) return "Shirt";
+  if (assetTypeId === 12) return "Pants";
+  if (assetTypeId === 2) return "T-Shirt";
+  return "Classic clothing";
+}
+
+function isLikelyImageBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+
+  const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  const isWebp = buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP";
+
+  return isPng || isJpeg || isWebp;
+}
+
+function extractTemplateIdFromClothingXml(text) {
+  const patterns = [
+    /asset\/\?id=(\d+)/i,
+    /<url>rbxassetid:\/\/(\d+)<\/url>/i,
+    /rbxassetid:\/\/(\d+)/i,
+    /Graphic[\s\S]{0,300}?id=(\d+)/i,
+    /ShirtTemplate[\s\S]{0,300}?id=(\d+)/i,
+    /PantsTemplate[\s\S]{0,300}?id=(\d+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1];
+  }
+
+  return null;
+}
+
+async function downloadClassicClothingTemplate(rawId) {
+  const catalogId = parseRobloxNumericId(rawId);
+  if (!catalogId) throw new Error("Invalid clothing ID or URL.");
+
+  const tempDir = path.join(__dirname, "temp", "refazer", `clothing-${catalogId}-${Date.now()}`);
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
+  const assetTypeId = Number(details.AssetTypeId || 0);
+  const supportedTypes = new Set([2, 11, 12]);
+
+  if (!supportedTypes.has(assetTypeId)) {
+    throw new Error(`Unsupported clothing type (${assetTypeId}). Only classic shirts, pants and t-shirts are supported.`);
+  }
+
+  const source = await fetchRobloxAssetSource(catalogId);
+  let templateId = catalogId;
+  let templateBuffer = source.buffer;
+
+  if (!source.contentType.includes("image") && !isLikelyImageBuffer(source.buffer)) {
+    const sourceText = source.buffer.toString("utf8");
+    templateId = extractTemplateIdFromClothingXml(sourceText);
+
+    if (!templateId) {
+      throw new Error("Could not find the clothing template image inside this item.");
+    }
+
+    const templateSource = await fetchRobloxAssetSource(templateId);
+    templateBuffer = templateSource.buffer;
+  }
+
+  const filePath = path.join(tempDir, `${catalogId}_template.png`);
+  fs.writeFileSync(filePath, templateBuffer);
+
+  return {
+    catalogId,
+    templateId,
+    name: details.Name || "Classic clothing",
+    creator: details.Creator?.Name || "Unknown",
+    assetTypeId,
+    typeLabel: clothingTypeLabel(assetTypeId),
+    filePath,
+  };
 }
 
 function extractAssetId(text, names) {
@@ -4251,6 +4496,7 @@ function formatCommandsHelp(interaction) {
     "🧾 `/refazer_preco` - calcula o valor do modelo",
     "📎 `/copiar` - envia o modelo original e textura",
     "📎 `/steal` - copies original asset files",
+    "👕 `/steal_clothing` - copies classic clothing templates",
     "📦 `/bulk_steal` - premium copies up to 10 assets",
     "🧾 `/bulk_remake` - premium quote/request for up to 10 remakes",
     "🎨 `/refazer` - refaz um UGC por ID",
@@ -4289,6 +4535,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "",
     "## Services",
     "📎 `/steal` - copy original asset files",
+    "👕 `/steal_clothing` - copy classic clothing templates",
     "🎨 `/remake` - remake a UGC with AI",
     "🖼️ `/multiview` - remake from front/right/back/left images",
     "🧾 `/price` - preview the price before ordering",
@@ -4529,6 +4776,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_terms",
     "copiar",
     "steal",
+    "steal_clothing",
     "bulk_steal",
     "views",
     "bulk_remake",
@@ -5250,6 +5498,85 @@ client.on("interactionCreate", async interaction => {
       await interaction.editReply({
         content: formatPriceQuote({ mode: mode || interaction.options.getString("mode"), texture, triangles, enhancement, quote }),
       });
+      return;
+    }
+
+    if (interaction.commandName === "steal_clothing") {
+      const idInput = interaction.options.getString("id").trim();
+      const quote = calculateClothingCopyPrice(interaction);
+      const allowanceText = formatClothingAllowance(quote);
+      const balanceBefore = walletBalance(interaction.user.id);
+
+      if (balanceBefore < quote.walletAmount) {
+        await interaction.reply({
+          content:
+            `## Insufficient Balance\n` +
+            `**Service:** Copy clothing template\n` +
+            `${allowanceText}\n` +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+            "Use `/buy` to add Velvet Coins.",
+          flags: 64,
+        });
+        return;
+      }
+
+      await interaction.reply(
+        `## Copy Clothing\n` +
+        `**Input:** \`${idInput}\`\n` +
+        `${allowanceText}\n` +
+        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+        "Preparing the original clothing template..."
+      );
+
+      try {
+        const result = await downloadClassicClothingTemplate(idInput);
+        const debit = removeWalletBalance({
+          userId: interaction.user.id,
+          amount: quote.walletAmount,
+          actorId: client.user.id,
+          reason: "Classic clothing template copied",
+          meta: {
+            command: "steal_clothing",
+            catalogId: result.catalogId,
+            templateId: result.templateId,
+            assetTypeId: result.assetTypeId,
+            priceTokens: quote.walletAmount,
+          },
+        });
+        const usage = addClothingUsage(interaction.user.id, 1);
+        const finalQuote = calculateClothingCopyPrice(interaction, usage.count);
+
+        await interaction.editReply({
+          content:
+            `## Clothing Template Copied\n` +
+            `**Item:** ${result.name}\n` +
+            `**Catalog ID:** \`${result.catalogId}\`\n` +
+            `**Template ID:** \`${result.templateId}\`\n` +
+            `**Type:** ${result.typeLabel}\n` +
+            `**Creator:** ${result.creator}\n` +
+            `${formatClothingAllowance(finalQuote)}\n` +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+            "Original template file is attached below.",
+          files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply(
+          "## I could not copy this clothing template\n" +
+          "Only classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
+        );
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+      }
       return;
     }
 
