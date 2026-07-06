@@ -5670,19 +5670,28 @@ client.on("interactionCreate", async interaction => {
           },
         });
 
+        const safeCleanupCount = fallbackViews.length;
+        const processedCount = enhancedViews.length + fallbackViews.length;
+        const modeLabel = qualityUsesAiEnhancement(quality) ? enhancementConfig.label : "Clean Local";
+        const aiStatus = enhancedViews.length
+          ? `${enhancedViews.length}/${selectedEntries.length} enhanced`
+          : qualityUsesAiEnhancement(quality)
+            ? "Unavailable for this image; safe cleanup applied"
+            : "Not used; safe cleanup applied";
+
         await interaction.editReply({
           content:
-            "## Enhanced References Ready\n" +
+            "## Reference Cleanup Ready\n" +
             `**Plan:** ${finalQuote.planLabel}\n` +
-            `**Quality:** ${enhancementConfig.label}\n` +
-            `**AI enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
-            (fallbackViews.length ? `**Local cleanup:** ${fallbackViews.join(", ")}\n` : "") +
+            `**Mode:** ${modeLabel}\n` +
+            `**Processed:** ${processedCount}/${selectedEntries.length}\n` +
+            `**AI enhancement:** ${aiStatus}\n` +
+            (safeCleanupCount ? `**Safe cleanup:** ${safeCleanupCount}/${selectedEntries.length}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
-            (localCleanupPrice > 0 ? `**Local cleanup fee:** ${formatTokenAmount(localCleanupPrice)}\n` : "") +
             `**Price:** ${formatTokenAmount(finalPrice)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-            "Review every side. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
+            "Review every side before using it. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
           files: multiviewReviewAttachments(viewPaths),
         });
 
