@@ -3312,13 +3312,7 @@ function copyFileToDir(filePath, outputDir, prefix = "") {
 
 function variationPrompt(difference) {
   if (difference <= 3) {
-    return [
-      "Perform a conservative product-photo cleanup only.",
-      "Preserve the exact object, outline, camera angle, pose, colors, materials, lighting, shadows, and background.",
-      "Keep every visible part in the same place and at the same size.",
-      "Improve only sharpness, clarity, compression artifacts, and fine texture readability.",
-      "Return the same reference image as a cleaner, higher quality version.",
-    ].join(" ");
+    return "Create a cleaner product reference image from this input. Keep the same accessory, camera angle, silhouette, proportions, colors, materials, lighting, shadows, and background. Improve only clarity, sharpness, compression artifacts, and texture readability. Do not redesign the object.";
   }
 
   if (difference <= 7) {
@@ -3326,6 +3320,22 @@ function variationPrompt(difference) {
   }
 
   return "Create a strongly different Roblox-ready accessory concept inspired by the original only as a loose reference, with a new visual identity and clear modelable details.";
+}
+
+function imageEnhancementPrompts() {
+  return [
+    "Create a cleaner product reference image from this input. Keep the same accessory, camera angle, silhouette, proportions, colors, materials, lighting, shadows, and background. Improve only clarity, sharpness, compression artifacts, and texture readability. Do not redesign the object.",
+    "Retouch this product image for use as a 3D modeling reference. Preserve the object and viewpoint. Make the image clearer and less blurry, with better visible edges and texture details.",
+    "Upscale and clean this product reference image. Keep the same object and composition. Make it easier to see the object details for 3D modeling.",
+  ];
+}
+
+function geminiImageModelFallbacks(preferredModel) {
+  return [
+    preferredModel,
+    "gemini-3.1-flash-image",
+    "gemini-2.5-flash-image",
+  ].filter((model, index, list) => model && list.indexOf(model) === index);
 }
 
 async function writeResponseAsset(res, outputPath, fallbackJsonPath) {
@@ -3443,6 +3453,27 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
 
   fs.writeFileSync(finalOutputPath, Buffer.from(outputImage.data, "base64"));
   return finalOutputPath;
+}
+
+async function enhanceImageWithGeminiFallbacks({ imagePath, outputPath, model }) {
+  const errors = [];
+
+  for (const candidateModel of geminiImageModelFallbacks(model)) {
+    for (const prompt of imageEnhancementPrompts()) {
+      try {
+        return await enhanceImageWithGemini({
+          imagePath,
+          outputPath,
+          prompt,
+          model: candidateModel,
+        });
+      } catch (err) {
+        errors.push(`${candidateModel}: ${String(err.message || err).slice(0, 220)}`);
+      }
+    }
+  }
+
+  throw new Error(`All image enhancement attempts failed. ${errors.join(" | ")}`);
 }
 
 async function enhanceImageLocally({ imagePath, outputPath }) {
@@ -5452,10 +5483,9 @@ client.on("interactionCreate", async interaction => {
           try {
             const inputPath = viewPaths[view];
             const outputPath = path.join(enhancedDir, `${view}.jpg`);
-            const savedPath = await enhanceImageWithGemini({
+            const savedPath = await enhanceImageWithGeminiFallbacks({
               imagePath: inputPath,
               outputPath,
-              prompt: variationPrompt(1),
               model: enhancementConfig.model,
             });
             viewPaths[view] = savedPath;
