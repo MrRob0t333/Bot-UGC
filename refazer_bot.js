@@ -3397,6 +3397,16 @@ function extractGeminiOutputImage(json) {
   ];
 
   for (const item of candidates) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const contentBlock of content) {
+      if ((contentBlock?.type === "image" || contentBlock?.mime_type?.startsWith?.("image/")) && contentBlock?.data) {
+        return contentBlock;
+      }
+
+      const nestedImage = contentBlock?.output_image || contentBlock?.outputImage || contentBlock?.image;
+      if (nestedImage?.data) return nestedImage;
+    }
+
     const image = item?.output_image || item?.outputImage || item?.image || item;
     if (image?.data) return image;
   }
