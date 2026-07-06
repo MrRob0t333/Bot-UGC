@@ -3307,13 +3307,11 @@ function copyFileToDir(filePath, outputDir, prefix = "") {
 function variationPrompt(difference) {
   if (difference <= 3) {
     return [
-      "Enhance image quality only.",
-      "Keep everything exactly the same: same shape, same silhouette, same geometry, same proportions, same pose, same angle, same colors, same materials, same lighting, same shadows, same background.",
-      "Do not add, remove, or change any element.",
-      "Do not reinterpret or restyle the object.",
-      "Only improve sharpness, clarity, resolution, compression artifacts, and texture detail.",
-      "Preserve the image exactly as it is, just higher quality.",
-      "Negative prompt: shape change, silhouette change, geometry change, pose change, angle change, color change, material change, lighting change, added elements, removed elements, new details, reinterpretation, restyling, artistic changes, distortion, warping.",
+      "Perform a conservative product-photo cleanup only.",
+      "Preserve the exact object, outline, camera angle, pose, colors, materials, lighting, shadows, and background.",
+      "Keep every visible part in the same place and at the same size.",
+      "Improve only sharpness, clarity, compression artifacts, and fine texture readability.",
+      "Return the same reference image as a cleaner, higher quality version.",
     ].join(" ");
   }
 
@@ -5403,30 +5401,67 @@ client.on("interactionCreate", async interaction => {
           viewPaths[view] = await downloadAttachmentToFile(attachment, outputPath);
         }
 
+        const enhancedDir = path.join(tempDir, "nano_banana_pro");
+        fs.mkdirSync(enhancedDir, { recursive: true });
         const orderedViews = MULTIVIEW_VIEW_ORDER.filter(view => viewPaths[view]);
-        const orderedPaths = orderedViews.map(view => viewPaths[view]);
-        const enhanced = await enhanceImagePaths(orderedPaths, 1, tempDir, false, quality);
+        const failedViews = [];
+        const enhancedViews = [];
 
-        orderedViews.forEach((view, index) => {
-          if (enhanced.imagePaths[index]) viewPaths[view] = enhanced.imagePaths[index];
+        for (const view of orderedViews) {
+          try {
+            const inputPath = viewPaths[view];
+            const outputPath = path.join(enhancedDir, `${view}.jpg`);
+            const savedPath = await enhanceImageWithGemini({
+              imagePath: inputPath,
+              outputPath,
+              prompt: variationPrompt(1),
+              model: enhancementConfig.model,
+            });
+            viewPaths[view] = savedPath;
+            enhancedViews.push(view);
+          } catch (err) {
+            console.error(`Enhancement failed for ${view}:`, err);
+            failedViews.push(view);
+          }
+        }
+
+        if (!enhancedViews.length) {
+          await interaction.editReply(
+            "## Enhancement failed\n" +
+            "The image provider refused or failed to enhance these references. No charge was deducted.\n\n" +
+            "Try Economy quality, a simpler image, or use the original files directly in `/multiview`."
+          );
+          return;
+        }
+
+        const finalQuote = calculateImageEnhancementPrice(interaction, {
+          quality,
+          count: enhancedViews.length,
         });
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
-          amount: quote.price,
+          amount: finalQuote.price,
           actorId: client.user.id,
           reason: "Reference images enhanced",
-          meta: { command: "enhance_images", quality, imageCount: selectedEntries.length },
+          meta: {
+            command: "enhance_images",
+            quality,
+            imageCount: selectedEntries.length,
+            enhancedCount: enhancedViews.length,
+            failedViews,
+          },
         });
 
         await interaction.editReply({
           content:
             "## Enhanced References Ready\n" +
-            `**Plan:** ${quote.planLabel}\n` +
+            `**Plan:** ${finalQuote.planLabel}\n` +
             `**Quality:** ${enhancementConfig.label}\n` +
-            `**Images:** ${selectedEntries.length}\n` +
-            (quote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(quote.discountTokens)}\n` : "") +
-            `**Price:** ${formatTokenAmount(quote.price)}\n` +
+            `**Enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
+            (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
+            (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
+            `**Price:** ${formatTokenAmount(finalQuote.price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
             "Review every side. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
           files: multiviewReviewAttachments(viewPaths),
