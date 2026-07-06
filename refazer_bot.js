@@ -4224,6 +4224,8 @@ async function createTripoTask(payload) {
 }
 
 async function pollTripoTask(taskId, onProgress) {
+  let lastProgressKey = "";
+
   for (let attempt = 0; attempt < 180; attempt++) {
     const json = await tripoRequest(`/task/${taskId}`, {
       method: "GET",
@@ -4233,8 +4235,10 @@ async function pollTripoTask(taskId, onProgress) {
     const data = json?.data || {};
     const status = data.status;
     const progress = data.progress ?? 0;
+    const progressKey = `${status}:${progress}`;
 
-    if (onProgress && attempt % 5 === 0) {
+    if (onProgress && progressKey !== lastProgressKey && (attempt % 5 === 0 || progress >= 95 || status === "success")) {
+      lastProgressKey = progressKey;
       await onProgress({ status, progress, consumedCredit: data.consumed_credit });
     }
 
@@ -4244,7 +4248,8 @@ async function pollTripoTask(taskId, onProgress) {
       throw new Error(`Task Tripo terminou com status ${status}.`);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const waitMs = progress >= 95 ? 5000 : 2000;
+    await new Promise(resolve => setTimeout(resolve, waitMs));
   }
 
   throw new Error("Tempo limite aguardando task do Tripo.");
@@ -4335,6 +4340,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath);
 
   return {
@@ -4395,6 +4401,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath);
 
   return {
@@ -4437,6 +4444,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "velvet_model.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath);
 
   return {
@@ -4674,6 +4682,14 @@ function publicModelAttachment(file, name = "velvet_model.glb") {
 
 function publicImageAttachment(file, name = "velvet_image.jpg") {
   return new AttachmentBuilder(file, { name });
+}
+
+function formatGenerationProgress({ status, progress }) {
+  if (status === "finalizing") {
+    return "Finalizing Roblox-ready file...";
+  }
+
+  return `Generation: ${status || "processing"} ${progress || 0}%`;
 }
 
 function multiviewReviewAttachments(viewPaths) {
@@ -6464,7 +6480,7 @@ client.on("interactionCreate", async interaction => {
           triangles,
           tempDir,
           onProgress: async ({ status, progress }) => {
-            await interaction.followUp(`Generation: ${status || "processing"} ${progress || 0}%`).catch(() => {});
+            await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
         });
 
@@ -6629,7 +6645,7 @@ client.on("interactionCreate", async interaction => {
           triangles,
           tempDir,
           onProgress: async ({ status, progress }) => {
-            await interaction.followUp(`Generation: ${status || "processing"} ${progress || 0}%`).catch(() => {});
+            await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
         });
       } catch (err) {
@@ -6856,7 +6872,7 @@ client.on("interactionCreate", async interaction => {
         triangles,
         preferredView,
         onProgress: async ({ status, progress }) => {
-          await interaction.followUp(`Geracao: ${status || "processando"} ${progress || 0}%`).catch(() => {});
+          await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
         },
       }
     );
