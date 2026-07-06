@@ -143,7 +143,7 @@ const IMAGE_ENHANCEMENTS = {
     estimatedCostBrl: 0,
   },
   economy: {
-    label: "Economy enhancement",
+    label: "Clean local enhancement",
     model: "gemini-3.1-flash-image",
     priceExtra: 3,
     estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_ECONOMY_BRL || 1),
@@ -596,7 +596,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Economy", value: "economy" },
+          { name: "Clean Local", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -638,7 +638,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Economy", value: "economy" },
+          { name: "Clean Local", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -714,7 +714,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Economy", value: "economy" },
+          { name: "Clean Local", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -784,7 +784,7 @@ const commands = [
         .setDescription("Enhancement quality")
         .setRequired(true)
         .addChoices(
-          { name: "Economy", value: "economy" },
+          { name: "Clean Local", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -1035,7 +1035,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Economy", value: "economy" },
+          { name: "Clean Local", value: "economy" },
           { name: "Standard", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -1071,7 +1071,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Economica", value: "economy" },
+          { name: "Limpeza local", value: "economy" },
           { name: "Padrao", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -1173,7 +1173,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Economica", value: "economy" },
+          { name: "Limpeza local", value: "economy" },
           { name: "Padrao", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -1237,7 +1237,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Economica", value: "economy" },
+          { name: "Limpeza local", value: "economy" },
           { name: "Padrao", value: "standard" },
           { name: "Premium", value: "premium" }
         )
@@ -1349,6 +1349,10 @@ function imageGenerationDiscountForPlan(plan) {
   if (plan === "premium") return 0.8;
   if (plan === "basic") return 0.9;
   return 1;
+}
+
+function qualityUsesAiEnhancement(quality) {
+  return quality !== "economy";
 }
 
 function localCleanupPriceForPlan(plan, count) {
@@ -5553,12 +5557,15 @@ client.on("interactionCreate", async interaction => {
         quality,
         count: selectedEntries.length,
       });
+      const expectedPrice = qualityUsesAiEnhancement(quality)
+        ? quote.price
+        : localCleanupPriceForPlan(quote.plan, selectedEntries.length);
       const balanceBefore = walletBalance(interaction.user.id);
 
-      if (balanceBefore < quote.price) {
+      if (balanceBefore < expectedPrice) {
         await interaction.editReply(formatInsufficientBalanceMessage({
           service: "Reference image enhancement",
-          price: quote.price,
+          price: expectedPrice,
           balance: balanceBefore,
         }));
         return;
@@ -5586,8 +5593,24 @@ client.on("interactionCreate", async interaction => {
         const enhancedViews = [];
         const fallbackViews = [];
         const aiFailureReasons = [];
+        const useAiEnhancement = qualityUsesAiEnhancement(quality);
 
         for (const view of orderedViews) {
+          if (!useAiEnhancement) {
+            try {
+              const fallbackPath = await enhanceImageLocally({
+                imagePath: viewPaths[view],
+                outputPath: path.join(enhancedDir, `${view}_local.png`),
+              });
+              viewPaths[view] = fallbackPath;
+              fallbackViews.push(view);
+            } catch (fallbackErr) {
+              console.error(`Local enhancement failed for ${view}:`, fallbackErr);
+              failedViews.push(view);
+            }
+            continue;
+          }
+
           try {
             const inputPath = viewPaths[view];
             const outputPath = path.join(enhancedDir, `${view}.jpg`);
@@ -5655,9 +5678,6 @@ client.on("interactionCreate", async interaction => {
             `**AI enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
             (fallbackViews.length ? `**Local cleanup:** ${fallbackViews.join(", ")}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
-            (userIsAdmin(interaction) && aiFailureReasons.length
-              ? `**Admin AI error:** \`${aiFailureReasons.join(" | ").slice(0, 900)}\`\n`
-              : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
             (localCleanupPrice > 0 ? `**Local cleanup fee:** ${formatTokenAmount(localCleanupPrice)}\n` : "") +
             `**Price:** ${formatTokenAmount(finalPrice)}\n` +
@@ -5665,6 +5685,15 @@ client.on("interactionCreate", async interaction => {
             "Review every side. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
           files: multiviewReviewAttachments(viewPaths),
         });
+
+        if (userIsAdmin(interaction) && aiFailureReasons.length) {
+          await interaction.followUp({
+            content:
+              "## Admin AI Diagnostic\n" +
+              `\`\`\`\n${aiFailureReasons.join("\n\n").slice(0, 1800)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
       } catch (err) {
         console.error(err);
         await interaction.editReply("## Enhancement failed\nNo charge was deducted because no enhanced images were delivered.");
