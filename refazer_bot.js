@@ -178,6 +178,7 @@ const IMAGE_RESOLUTIONS = {
 };
 
 const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"]);
+const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Velvet Coins";
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
@@ -1348,6 +1349,11 @@ function imageGenerationDiscountForPlan(plan) {
   if (plan === "premium") return 0.8;
   if (plan === "basic") return 0.9;
   return 1;
+}
+
+function localCleanupPriceForPlan(plan, count) {
+  const base = brlToWalletTokens(LOCAL_IMAGE_CLEANUP_PRICE_BRL) * Math.max(0, count);
+  return Math.ceil(base * imageGenerationDiscountForPlan(plan));
 }
 
 function promptModelBaseBrlForPlan(plan) {
@@ -5483,10 +5489,12 @@ client.on("interactionCreate", async interaction => {
           quality,
           count: enhancedViews.length,
         });
+        const localCleanupPrice = localCleanupPriceForPlan(finalQuote.plan, fallbackViews.length);
+        const finalPrice = finalQuote.price + localCleanupPrice;
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
-          amount: finalQuote.price,
+          amount: finalPrice,
           actorId: client.user.id,
           reason: "Reference images enhanced",
           meta: {
@@ -5495,6 +5503,8 @@ client.on("interactionCreate", async interaction => {
             imageCount: selectedEntries.length,
             enhancedCount: enhancedViews.length,
             failedViews,
+            fallbackViews,
+            localCleanupPrice,
           },
         });
 
@@ -5507,7 +5517,8 @@ client.on("interactionCreate", async interaction => {
             (fallbackViews.length ? `**Local cleanup:** ${fallbackViews.join(", ")}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
-            `**Price:** ${formatTokenAmount(finalQuote.price)}\n` +
+            (localCleanupPrice > 0 ? `**Local cleanup fee:** ${formatTokenAmount(localCleanupPrice)}\n` : "") +
+            `**Price:** ${formatTokenAmount(finalPrice)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
             "Review every side. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
           files: multiviewReviewAttachments(viewPaths),
