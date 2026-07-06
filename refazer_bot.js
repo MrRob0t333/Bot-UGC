@@ -2280,6 +2280,25 @@ function findPurchaseRequest(requestId) {
   return db.purchaseRequests.find(item => item.id === requestId) || null;
 }
 
+async function notifyPurchaseApproved(request) {
+  if (!request?.userId) return;
+
+  const balance = walletBalance(request.userId);
+  const message =
+    "## Purchase Approved\n" +
+    `**Order ID:** ${request.id}\n` +
+    `**Amount:** ${formatTokenAmount(request.amount)}\n` +
+    `**Wallet balance:** ${formatTokenAmount(balance)}\n\n` +
+    "Your Velvet Coins are available now.";
+
+  try {
+    const user = await client.users.fetch(request.userId);
+    await user.send(message);
+  } catch (err) {
+    console.warn(`Nao consegui avisar compra aprovada por DM: ${request.id}`, err.message);
+  }
+}
+
 async function syncSubscriptionRole({ userId, roleId, active }) {
   if (!userId || !roleId) return;
 
@@ -2322,6 +2341,7 @@ async function handleMercadoPagoPayment(paymentId) {
 
   if (resolved.ok) {
     console.log(`Compra aprovada automaticamente: ${requestId}`);
+    await notifyPurchaseApproved(resolved.request);
   } else {
     console.log(`Compra nao aprovada automaticamente: ${requestId} - ${resolved.reason}`);
   }
@@ -2363,6 +2383,7 @@ async function handleStripeCheckoutSession(session) {
 
     if (resolved.ok) {
       console.log(`Compra Stripe aprovada automaticamente: ${requestId}`);
+      await notifyPurchaseApproved(resolved.request);
     } else {
       console.log(`Compra Stripe nao aprovada automaticamente: ${requestId} - ${resolved.reason}`);
     }
