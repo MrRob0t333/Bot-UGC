@@ -772,6 +772,34 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("enhance_images")
+    .setDescription("Enhances up to 4 reference images before multiview")
+    .addAttachmentOption(o =>
+      o.setName("front").setDescription("Front image").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("quality")
+        .setDescription("Enhancement quality")
+        .setRequired(true)
+        .addChoices(
+          { name: "Economy", value: "economy" },
+          { name: "Standard", value: "standard" },
+          { name: "Premium", value: "premium" }
+        )
+    )
+    .addAttachmentOption(o =>
+      o.setName("right").setDescription("Right side image").setRequired(false)
+    )
+    .addAttachmentOption(o =>
+      o.setName("back").setDescription("Back image").setRequired(false)
+    )
+    .addAttachmentOption(o =>
+      o.setName("left").setDescription("Left side image").setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("prompt_model")
     .setDescription("Generates a 3D model from a text prompt")
     .addStringOption(o =>
@@ -1416,6 +1444,23 @@ function calculateImageGenerationPrice(interaction, { quality, resolution }) {
     discountTokens: Math.max(0, rawPrice - price),
     enhancementConfig,
     resolutionConfig,
+  };
+}
+
+function calculateImageEnhancementPrice(interaction, { quality, count }) {
+  const plan = planForInteraction(interaction);
+  const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
+  const baseTokensPerImage = brlToWalletTokens(enhancementConfig.priceExtra || 0);
+  const rawPrice = Math.max(1, count) * baseTokensPerImage;
+  const price = Math.max(1, Math.ceil(rawPrice * imageGenerationDiscountForPlan(plan)));
+
+  return {
+    plan,
+    planLabel: remakePlanLabel(plan),
+    price,
+    rawPrice,
+    discountTokens: Math.max(0, rawPrice - price),
+    enhancementConfig,
   };
 }
 
@@ -3261,7 +3306,15 @@ function copyFileToDir(filePath, outputDir, prefix = "") {
 
 function variationPrompt(difference) {
   if (difference <= 3) {
-    return "Improve clarity, texture detail and lighting while keeping the accessory very close to the original Roblox UGC.";
+    return [
+      "Enhance image quality only.",
+      "Keep everything exactly the same: same shape, same silhouette, same geometry, same proportions, same pose, same angle, same colors, same materials, same lighting, same shadows, same background.",
+      "Do not add, remove, or change any element.",
+      "Do not reinterpret or restyle the object.",
+      "Only improve sharpness, clarity, resolution, compression artifacts, and texture detail.",
+      "Preserve the image exactly as it is, just higher quality.",
+      "Negative prompt: shape change, silhouette change, geometry change, pose change, angle change, color change, material change, lighting change, added elements, removed elements, new details, reinterpretation, restyling, artistic changes, distortion, warping.",
+    ].join(" ");
   }
 
   if (difference <= 7) {
@@ -4041,6 +4094,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "🎨 `/remake` - remake a UGC with AI",
     "🖼️ `/multiview` - remake from front/right/back/left images",
     "🧾 `/price` - preview the price before ordering",
+    "✨ `/enhance_images` - clean references before multiview",
     "",
     "## Affiliate",
     "🤝 `/affiliate` - view your affiliate dashboard",
@@ -4283,6 +4337,7 @@ client.on("interactionCreate", async interaction => {
     "remake",
     "price",
     "generate_image",
+    "enhance_images",
     "prompt_model",
     "multiview",
     "refazer",
@@ -5295,6 +5350,94 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (interaction.commandName === "enhance_images") {
+      await interaction.deferReply();
+
+      const quality = interaction.options.getString("quality") || "standard";
+      const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
+      const attachments = {
+        frente: interaction.options.getAttachment("front"),
+        direita: interaction.options.getAttachment("right"),
+        costas: interaction.options.getAttachment("back"),
+        esquerda: interaction.options.getAttachment("left"),
+      };
+      const selectedEntries = Object.entries(attachments).filter(([, attachment]) => Boolean(attachment));
+
+      if (!selectedEntries.length) {
+        await interaction.editReply("## No images found\nAttach at least one reference image.");
+        return;
+      }
+
+      if (!GEMINI_API_KEY || !enhancementConfig.model) {
+        await interaction.editReply("## Enhancement unavailable\nThis service is not configured yet.");
+        return;
+      }
+
+      const quote = calculateImageEnhancementPrice(interaction, {
+        quality,
+        count: selectedEntries.length,
+      });
+      const balanceBefore = walletBalance(interaction.user.id);
+
+      if (balanceBefore < quote.price) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Reference image enhancement",
+          price: quote.price,
+          balance: balanceBefore,
+        }));
+        return;
+      }
+
+      const tempDir = path.join(__dirname, "temp", "refazer", `enhance-images-${interaction.id}`);
+      const inputDir = path.join(tempDir, "enhance_inputs");
+      fs.mkdirSync(inputDir, { recursive: true });
+
+      const viewPaths = {};
+
+      try {
+        await interaction.editReply("## Enhancing References\nPreparing your cleaned reference images...");
+
+        for (const [view, attachment] of selectedEntries) {
+          const ext = path.extname(attachment.name) || ".png";
+          const outputPath = path.join(inputDir, `${view}${ext}`);
+          viewPaths[view] = await downloadAttachmentToFile(attachment, outputPath);
+        }
+
+        const orderedViews = MULTIVIEW_VIEW_ORDER.filter(view => viewPaths[view]);
+        const orderedPaths = orderedViews.map(view => viewPaths[view]);
+        const enhanced = await enhanceImagePaths(orderedPaths, 1, tempDir, false, quality);
+
+        orderedViews.forEach((view, index) => {
+          if (enhanced.imagePaths[index]) viewPaths[view] = enhanced.imagePaths[index];
+        });
+
+        const debit = removeWalletBalance({
+          userId: interaction.user.id,
+          amount: quote.price,
+          actorId: client.user.id,
+          reason: "Reference images enhanced",
+          meta: { command: "enhance_images", quality, imageCount: selectedEntries.length },
+        });
+
+        await interaction.editReply({
+          content:
+            "## Enhanced References Ready\n" +
+            `**Plan:** ${quote.planLabel}\n` +
+            `**Quality:** ${enhancementConfig.label}\n` +
+            `**Images:** ${selectedEntries.length}\n` +
+            (quote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(quote.discountTokens)}\n` : "") +
+            `**Price:** ${formatTokenAmount(quote.price)}\n` +
+            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+            "Review every side. If a side changed shape, use the original side instead. If all sides look correct, use these files in `/multiview` with **No enhancement**.",
+          files: multiviewReviewAttachments(viewPaths),
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply("## Enhancement failed\nNo charge was deducted because no enhanced images were delivered.");
+      }
+      return;
+    }
+
     if (interaction.commandName === "prompt_model") {
       await interaction.deferReply();
 
@@ -5443,6 +5586,18 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
+        await interaction.followUp({
+          content:
+            "## Enhancement review required\n" +
+            "To avoid generating a wrong model, enhance the references first with `/enhance_images`.\n\n" +
+            "Then review the enhanced images and run `/multiview` again with **No enhancement**.\n" +
+            "No model-generation charge was deducted.",
+          flags: 64,
+        });
+        return;
+      }
+
       const balanceBefore = walletBalance(interaction.user.id);
       if (balanceBefore < quote.walletAmount) {
         await interaction.followUp({
@@ -5463,6 +5618,19 @@ client.on("interactionCreate", async interaction => {
         MULTIVIEW_VIEW_ORDER.forEach((view, index) => {
           if (enhanced.imagePaths[index]) viewPaths[view] = enhanced.imagePaths[index];
         });
+      }
+
+      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
+        await interaction.followUp({
+          content:
+            "## Enhanced References Ready\n" +
+            "Review these 4 enhanced views carefully before spending model-generation credits.\n\n" +
+            "If every side is correct, use `/multiview` again with these enhanced images and choose **No enhancement**.\n" +
+            "If one side is wrong, regenerate only that side with `/generate_image` or send the original side again with **No enhancement**.\n\n" +
+            "No model-generation charge was deducted in this preview step.",
+          files: multiviewReviewAttachments(viewPaths),
+        });
+        return;
       }
 
       let model;
