@@ -162,6 +162,8 @@ const CLOTHING_COPY_PLAN_CONFIG = {
   },
 };
 
+const BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_BULK_CLOTHING_LIMIT || 20);
+
 const IMAGE_ENHANCEMENTS = {
   none: {
     label: "No enhancement",
@@ -596,6 +598,14 @@ const commands = [
     .setDescription("Copies a classic clothing template")
     .addStringOption(o =>
       o.setName("id").setDescription("Clothing catalog ID or URL").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("bulk_steal_clothing")
+    .setDescription("Copies up to 20 classic clothing templates")
+    .addStringOption(o =>
+      o.setName("ids").setDescription("Clothing IDs or URLs, separated by space or comma").setRequired(true)
     )
     .toJSON(),
 
@@ -1661,6 +1671,28 @@ function calculateClothingCopyPrice(interaction, usedTodayOverride) {
   };
 }
 
+function calculateBulkClothingCopyPrice(interaction, count, usedTodayOverride) {
+  const planKey = userCopyPlan(interaction);
+  const plan = CLOTHING_COPY_PLAN_CONFIG[planKey];
+  const usedToday = usedTodayOverride ?? walletClothingUsage(interaction.user.id).count;
+  const freeRemaining = plan.dailyLimit === null ? null : Math.max(plan.dailyLimit - usedToday, 0);
+  const paidCount = plan.dailyLimit === null ? 0 : Math.max(count - freeRemaining, 0);
+  const walletAmount = paidCount * plan.overLimitTokens;
+
+  return {
+    plan: planKey,
+    planLabel: plan.label,
+    dailyLimit: plan.dailyLimit,
+    usedToday,
+    freeRemaining,
+    count,
+    paidCount,
+    freeCount: count - paidCount,
+    walletAmount,
+    perPaidItem: plan.overLimitTokens,
+  };
+}
+
 function formatCopyAllowance(quote) {
   if (quote.dailyLimit === null) {
     return [
@@ -1689,6 +1721,26 @@ function formatClothingAllowance(quote) {
     `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
     `**Free remaining before this copy:** ${quote.freeRemaining}`,
   ].join("\n");
+}
+
+function formatBulkClothingAllowance(quote) {
+  const base = quote.dailyLimit === null
+    ? [
+      `**Plan:** ${quote.planLabel}`,
+      "**Daily clothing copies:** unlimited",
+    ]
+    : [
+      `**Plan:** ${quote.planLabel}`,
+      `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+      `**Free remaining before this bulk:** ${quote.freeRemaining}`,
+    ];
+
+  return [
+    ...base,
+    `**Bulk amount:** ${quote.count}`,
+    `**Paid copies:** ${quote.paidCount}`,
+    quote.paidCount ? `**Price per paid copy:** ${formatTokenAmount(quote.perPaidItem)}` : null,
+  ].filter(Boolean).join("\n");
 }
 
 function brlToWalletTokens(value) {
@@ -2923,6 +2975,7 @@ function formatOfficialGuide(language) {
       "## 3. Copiar um UGC original",
       "Use `/steal id:ID_DO_UGC` para receber os arquivos originais do item.",
       "Use `/steal_clothing id:ID_OU_LINK` para receber templates de roupas clássicas.",
+      "Use `/bulk_steal_clothing ids:IDS` para copiar várias roupas clássicas de uma vez.",
       "Usuários sem assinatura têm limite grátis diário. Basic tem limite maior. Premium tem cópias ilimitadas com cooldown.",
       "",
       "## 4. Refazer um modelo com IA",
@@ -2964,6 +3017,7 @@ function formatOfficialGuide(language) {
     "## 3. Copy an original UGC",
     "Use `/steal id:UGC_ID` to receive the original files.",
     "Use `/steal_clothing id:ID_OR_LINK` to receive classic clothing templates.",
+    "Use `/bulk_steal_clothing ids:IDS` to copy several classic clothing templates at once.",
     "Free users have a daily free limit. Basic gets a higher limit. Premium gets unlimited copies with cooldown.",
     "",
     "## 4. Remake a model with AI",
@@ -4543,6 +4597,12 @@ function parseBulkIds(raw) {
     .slice(0, 10);
 }
 
+function parseBulkClothingIds(raw) {
+  return [...new Set(String(raw || "")
+    .match(/\d{3,}/g) || [])]
+    .slice(0, BULK_CLOTHING_LIMIT);
+}
+
 function formatCommandsHelp(interaction) {
   const lines = [
     "## ✨ Velvet UGC",
@@ -4564,6 +4624,7 @@ function formatCommandsHelp(interaction) {
     "📎 `/copiar` - envia o modelo original e textura",
     "📎 `/steal` - copies original asset files",
     "👕 `/steal_clothing` - copies classic clothing templates",
+    "👚 `/bulk_steal_clothing` - copies up to 20 clothing templates",
     "📦 `/bulk_steal` - premium copies up to 10 assets",
     "🧾 `/bulk_remake` - premium quote/request for up to 10 remakes",
     "🎨 `/refazer` - refaz um UGC por ID",
@@ -4603,6 +4664,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "## Services",
     "📎 `/steal` - copy original asset files",
     "👕 `/steal_clothing` - copy classic clothing templates",
+    "👚 `/bulk_steal_clothing` - copy up to 20 clothing templates",
     "🎨 `/remake` - remake a UGC with AI",
     "🖼️ `/multiview` - remake from front/right/back/left images",
     "🧾 `/price` - preview the price before ordering",
@@ -4844,6 +4906,7 @@ client.on("interactionCreate", async interaction => {
     "copiar",
     "steal",
     "steal_clothing",
+    "bulk_steal_clothing",
     "bulk_steal",
     "views",
     "bulk_remake",
@@ -5648,6 +5711,128 @@ client.on("interactionCreate", async interaction => {
           }).catch(() => {});
         }
       }
+      return;
+    }
+
+    if (interaction.commandName === "bulk_steal_clothing") {
+      await interaction.deferReply();
+
+      const ids = parseBulkClothingIds(interaction.options.getString("ids"));
+
+      if (!ids.length) {
+        await interaction.editReply(`## No valid clothing IDs found\nSend up to ${BULK_CLOTHING_LIMIT} IDs or links separated by space or comma.`);
+        return;
+      }
+
+      const usedBefore = walletClothingUsage(interaction.user.id).count;
+      const maxQuote = calculateBulkClothingCopyPrice(interaction, ids.length, usedBefore);
+      const balanceBefore = walletBalance(interaction.user.id);
+
+      if (balanceBefore < maxQuote.walletAmount) {
+        await interaction.editReply(
+          `## Insufficient Balance\n` +
+          `**Service:** Bulk clothing template copy\n` +
+          `${formatBulkClothingAllowance(maxQuote)}\n` +
+          `**Maximum price:** ${formatTokenAmount(maxQuote.walletAmount)}\n` +
+          `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+          "Use `/buy` to add Velvet Coins."
+        );
+        return;
+      }
+
+      await interaction.editReply(
+        `## Bulk Clothing Copy\n` +
+        `${formatBulkClothingAllowance(maxQuote)}\n` +
+        `**Maximum price:** ${formatTokenAmount(maxQuote.walletAmount)}\n\n` +
+        "Preparing templates..."
+      );
+
+      const results = [];
+      const failures = [];
+
+      for (const id of ids) {
+        try {
+          const result = await downloadClassicClothingTemplate(id);
+          results.push(result);
+        } catch (err) {
+          console.error(`Bulk clothing failed for ${id}:`, err);
+          failures.push({ id, error: String(err.message || err).slice(0, 180) });
+        }
+
+        await wait(600);
+      }
+
+      if (!results.length) {
+        await interaction.editReply(
+          "## No clothing templates copied\n" +
+          "No charge was deducted. Check the IDs or wait a few minutes if Roblox is rate-limiting downloads."
+        );
+
+        if (userIsAdmin(interaction) && failures.length) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${failures.map(item => `${item.id}: ${item.error}`).join("\n").slice(0, 1800)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      const finalQuote = calculateBulkClothingCopyPrice(interaction, results.length, usedBefore);
+      const debit = removeWalletBalance({
+        userId: interaction.user.id,
+        amount: finalQuote.walletAmount,
+        actorId: client.user.id,
+        reason: "Bulk classic clothing templates copied",
+        meta: {
+          command: "bulk_steal_clothing",
+          requestedIds: ids,
+          copiedIds: results.map(item => item.catalogId),
+          failedIds: failures.map(item => item.id),
+          priceTokens: finalQuote.walletAmount,
+        },
+      });
+      const usage = addClothingUsage(interaction.user.id, results.length);
+      const displayQuote = {
+        ...finalQuote,
+        usedToday: usage.count,
+        freeRemaining: finalQuote.dailyLimit === null ? null : Math.max(finalQuote.dailyLimit - usage.count, 0),
+      };
+      const files = results.map(item => publicImageAttachment(item.filePath, `${item.catalogId}_template.png`));
+      const summary = results
+        .slice(0, 12)
+        .map(item => `\`${item.catalogId}\` - ${item.typeLabel}`)
+        .join("\n");
+
+      await interaction.editReply({
+        content:
+          `## Bulk Clothing Templates Copied\n` +
+          `**Copied:** ${results.length}/${ids.length}\n` +
+          `**Failed:** ${failures.length}\n` +
+          `${formatBulkClothingAllowance(displayQuote)}\n` +
+          `**Price:** ${formatTokenAmount(finalQuote.walletAmount)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+          `${summary}`,
+        files: files.slice(0, 10),
+      });
+
+      for (let index = 10; index < files.length; index += 10) {
+        await interaction.followUp({
+          content: `More clothing templates (${index + 1}-${Math.min(index + 10, files.length)}):`,
+          files: files.slice(index, index + 10),
+        }).catch(() => {});
+      }
+
+      if (failures.length) {
+        await interaction.followUp({
+          content:
+            "## Some templates were not copied\n" +
+            failures.map(item => `\`${item.id}\` - ${item.error}`).join("\n").slice(0, 1800),
+          flags: userIsAdmin(interaction) ? 64 : undefined,
+        }).catch(() => {});
+      }
+
       return;
     }
 
