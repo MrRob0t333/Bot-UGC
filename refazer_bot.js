@@ -3282,6 +3282,28 @@ async function fetchRobloxJson(url) {
 }
 
 async function fetchRobloxAssetSource(assetId) {
+  const directRes = await fetchRobloxWithRetry(
+    `https://assetdelivery.roblox.com/v1/asset?id=${assetId}`,
+    { headers: robloxHeaders() },
+    2
+  ).catch(() => null);
+
+  if (directRes?.ok) {
+    const rawBuffer = Buffer.from(await directRes.arrayBuffer());
+    let buffer = rawBuffer;
+
+    try {
+      buffer = zlib.gunzipSync(rawBuffer);
+    } catch {
+      buffer = rawBuffer;
+    }
+
+    return {
+      buffer,
+      contentType: directRes.headers.get("content-type") || "",
+    };
+  }
+
   const delivery = await fetchRobloxJson(`https://assetdelivery.roblox.com/v2/asset/?id=${assetId}`);
   const location = (delivery.locations || []).find(item => item.assetFormat === "source")?.location
     || delivery.locations?.[0]?.location;
@@ -3361,21 +3383,15 @@ async function downloadClassicClothingTemplate(rawId) {
   const tempDir = path.join(__dirname, "temp", "refazer", `clothing-${catalogId}-${Date.now()}`);
   fs.mkdirSync(tempDir, { recursive: true });
 
-  const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
-  const assetTypeId = Number(details.AssetTypeId || 0);
-  const supportedTypes = new Set([2, 11, 12]);
-
-  if (!supportedTypes.has(assetTypeId)) {
-    throw new Error(`Unsupported clothing type (${assetTypeId}). Only classic shirts, pants and t-shirts are supported.`);
-  }
-
   const source = await fetchRobloxAssetSource(catalogId);
   let templateId = catalogId;
   let templateBuffer = source.buffer;
+  let assetTypeId = 2;
 
   if (!source.contentType.includes("image") && !isLikelyImageBuffer(source.buffer)) {
     const sourceText = source.buffer.toString("utf8");
     templateId = extractTemplateIdFromClothingXml(sourceText);
+    assetTypeId = /PantsTemplate/i.test(sourceText) ? 12 : /ShirtTemplate/i.test(sourceText) ? 11 : 0;
 
     if (!templateId) {
       throw new Error("Could not find the clothing template image inside this item.");
@@ -3385,13 +3401,26 @@ async function downloadClassicClothingTemplate(rawId) {
     templateBuffer = templateSource.buffer;
   }
 
+  let details = {};
+  try {
+    details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
+    assetTypeId = Number(details.AssetTypeId || assetTypeId || 0);
+  } catch (err) {
+    console.warn(`Could not fetch clothing details for ${catalogId}:`, err.message);
+  }
+
+  const supportedTypes = new Set([0, 2, 11, 12]);
+  if (!supportedTypes.has(assetTypeId)) {
+    throw new Error(`Unsupported clothing type (${assetTypeId}). Only classic shirts, pants and t-shirts are supported.`);
+  }
+
   const filePath = path.join(tempDir, `${catalogId}_template.png`);
   fs.writeFileSync(filePath, templateBuffer);
 
   return {
     catalogId,
     templateId,
-    name: details.Name || "Classic clothing",
+    name: details.Name || `Classic clothing ${catalogId}`,
     creator: details.Creator?.Name || "Unknown",
     assetTypeId,
     typeLabel: clothingTypeLabel(assetTypeId),
