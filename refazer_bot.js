@@ -686,6 +686,71 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("views_custom")
+    .setDescription("Renders UGC views with full lighting and material controls")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Original UGC ID").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("lighting")
+        .setDescription("Lighting preset")
+        .setRequired(true)
+        .addChoices(
+          { name: "Studio balanced", value: "studio" },
+          { name: "Soft bright", value: "soft" },
+          { name: "Dramatic", value: "dramatic" },
+          { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("ior").setDescription("Material IOR. 1.00 normal, up to 2.50 glassy").setRequired(true).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("roughness").setDescription("0.00 shiny, 1.00 matte").setRequired(true).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("exposure").setDescription("Render exposure. -1.00 dark to 1.00 bright").setRequired(true).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(true).setMinValue(0.2).setMaxValue(3)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_bulk_views")
+    .setDescription("Admin: renders reference views for up to 10 UGC IDs")
+    .addStringOption(o =>
+      o.setName("ids").setDescription("Up to 10 UGC IDs, separated by space or comma").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("lighting")
+        .setDescription("Lighting preset for this render batch")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Studio balanced", value: "studio" },
+          { name: "Soft bright", value: "soft" },
+          { name: "Dramatic", value: "dramatic" },
+          { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("roughness").setDescription("Material roughness. 0.00 shiny, 1.00 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("bulk_remake")
     .setDescription("Premium: creates a quote/request for up to 10 remakes")
     .addStringOption(o =>
@@ -5169,12 +5234,14 @@ client.on("interactionCreate", async interaction => {
     "admin_withdrawal",
     "admin_post_guide",
     "admin_post_terms",
+    "admin_bulk_views",
     "copiar",
     "steal",
     "steal_clothing",
     "bulk_steal_clothing",
     "bulk_steal",
     "views",
+    "views_custom",
     "bulk_remake",
     "remake",
     "price",
@@ -5265,6 +5332,7 @@ client.on("interactionCreate", async interaction => {
       "admin_withdrawal",
       "admin_post_guide",
       "admin_post_terms",
+      "admin_bulk_views",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Esse comando e reservado para a equipe.",
@@ -6262,7 +6330,63 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (interaction.commandName === "views") {
+    if (interaction.commandName === "admin_bulk_views") {
+      const ids = parseBulkIds(interaction.options.getString("ids"));
+      const renderSettings = renderSettingsForInteraction(interaction);
+
+      if (!ids.length) {
+        await interaction.reply({ content: "## No valid IDs found", flags: 64 });
+        return;
+      }
+
+      await interaction.reply(
+        "## Admin Bulk Views Started\n" +
+        `**UGCs:** ${ids.length}/10\n\n` +
+        `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
+        "I will send each rendered view set as soon as it is ready."
+      );
+
+      const results = [];
+
+      for (const id of ids) {
+        try {
+          await interaction.followUp(`Rendering views for \`${id}\`...`).catch(() => {});
+
+          const result = await processUGC(id, {
+            exportGlb: false,
+            render: true,
+            cacheViews: true,
+            renderSettings,
+          });
+          const files = ugcViewAttachments(result.renderDir);
+
+          await interaction.followUp({
+            content:
+              "## UGC Views Ready\n" +
+              `**UGC:** \`${id}\`\n` +
+              `**MeshId:** \`${result.meshId}\`\n` +
+              `**TextureId:** \`${result.textureId || "not found"}\`\n` +
+              (result.cached ? "\n**Source:** cached render" : ""),
+            files,
+          });
+
+          results.push({ id, ok: true });
+        } catch (err) {
+          console.error(err);
+          await interaction.followUp(`I could not render views for \`${id}\`.`).catch(() => {});
+          results.push({ id, ok: false });
+        }
+      }
+
+      await interaction.followUp(
+        "## Admin Bulk Views Finished\n" +
+        `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+        `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
+      ).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName === "views" || interaction.commandName === "views_custom") {
       const id = interaction.options.getString("id").trim();
       const renderSettings = renderSettingsForInteraction(interaction);
       await interaction.deferReply();
