@@ -5601,6 +5601,7 @@ client.on("interactionCreate", async interaction => {
         const failedViews = [];
         const enhancedViews = [];
         const fallbackViews = [];
+        const aiFailureReasons = [];
 
         for (const view of orderedViews) {
           try {
@@ -5615,6 +5616,7 @@ client.on("interactionCreate", async interaction => {
             enhancedViews.push(view);
           } catch (err) {
             console.error(`Enhancement failed for ${view}:`, err);
+            aiFailureReasons.push(`${view}: ${String(err.message || err).slice(0, 900)}`);
             try {
               const fallbackPath = await enhanceImageLocally({
                 imagePath: viewPaths[view],
@@ -5669,6 +5671,9 @@ client.on("interactionCreate", async interaction => {
             `**AI enhanced:** ${enhancedViews.length}/${selectedEntries.length}\n` +
             (fallbackViews.length ? `**Local cleanup:** ${fallbackViews.join(", ")}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
+            (userIsAdmin(interaction) && aiFailureReasons.length
+              ? `**Admin AI error:** \`${aiFailureReasons.join(" | ").slice(0, 900)}\`\n`
+              : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
             (localCleanupPrice > 0 ? `**Local cleanup fee:** ${formatTokenAmount(localCleanupPrice)}\n` : "") +
             `**Price:** ${formatTokenAmount(finalPrice)}\n` +
