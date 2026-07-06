@@ -3333,7 +3333,10 @@ function imageEnhancementPrompts() {
 function geminiImageModelFallbacks(preferredModel) {
   return [
     preferredModel,
+    normalizeGeminiModelForGenerateContent(preferredModel),
     "gemini-3.1-flash-image",
+    "gemini-3-pro-image-preview",
+    "gemini-2.5-flash-image-preview",
     "gemini-2.5-flash-image",
   ].filter((model, index, list) => model && list.indexOf(model) === index);
 }
@@ -3386,7 +3389,9 @@ function extractGeminiOutputImage(json) {
     json?.output_image ||
     json?.outputImage ||
     json?.output?.image ||
-    json?.response?.output_image;
+    json?.response?.output_image ||
+    json?.candidates?.[0]?.content?.parts?.find?.(part => part?.inlineData?.data || part?.inline_data?.data)?.inlineData ||
+    json?.candidates?.[0]?.content?.parts?.find?.(part => part?.inlineData?.data || part?.inline_data?.data)?.inline_data;
 
   if (direct?.data) return direct;
 
@@ -3409,9 +3414,106 @@ function extractGeminiOutputImage(json) {
 
     const image = item?.output_image || item?.outputImage || item?.image || item;
     if (image?.data) return image;
+    if (image?.inlineData?.data) return image.inlineData;
+    if (image?.inline_data?.data) return image.inline_data;
   }
 
   return null;
+}
+
+function normalizeGeminiModelForGenerateContent(model) {
+  const normalized = cleanEnv(model);
+  const aliases = {
+    "gemini-3.1-flash-lite-image": "gemini-2.5-flash-image-preview",
+    "gemini-3.1-flash-image": "gemini-2.5-flash-image-preview",
+    "gemini-3-pro-image": "gemini-3-pro-image-preview",
+  };
+
+  return aliases[normalized] || normalized;
+}
+
+async function enhanceImageWithGeminiGenerateContent({ imagePath, outputPath, prompt, model }) {
+  if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY nao configurado.");
+
+  const imageBuffer = fs.readFileSync(imagePath);
+  const finalOutputPath = outputPath.replace(/\.[^.]+$/i, ".jpg");
+  const restModel = normalizeGeminiModelForGenerateContent(model);
+  const base = GEMINI_API_BASE.replace(/\/+$/, "");
+  const inlineImage = {
+    mimeType: getImageContentType(imagePath),
+    data: imageBuffer.toString("base64"),
+  };
+  const snakeInlineImage = {
+    mime_type: getImageContentType(imagePath),
+    data: imageBuffer.toString("base64"),
+  };
+  const payloads = [
+    {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: inlineImage },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseModalities: ["IMAGE", "TEXT"],
+      },
+    },
+    {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inline_data: snakeInlineImage },
+          ],
+        },
+      ],
+      generation_config: {
+        response_modalities: ["IMAGE", "TEXT"],
+      },
+    },
+  ];
+  const errors = [];
+
+  for (const payload of payloads) {
+    const res = await fetch(`${base}/models/${encodeURIComponent(restModel)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await res.text();
+    let json = null;
+
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok) {
+      errors.push(`Gemini generateContent enhancement failed (${res.status}): ${text || res.statusText}`);
+      continue;
+    }
+
+    const outputImage = extractGeminiOutputImage(json);
+    if (!outputImage?.data) {
+      fs.writeFileSync(finalOutputPath.replace(/\.jpe?g$/i, ".generate-content.json"), JSON.stringify(json, null, 2));
+      errors.push("Gemini generateContent nao retornou imagem melhorada.");
+      continue;
+    }
+
+    fs.writeFileSync(finalOutputPath, Buffer.from(outputImage.data, "base64"));
+    return finalOutputPath;
+  }
+
+  throw new Error(errors.join(" | "));
 }
 
 async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) {
@@ -3470,6 +3572,17 @@ async function enhanceImageWithGeminiFallbacks({ imagePath, outputPath, model })
 
   for (const candidateModel of geminiImageModelFallbacks(model)) {
     for (const prompt of imageEnhancementPrompts()) {
+      try {
+        return await enhanceImageWithGeminiGenerateContent({
+          imagePath,
+          outputPath,
+          prompt,
+          model: candidateModel,
+        });
+      } catch (err) {
+        errors.push(`generateContent ${candidateModel}: ${String(err.message || err).slice(0, 220)}`);
+      }
+
       try {
         return await enhanceImageWithGemini({
           imagePath,
