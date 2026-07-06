@@ -144,18 +144,18 @@ const IMAGE_ENHANCEMENTS = {
   },
   economy: {
     label: "Clean local enhancement",
-    model: "gemini-3.1-flash-image",
+    model: null,
     priceExtra: 3,
-    estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_ECONOMY_BRL || 1),
+    estimatedCostBrl: 0,
   },
   standard: {
-    label: "Standard enhancement",
+    label: "Standard",
     model: "gemini-3.1-flash-image",
     priceExtra: 5,
     estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_STANDARD_BRL || 2),
   },
   premium: {
-    label: "Premium enhancement",
+    label: "Premium",
     model: "gemini-3-pro-image",
     priceExtra: 9,
     estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_PREMIUM_BRL || 5),
@@ -596,9 +596,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Clean Local", value: "economy" },
-          { name: "Standard", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Clean Local", value: "economy" }
         )
     )
     .addStringOption(o =>
@@ -638,9 +636,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Clean Local", value: "economy" },
-          { name: "Standard", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Clean Local", value: "economy" }
         )
     )
     .addStringOption(o =>
@@ -714,9 +710,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Clean Local", value: "economy" },
-          { name: "Standard", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Clean Local", value: "economy" }
         )
     )
     .addIntegerOption(o =>
@@ -784,9 +778,7 @@ const commands = [
         .setDescription("Enhancement quality")
         .setRequired(true)
         .addChoices(
-          { name: "Clean Local", value: "economy" },
-          { name: "Standard", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Clean Local", value: "economy" }
         )
     )
     .addAttachmentOption(o =>
@@ -1035,9 +1027,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "No enhancement", value: "none" },
-          { name: "Clean Local", value: "economy" },
-          { name: "Standard", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Clean Local", value: "economy" }
         )
     )
     .addIntegerOption(o =>
@@ -1071,9 +1061,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Limpeza local", value: "economy" },
-          { name: "Padrao", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Limpeza local", value: "economy" }
         )
     )
     .addStringOption(o =>
@@ -1173,9 +1161,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Limpeza local", value: "economy" },
-          { name: "Padrao", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Limpeza local", value: "economy" }
         )
     )
     .addIntegerOption(o =>
@@ -1237,9 +1223,7 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
-          { name: "Limpeza local", value: "economy" },
-          { name: "Padrao", value: "standard" },
-          { name: "Premium", value: "premium" }
+          { name: "Limpeza local", value: "economy" }
         )
     )
     .addIntegerOption(o =>
@@ -1352,7 +1336,7 @@ function imageGenerationDiscountForPlan(plan) {
 }
 
 function qualityUsesAiEnhancement(quality) {
-  return quality !== "economy";
+  return false;
 }
 
 function localCleanupPriceForPlan(plan, count) {
@@ -3978,11 +3962,38 @@ async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhanc
   const enhancedDir = path.join(tempDir, "nano_banana_pro");
   fs.mkdirSync(enhancedDir, { recursive: true });
 
-  if (enhancementConfig.model === null) {
+  if (enhancement === "none") {
     return {
       skipped: true,
       reason: "melhoria desativada",
       imagePaths: inputPaths,
+      outputDir: enhancedDir,
+    };
+  }
+
+  if (enhancement === "economy") {
+    const imagePaths = [];
+
+    for (const inputPath of inputPaths) {
+      const outputPath = path.join(enhancedDir, `${path.parse(inputPath).name}_clean.png`);
+      const cleanedPath = await enhanceImageLocally({ imagePath: inputPath, outputPath });
+      imagePaths.push(cleanedPath);
+    }
+
+    fs.writeFileSync(
+      path.join(enhancedDir, "local_cleanup_result.json"),
+      JSON.stringify({
+        provider: "local",
+        enhancement,
+        images: imagePaths.map(file => path.basename(file)),
+      }, null, 2)
+    );
+
+    return {
+      skipped: false,
+      local: true,
+      enhancement,
+      imagePaths,
       outputDir: enhancedDir,
     };
   }
@@ -5533,7 +5544,8 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "enhance_images") {
       await interaction.deferReply();
 
-      const quality = interaction.options.getString("quality") || "standard";
+      const requestedQuality = interaction.options.getString("quality") || "economy";
+      const quality = requestedQuality === "none" ? "economy" : requestedQuality;
       const enhancementConfig = IMAGE_ENHANCEMENTS[quality] || IMAGE_ENHANCEMENTS.standard;
       const attachments = {
         frente: interaction.options.getAttachment("front"),
@@ -5548,8 +5560,11 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (!GEMINI_API_KEY || !enhancementConfig.model) {
-        await interaction.editReply("## Enhancement unavailable\nThis service is not configured yet.");
+      if (quality !== "economy") {
+        await interaction.editReply(
+          "## Clean Local Only\n" +
+          "Reference enhancement now uses only the safe local cleanup mode. Please run `/enhance_images` again with **Clean Local**."
+        );
         return;
       }
 
@@ -5672,12 +5687,7 @@ client.on("interactionCreate", async interaction => {
 
         const safeCleanupCount = fallbackViews.length;
         const processedCount = enhancedViews.length + fallbackViews.length;
-        const modeLabel = qualityUsesAiEnhancement(quality) ? enhancementConfig.label : "Clean Local";
-        const aiStatus = enhancedViews.length
-          ? `${enhancedViews.length}/${selectedEntries.length} enhanced`
-          : qualityUsesAiEnhancement(quality)
-            ? "Unavailable for this image; safe cleanup applied"
-            : "Not used; safe cleanup applied";
+        const modeLabel = "Clean Local";
 
         await interaction.editReply({
           content:
@@ -5685,7 +5695,6 @@ client.on("interactionCreate", async interaction => {
             `**Plan:** ${finalQuote.planLabel}\n` +
             `**Mode:** ${modeLabel}\n` +
             `**Processed:** ${processedCount}/${selectedEntries.length}\n` +
-            `**AI enhancement:** ${aiStatus}\n` +
             (safeCleanupCount ? `**Safe cleanup:** ${safeCleanupCount}/${selectedEntries.length}\n` : "") +
             (failedViews.length ? `**Kept original:** ${failedViews.join(", ")}\n` : "") +
             (finalQuote.discountTokens > 0 ? `**Plan discount:** -${formatTokenAmount(finalQuote.discountTokens)}\n` : "") +
@@ -5798,18 +5807,15 @@ client.on("interactionCreate", async interaction => {
       }
 
       const texture = interaction.options.getString("textura") || interaction.options.getString("texture");
-      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement");
+      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
       const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
       const triangles = interaction.options.getInteger("triangles");
 
-      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
+      if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
           content:
-            "## Reference Cleanup Required First\n" +
-            "Multiview generation uses the exact 4 images you attach. To avoid spending model credits on a changed or wrong side, image cleanup is now a separate review step.\n\n" +
-            "**Step 1:** use `/enhance_images` with front/right/back/left images.\n" +
-            "**Step 2:** review the cleaned images.\n" +
-            "**Step 3:** run `/multiview` again with the cleaned images and choose **No enhancement**.\n\n" +
+            "## Clean Local Only\n" +
+            "Reference enhancement now supports only **No enhancement** or **Clean Local**. Please send the command again with one of those options.\n\n" +
             "No model-generation charge was deducted.",
         });
         return;
@@ -5819,7 +5825,7 @@ client.on("interactionCreate", async interaction => {
         mode: "multiview",
         texture,
         triangles,
-        enhancement: "none",
+        enhancement,
       });
 
       const attachments = {
@@ -5841,10 +5847,30 @@ client.on("interactionCreate", async interaction => {
         viewPaths[view] = await downloadAttachmentToFile(attachment, outputPath);
       }
 
+      const cleanedViews = [];
+      if (enhancement === "economy") {
+        const enhancedDir = path.join(tempDir, "local_cleanup");
+        fs.mkdirSync(enhancedDir, { recursive: true });
+
+        for (const view of MULTIVIEW_VIEW_ORDER.filter(item => viewPaths[item])) {
+          try {
+            const cleanedPath = await enhanceImageLocally({
+              imagePath: viewPaths[view],
+              outputPath: path.join(enhancedDir, `${view}_clean.png`),
+            });
+            viewPaths[view] = cleanedPath;
+            cleanedViews.push(view);
+          } catch (err) {
+            console.error(`Local cleanup failed for ${view}:`, err);
+          }
+        }
+      }
+
       await interaction.editReply({
         content:
-          formatPriceQuote({ mode: "multiview", texture, triangles, enhancement: "none", quote }) +
+          formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
           "\n\n### Reference Check\n" +
+          (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
             .filter(view => viewPaths[view])
             .map((view, index) => `**${index + 1}. ${view}:** \`${path.basename(viewPaths[view])}\``)
@@ -5997,6 +6023,15 @@ client.on("interactionCreate", async interaction => {
   const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
   const triangles = interaction.options.getInteger("triangles");
   const preferredView = interaction.options.getString("vista") || interaction.options.getString("view");
+
+  if (!["none", "economy"].includes(enhancement)) {
+    await interaction.editReply(
+      "## Clean Local Only\n" +
+      "Reference enhancement now supports only **No enhancement** or **Clean Local**. Please send the command again with one of those options."
+    );
+    return;
+  }
+
   const quote = calculatePrice(interaction, {
     mode: "single",
     texture,
@@ -6084,6 +6119,11 @@ client.on("interactionCreate", async interaction => {
     } else if (enhanced.mocked) {
       await interaction.followUp({
         content: "Modo teste pronto. Usei copias das fotos base para testar a entrega:",
+        files: attachmentsFromPaths(enhanced.imagePaths).slice(0, 5),
+      });
+    } else if (enhanced.local) {
+      await interaction.followUp({
+        content: "Reference cleanup ready. These cleaned images will be used for model generation:",
         files: attachmentsFromPaths(enhanced.imagePaths).slice(0, 5),
       });
     } else {
