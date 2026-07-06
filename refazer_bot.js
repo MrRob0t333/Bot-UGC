@@ -3324,7 +3324,7 @@ function variationPrompt(difference) {
 
 function imageEnhancementPrompts() {
   return [
-    "Improve this image for use as a clean 3D modeling reference. Make it sharper, clearer, and easier to read while preserving the same object and view.",
+    "Return only an edited image. Do not reply with text. Improve this image for use as a clean 3D modeling reference. Make it sharper, clearer, and easier to read while preserving the same object and view.",
   ];
 }
 
@@ -3534,6 +3534,7 @@ async function enhanceImageWithGemini({ imagePath, outputPath, prompt, model }) 
       response_format: {
         type: "image",
         mime_type: "image/jpeg",
+        image_size: "1K",
       },
     }),
   });
