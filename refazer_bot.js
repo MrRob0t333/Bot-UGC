@@ -144,7 +144,7 @@ const IMAGE_ENHANCEMENTS = {
   },
   economy: {
     label: "Economy enhancement",
-    model: "gemini-3.1-flash-lite-image",
+    model: "gemini-3.1-flash-image",
     priceExtra: 3,
     estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_ECONOMY_BRL || 1),
   },
@@ -3324,20 +3324,14 @@ function variationPrompt(difference) {
 
 function imageEnhancementPrompts() {
   return [
-    "Create a cleaner product reference image from this input. Keep the same accessory, camera angle, silhouette, proportions, colors, materials, lighting, shadows, and background. Improve only clarity, sharpness, compression artifacts, and texture readability. Do not redesign the object.",
-    "Retouch this product image for use as a 3D modeling reference. Preserve the object and viewpoint. Make the image clearer and less blurry, with better visible edges and texture details.",
-    "Upscale and clean this product reference image. Keep the same object and composition. Make it easier to see the object details for 3D modeling.",
+    "Improve this image for use as a clean 3D modeling reference. Make it sharper, clearer, and easier to read while preserving the same object and view.",
   ];
 }
 
 function geminiImageModelFallbacks(preferredModel) {
   return [
     preferredModel,
-    normalizeGeminiModelForGenerateContent(preferredModel),
     "gemini-3.1-flash-image",
-    "gemini-3-pro-image-preview",
-    "gemini-2.5-flash-image-preview",
-    "gemini-2.5-flash-image",
   ].filter((model, index, list) => model && list.indexOf(model) === index);
 }
 
@@ -3572,17 +3566,6 @@ async function enhanceImageWithGeminiFallbacks({ imagePath, outputPath, model })
 
   for (const candidateModel of geminiImageModelFallbacks(model)) {
     for (const prompt of imageEnhancementPrompts()) {
-      try {
-        return await enhanceImageWithGeminiGenerateContent({
-          imagePath,
-          outputPath,
-          prompt,
-          model: candidateModel,
-        });
-      } catch (err) {
-        errors.push(`generateContent ${candidateModel}: ${String(err.message || err).slice(0, 220)}`);
-      }
-
       try {
         return await enhanceImageWithGemini({
           imagePath,
