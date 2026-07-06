@@ -5801,11 +5801,25 @@ client.on("interactionCreate", async interaction => {
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement");
       const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
       const triangles = interaction.options.getInteger("triangles");
+
+      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
+        await interaction.editReply({
+          content:
+            "## Reference Cleanup Required First\n" +
+            "Multiview generation uses the exact 4 images you attach. To avoid spending model credits on a changed or wrong side, image cleanup is now a separate review step.\n\n" +
+            "**Step 1:** use `/enhance_images` with front/right/back/left images.\n" +
+            "**Step 2:** review the cleaned images.\n" +
+            "**Step 3:** run `/multiview` again with the cleaned images and choose **No enhancement**.\n\n" +
+            "No model-generation charge was deducted.",
+        });
+        return;
+      }
+
       const quote = calculatePrice(interaction, {
         mode: "multiview",
         texture,
         triangles,
-        enhancement,
+        enhancement: "none",
       });
 
       const attachments = {
@@ -5829,15 +5843,15 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.editReply({
         content:
-          formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
-          "\n\n### 🖼️ Conferência das Fotos\n" +
+          formatPriceQuote({ mode: "multiview", texture, triangles, enhancement: "none", quote }) +
+          "\n\n### Reference Check\n" +
           MULTIVIEW_VIEW_ORDER
             .filter(view => viewPaths[view])
             .map((view, index) => `**${index + 1}. ${view}:** \`${path.basename(viewPaths[view])}\``)
             .join("\n") +
           (shouldGenerateNow
-            ? "\n\n✅ **Confirmado.** Iniciando a geração do modelo final..."
-            : "\n\n👀 Confira os anexos. Se algum lado estiver trocado, envie o comando novamente antes de gerar."),
+            ? "\n\n**Confirmed.** Starting final model generation..."
+            : "\n\nCheck the attachments. If any side is wrong, send the command again before generating."),
         files: multiviewReviewAttachments(viewPaths),
       });
 
@@ -5846,25 +5860,13 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (!TRIPO_API_KEY) {
-        await interaction.followUp("Geracao real ainda nao configurada. Chame o suporte.");
+        await interaction.followUp("Real model generation is not configured yet. Contact support.");
         return;
       }
 
       if (!imageEnhancementIsReady(enhancement)) {
         await interaction.followUp({
-          content: "## ⚠️ Melhoria indisponível\nEssa opção ainda não está configurada. Use **Sem melhoria** ou chame a equipe.",
-          flags: 64,
-        });
-        return;
-      }
-
-      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
-        await interaction.followUp({
-          content:
-            "## Enhancement review required\n" +
-            "To avoid generating a wrong model, enhance the references first with `/enhance_images`.\n\n" +
-            "Then review the enhanced images and run `/multiview` again with **No enhancement**.\n" +
-            "No model-generation charge was deducted.",
+          content: "## Enhancement Unavailable\nThis option is not configured yet. Use **No enhancement** or contact support.",
           flags: 64,
         });
         return;
@@ -5874,33 +5876,11 @@ client.on("interactionCreate", async interaction => {
       if (balanceBefore < quote.walletAmount) {
         await interaction.followUp({
           content:
-            `## ⚠️ Saldo insuficiente\n` +
-            `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Seu saldo:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/velvet_comprar` para criar um pedido de compra.",
+            `## Insufficient Balance\n` +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+            "Use `/buy` to add Velvet Coins.",
           flags: 64,
-        });
-        return;
-      }
-
-      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
-        await interaction.followUp("✨ **Melhorando imagens de referência...**");
-        const orderedPaths = MULTIVIEW_VIEW_ORDER.map(view => viewPaths[view]).filter(Boolean);
-        const enhanced = await enhanceImagePaths(orderedPaths, 5, tempDir, false, enhancement);
-        MULTIVIEW_VIEW_ORDER.forEach((view, index) => {
-          if (enhanced.imagePaths[index]) viewPaths[view] = enhanced.imagePaths[index];
-        });
-      }
-
-      if ((IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).model !== null) {
-        await interaction.followUp({
-          content:
-            "## Enhanced References Ready\n" +
-            "Review these 4 enhanced views carefully before spending model-generation credits.\n\n" +
-            "If every side is correct, use `/multiview` again with these enhanced images and choose **No enhancement**.\n" +
-            "If one side is wrong, regenerate only that side with `/generate_image` or send the original side again with **No enhancement**.\n\n" +
-            "No model-generation charge was deducted in this preview step.",
-          files: multiviewReviewAttachments(viewPaths),
         });
         return;
       }
@@ -5914,7 +5894,7 @@ client.on("interactionCreate", async interaction => {
           triangles,
           tempDir,
           onProgress: async ({ status, progress }) => {
-            await interaction.followUp(`Geracao: ${status || "processando"} ${progress || 0}%`).catch(() => {});
+            await interaction.followUp(`Generation: ${status || "processing"} ${progress || 0}%`).catch(() => {});
           },
         });
       } catch (err) {
