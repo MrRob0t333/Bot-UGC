@@ -91,14 +91,17 @@ const PRICE_CONFIG = {
   copyFreeOverLimit: 2,
   copyBasicOverLimit: 1,
   multiviewExtra: 7,
-  premiumMultiviewExtra: 5,
+  basicMultiviewExtra: 5,
+  premiumMultiviewExtra: 0,
   eliteMultiviewExtra: 0,
   hdTextureExtra: 8,
-  premiumHdTextureExtra: 6,
-  eliteHdTextureExtra: 5,
+  basicHdTextureExtra: 5,
+  premiumHdTextureExtra: 3,
+  eliteHdTextureExtra: 2,
   noTextureDiscount: 2,
   lowPolyExtra: 3,
-  premiumLowPolyExtra: 2,
+  basicLowPolyExtra: 0,
+  premiumLowPolyExtra: 0,
   eliteLowPolyExtra: 0,
   maxTriangles: 3950,
 };
@@ -1305,24 +1308,28 @@ function planForInteraction(interaction) {
 function multiviewExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteMultiviewExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumMultiviewExtra;
+  if (plan === "basic") return PRICE_CONFIG.basicMultiviewExtra;
   return PRICE_CONFIG.multiviewExtra;
 }
 
 function hdTextureExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteHdTextureExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumHdTextureExtra;
+  if (plan === "basic") return PRICE_CONFIG.basicHdTextureExtra;
   return PRICE_CONFIG.hdTextureExtra;
 }
 
 function lowPolyExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteLowPolyExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumLowPolyExtra;
+  if (plan === "basic") return PRICE_CONFIG.basicLowPolyExtra;
   return PRICE_CONFIG.lowPolyExtra;
 }
 
 function enhancementExtraForPlan(plan, enhancementConfig) {
   const base = enhancementConfig.priceExtra || 0;
   if (!base) return 0;
+  if (enhancementConfig.model === null) return 0;
   if (plan === "elite") return Math.ceil(base * 0.5);
   if (plan === "premium") return Math.ceil(base * 0.8);
   return base;
