@@ -1,9 +1,48 @@
-import bpy, sys, os
+import bpy, sys, os, json
 from mathutils import Vector
 
-obj_path = sys.argv[-3]
-texture_path = sys.argv[-2]
-render_dir = sys.argv[-1]
+args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[-4:]
+obj_path = args[0]
+texture_path = args[1]
+render_dir = args[2]
+settings_path = args[3] if len(args) > 3 else ""
+
+DEFAULT_RENDER_SETTINGS = {
+    "lighting": "studio",
+    "ior": 1.0,
+    "roughness": 1.0,
+    "exposure": 0.15,
+    "lightPower": 1.0,
+}
+
+def clamp(value, minimum, maximum, fallback):
+    try:
+        number = float(value)
+    except Exception:
+        return fallback
+    return max(minimum, min(maximum, number))
+
+def load_render_settings(path):
+    settings = dict(DEFAULT_RENDER_SETTINGS)
+    if path and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                loaded = json.load(file)
+            if isinstance(loaded, dict):
+                settings.update(loaded)
+        except Exception as err:
+            print(f"Could not load render settings: {err}")
+
+    if settings.get("lighting") not in {"studio", "soft", "dramatic", "flat"}:
+        settings["lighting"] = DEFAULT_RENDER_SETTINGS["lighting"]
+
+    settings["ior"] = clamp(settings.get("ior"), 1.0, 2.5, DEFAULT_RENDER_SETTINGS["ior"])
+    settings["roughness"] = clamp(settings.get("roughness"), 0.0, 1.0, DEFAULT_RENDER_SETTINGS["roughness"])
+    settings["exposure"] = clamp(settings.get("exposure"), -1.0, 1.0, DEFAULT_RENDER_SETTINGS["exposure"])
+    settings["lightPower"] = clamp(settings.get("lightPower"), 0.2, 3.0, DEFAULT_RENDER_SETTINGS["lightPower"])
+    return settings
+
+render_settings = load_render_settings(settings_path)
 
 os.makedirs(render_dir, exist_ok=True)
 
@@ -37,14 +76,14 @@ bsdf = mat.node_tree.nodes.get("Principled BSDF")
 if bsdf:
     bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
     bsdf.inputs["Metallic"].default_value = 0
-    bsdf.inputs["Roughness"].default_value = 1
+    bsdf.inputs["Roughness"].default_value = render_settings["roughness"]
     bsdf.inputs["Alpha"].default_value = 1
 
     if "IOR" in bsdf.inputs:
-        bsdf.inputs["IOR"].default_value = 1
+        bsdf.inputs["IOR"].default_value = render_settings["ior"]
 
     if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = 0
+        bsdf.inputs["Specular IOR Level"].default_value = clamp((render_settings["ior"] - 1.0) / 1.5, 0.0, 1.0, 0.0)
 
     img = load_fixed_texture(texture_path)
 
@@ -101,6 +140,39 @@ light_positions = [
     ("Top_Light",    (0,  0,  6)),
 ]
 
+lighting_presets = {
+    "studio": {
+        "energy": 450,
+        "top": 350,
+        "bottom": 550,
+        "size": 18,
+        "world": 0.50,
+    },
+    "soft": {
+        "energy": 520,
+        "top": 460,
+        "bottom": 520,
+        "size": 26,
+        "world": 0.58,
+    },
+    "dramatic": {
+        "energy": 270,
+        "top": 680,
+        "bottom": 130,
+        "size": 10,
+        "world": 0.32,
+    },
+    "flat": {
+        "energy": 620,
+        "top": 620,
+        "bottom": 620,
+        "size": 30,
+        "world": 0.65,
+    },
+}
+preset = lighting_presets[render_settings["lighting"]]
+light_power = render_settings["lightPower"]
+
 for name, location in light_positions:
     data = bpy.data.lights.new(name, type="AREA")
     light = bpy.data.objects.new(name, data)
@@ -109,19 +181,19 @@ for name, location in light_positions:
     light.location = location
 
     # Luz muito mais suave
-    light.data.energy = 450
+    light.data.energy = preset["energy"] * light_power
 
     # Área muito maior = sombras suaves
-    light.data.size = 18
+    light.data.size = preset["size"]
 
 # Pequenos ajustes
-bpy.data.objects["Top_Light"].data.energy = 350
-bpy.data.objects["Bottom_Light"].data.energy = 550
+bpy.data.objects["Top_Light"].data.energy = preset["top"] * light_power
+bpy.data.objects["Bottom_Light"].data.energy = preset["bottom"] * light_power
 
 # Mundo neutro
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
-world.color = (0.50, 0.50, 0.50)
+world.color = (preset["world"], preset["world"], preset["world"])
 
 scene = bpy.context.scene
 render_resolution = int(os.environ.get("REFAZER_RENDER_RESOLUTION", "768"))
@@ -133,7 +205,7 @@ scene.render.image_settings.color_mode = "RGBA"
 
 scene.view_settings.view_transform = "Standard"
 scene.view_settings.look = "None"
-scene.view_settings.exposure = 0.15
+scene.view_settings.exposure = render_settings["exposure"]
 scene.view_settings.gamma = 1.0
 
 try:

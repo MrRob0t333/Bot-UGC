@@ -83,6 +83,14 @@ const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
 const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
 const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
 
+const DEFAULT_RENDER_SETTINGS = {
+  lighting: "studio",
+  ior: 1,
+  roughness: 1,
+  exposure: 0.15,
+  lightPower: 1,
+};
+
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
 const inviteUses = new Map();
@@ -336,6 +344,30 @@ const commands = [
           { name: "EUR - Euro", value: "EUR" },
           { name: "GBP - Pound", value: "GBP" }
         )
+    )
+    .addStringOption(o =>
+      o
+        .setName("render_lighting")
+        .setDescription("Default /views lighting")
+        .setRequired(false)
+        .addChoices(
+          { name: "Studio balanced", value: "studio" },
+          { name: "Soft bright", value: "soft" },
+          { name: "Dramatic", value: "dramatic" },
+          { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("render_ior").setDescription("Default material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("render_roughness").setDescription("Default material roughness. 0.00 shiny, 1.00 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("render_exposure").setDescription("Default render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("render_light_power").setDescription("Default light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
     )
     .toJSON(),
 
@@ -625,6 +657,31 @@ const commands = [
     .setDescription("Renders front, side, back and isometric reference images from a UGC")
     .addStringOption(o =>
       o.setName("id").setDescription("Original UGC ID").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("lighting")
+        .setDescription("Lighting preset for this render")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Studio balanced", value: "studio" },
+          { name: "Soft bright", value: "soft" },
+          { name: "Dramatic", value: "dramatic" },
+          { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("roughness").setDescription("Material roughness. 0.00 shiny, 1.00 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
     )
     .toJSON(),
 
@@ -1929,6 +1986,10 @@ function walletPreferences(userId) {
   return {
     language: user.language || DEFAULT_LANGUAGE,
     currency: user.currency || DEFAULT_CURRENCY,
+    renderSettings: {
+      ...DEFAULT_RENDER_SETTINGS,
+      ...(user.renderSettings || {}),
+    },
   };
 }
 
@@ -1937,10 +1998,21 @@ function updateWalletPreferences(userId, updates) {
   const user = walletUser(db, userId);
   if (updates.language) user.language = updates.language;
   if (updates.currency && CURRENCIES[updates.currency]) user.currency = updates.currency;
+  if (updates.renderSettings) {
+    user.renderSettings = {
+      ...DEFAULT_RENDER_SETTINGS,
+      ...(user.renderSettings || {}),
+      ...updates.renderSettings,
+    };
+  }
   writeWalletDb(db);
   return {
     language: user.language,
     currency: user.currency,
+    renderSettings: {
+      ...DEFAULT_RENDER_SETTINGS,
+      ...(user.renderSettings || {}),
+    },
   };
 }
 
@@ -1953,6 +2025,51 @@ function languageFor(interaction) {
 function currencyFor(interaction, selectedCurrency) {
   const prefs = walletPreferences(interaction.user.id);
   return CURRENCIES[selectedCurrency] ? selectedCurrency : prefs.currency || DEFAULT_CURRENCY;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeRenderSettings(settings = {}) {
+  const lighting = ["studio", "soft", "dramatic", "flat"].includes(settings.lighting)
+    ? settings.lighting
+    : DEFAULT_RENDER_SETTINGS.lighting;
+
+  return {
+    lighting,
+    ior: clampNumber(settings.ior, 1, 2.5, DEFAULT_RENDER_SETTINGS.ior),
+    roughness: clampNumber(settings.roughness, 0, 1, DEFAULT_RENDER_SETTINGS.roughness),
+    exposure: clampNumber(settings.exposure, -1, 1, DEFAULT_RENDER_SETTINGS.exposure),
+    lightPower: clampNumber(settings.lightPower, 0.2, 3, DEFAULT_RENDER_SETTINGS.lightPower),
+  };
+}
+
+function renderSettingsForInteraction(interaction) {
+  const prefs = walletPreferences(interaction.user.id);
+  const base = normalizeRenderSettings(prefs.renderSettings);
+  const lighting = interaction.options.getString("lighting");
+
+  return normalizeRenderSettings({
+    ...base,
+    lighting: lighting && lighting !== "default" ? lighting : base.lighting,
+    ior: interaction.options.getNumber("ior") ?? base.ior,
+    roughness: interaction.options.getNumber("roughness") ?? base.roughness,
+    exposure: interaction.options.getNumber("exposure") ?? base.exposure,
+    lightPower: interaction.options.getNumber("light_power") ?? base.lightPower,
+  });
+}
+
+function renderSettingsSummary(settings) {
+  return [
+    `Lighting: ${settings.lighting}`,
+    `IOR: ${settings.ior}`,
+    `Roughness: ${settings.roughness}`,
+    `Exposure: ${settings.exposure}`,
+    `Light power: ${settings.lightPower}`,
+  ].join("\n");
 }
 
 function walletTransaction(db, { userId, type, amount, actorId, reason, meta }) {
@@ -3564,9 +3681,12 @@ function writeObj(mesh, objPath) {
   fs.writeFileSync(objPath, obj);
 }
 
-async function renderImages(objPath, texturePath, tempDir) {
+async function renderImages(objPath, texturePath, tempDir, renderSettings = DEFAULT_RENDER_SETTINGS) {
   const renderDir = path.join(tempDir, "renders");
   fs.mkdirSync(renderDir, { recursive: true });
+  const normalizedRenderSettings = normalizeRenderSettings(renderSettings);
+  const renderSettingsPath = path.join(tempDir, "render_settings.json");
+  fs.writeFileSync(renderSettingsPath, JSON.stringify(normalizedRenderSettings, null, 2));
 
   await execFileAsync(BLENDER_PATH, [
     "--background",
@@ -3577,6 +3697,7 @@ async function renderImages(objPath, texturePath, tempDir) {
     objPath,
     texturePath || "",
     renderDir,
+    renderSettingsPath,
   ]);
 
   return renderDir;
@@ -3633,8 +3754,17 @@ function optimizeGlbForRoblox(modelPath) {
   return modelPath;
 }
 
-function viewCachePath(ugcId) {
-  return path.join(VIEW_CACHE_DIR, String(ugcId));
+function renderSettingsCacheKey(settings) {
+  const normalized = normalizeRenderSettings(settings);
+  return crypto
+    .createHash("sha1")
+    .update(JSON.stringify(normalized))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function viewCachePath(ugcId, renderSettings = DEFAULT_RENDER_SETTINGS) {
+  return path.join(VIEW_CACHE_DIR, String(ugcId), renderSettingsCacheKey(renderSettings));
 }
 
 function expectedViewFiles(renderDir) {
@@ -3642,8 +3772,8 @@ function expectedViewFiles(renderDir) {
     .map(file => path.join(renderDir, file));
 }
 
-function readViewCache(ugcId) {
-  const renderDir = viewCachePath(ugcId);
+function readViewCache(ugcId, renderSettings = DEFAULT_RENDER_SETTINGS) {
+  const renderDir = viewCachePath(ugcId, renderSettings);
   const metadataPath = path.join(renderDir, "metadata.json");
 
   if (!fs.existsSync(metadataPath)) return null;
@@ -3657,8 +3787,8 @@ function readViewCache(ugcId) {
   return { ...metadata, renderDir, cached: true };
 }
 
-function writeViewCache(ugcId, renderDir, metadata) {
-  const cacheDir = viewCachePath(ugcId);
+function writeViewCache(ugcId, renderDir, metadata, renderSettings = DEFAULT_RENDER_SETTINGS) {
+  const cacheDir = viewCachePath(ugcId, renderSettings);
   fs.rmSync(cacheDir, { recursive: true, force: true });
   fs.mkdirSync(cacheDir, { recursive: true });
 
@@ -3678,9 +3808,10 @@ function writeViewCache(ugcId, renderDir, metadata) {
 async function processUGC(ugcId, options = {}) {
   const shouldExportGlb = options.exportGlb !== false;
   const shouldRender = options.render !== false;
+  const renderSettings = normalizeRenderSettings(options.renderSettings || DEFAULT_RENDER_SETTINGS);
 
   if (shouldRender && !shouldExportGlb && options.cacheViews) {
-    const cached = readViewCache(ugcId);
+    const cached = readViewCache(ugcId, renderSettings);
 
     if (cached) {
       return {
@@ -3748,7 +3879,7 @@ async function processUGC(ugcId, options = {}) {
   }
 
   let renderDir = shouldRender
-    ? await renderImages(objPath, hasTexture ? texturePath : "", tempDir)
+    ? await renderImages(objPath, hasTexture ? texturePath : "", tempDir, renderSettings)
     : null;
 
   if (renderDir && options.cacheViews) {
@@ -3756,7 +3887,8 @@ async function processUGC(ugcId, options = {}) {
       ugcId,
       meshId,
       textureId: hasTexture ? textureId : null,
-    });
+      renderSettings,
+    }, renderSettings);
   }
 
   return {
@@ -5079,7 +5211,24 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "settings") {
       const language = interaction.options.getString("language");
       const currency = interaction.options.getString("currency");
-      const prefs = updateWalletPreferences(interaction.user.id, { language, currency });
+      const renderUpdates = {};
+      const renderLighting = interaction.options.getString("render_lighting");
+      const renderIor = interaction.options.getNumber("render_ior");
+      const renderRoughness = interaction.options.getNumber("render_roughness");
+      const renderExposure = interaction.options.getNumber("render_exposure");
+      const renderLightPower = interaction.options.getNumber("render_light_power");
+
+      if (renderLighting) renderUpdates.lighting = renderLighting;
+      if (renderIor !== null) renderUpdates.ior = renderIor;
+      if (renderRoughness !== null) renderUpdates.roughness = renderRoughness;
+      if (renderExposure !== null) renderUpdates.exposure = renderExposure;
+      if (renderLightPower !== null) renderUpdates.lightPower = renderLightPower;
+
+      const prefs = updateWalletPreferences(interaction.user.id, {
+        language,
+        currency,
+        renderSettings: Object.keys(renderUpdates).length ? normalizeRenderSettings(renderUpdates) : null,
+      });
       const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
 
       await interaction.reply({
@@ -5087,6 +5236,7 @@ client.on("interactionCreate", async interaction => {
           `## ⚙️ Velvet Settings\n` +
           `**Language:** ${resolvedLanguage}\n` +
           `**Currency:** ${prefs.currency}\n\n` +
+          `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
           `Payment previews will use **${prefs.currency}**. Bot messages will follow your language preference when available.`,
         flags: 64,
       });
@@ -6114,16 +6264,23 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "views") {
       const id = interaction.options.getString("id").trim();
+      const renderSettings = renderSettingsForInteraction(interaction);
       await interaction.deferReply();
 
       try {
         await interaction.editReply(
           "## Rendering UGC Views\n" +
           `**UGC:** \`${id}\`\n\n` +
+          `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
           "Preparing front, right, back, left and isometric reference images..."
         );
 
-        const result = await processUGC(id, { exportGlb: false, render: true, cacheViews: true });
+        const result = await processUGC(id, {
+          exportGlb: false,
+          render: true,
+          cacheViews: true,
+          renderSettings,
+        });
         const files = ugcViewAttachments(result.renderDir);
 
         await interaction.editReply({
@@ -6132,6 +6289,7 @@ client.on("interactionCreate", async interaction => {
             `**UGC:** \`${id}\`\n` +
             `**MeshId:** \`${result.meshId}\`\n` +
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
+            `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
             (result.cached ? "**Source:** cached render\n\n" : "") +
             "Use these images to check the item from multiple angles or as references for `/multiview`.",
           files,
