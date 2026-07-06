@@ -3232,8 +3232,46 @@ function robloxHeaders(extra = {}) {
   return headers;
 }
 
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryDelayFromResponse(res, attempt) {
+  const retryAfter = Number(res.headers.get("retry-after") || 0);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, 30000);
+  }
+
+  return Math.min(1500 * 2 ** attempt, 12000);
+}
+
+async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
+  let lastText = "";
+  let lastStatus = 0;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const res = await fetch(url, options);
+
+    if (res.status !== 429) {
+      return res;
+    }
+
+    lastStatus = res.status;
+    lastText = await res.text().catch(() => "");
+
+    if (attempt < attempts - 1) {
+      await wait(retryDelayFromResponse(res, attempt));
+    }
+  }
+
+  throw new Error(
+    "Roblox is rate-limiting clothing downloads right now. Wait a few minutes and try again. " +
+    `Last response (${lastStatus}): ${lastText.slice(0, 300)}`
+  );
+}
+
 async function fetchRobloxJson(url) {
-  const res = await fetch(url, { headers: robloxHeaders() });
+  const res = await fetchRobloxWithRetry(url, { headers: robloxHeaders() });
   const text = await res.text();
 
   if (!res.ok) {
@@ -3252,7 +3290,7 @@ async function fetchRobloxAssetSource(assetId) {
     throw new Error("No downloadable source found for this asset.");
   }
 
-  const res = await fetch(location, { headers: robloxHeaders() });
+  const res = await fetchRobloxWithRetry(location, { headers: robloxHeaders() });
 
   if (!res.ok) {
     throw new Error(`Roblox source download failed (${res.status}).`);
@@ -5563,9 +5601,13 @@ client.on("interactionCreate", async interaction => {
         });
       } catch (err) {
         console.error(err);
+        const message = String(err.message || err);
+        const isRateLimited = message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
+
         await interaction.editReply(
-          "## I could not copy this clothing template\n" +
-          "Only classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
+          isRateLimited
+            ? "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal_clothing` again. No charge was deducted."
+            : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
         );
 
         if (userIsAdmin(interaction)) {
