@@ -79,6 +79,9 @@ const STRIPE_CANCEL_URL = cleanEnv(process.env.STRIPE_CANCEL_URL, "https://disco
 const WEBHOOK_HOST = cleanEnv(process.env.WEBHOOK_HOST, "0.0.0.0");
 const WEBHOOK_PORT = Number(cleanEnv(process.env.WEBHOOK_PORT, "3001"));
 const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
+const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
+const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
+const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
 
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
@@ -3567,6 +3570,7 @@ async function renderImages(objPath, texturePath, tempDir) {
 
   await execFileAsync(BLENDER_PATH, [
     "--background",
+    "--factory-startup",
     "--python",
     path.join(__dirname, "render_views.py"),
     "--",
@@ -3583,6 +3587,7 @@ function exportGlb(objPath, texturePath, glbPath) {
     BLENDER_PATH,
     [
       "--background",
+      "--factory-startup",
       "--python",
       path.join(__dirname, "export_glb.py"),
       "--",
@@ -3594,9 +3599,106 @@ function exportGlb(objPath, texturePath, glbPath) {
   );
 }
 
+function optimizeGlbForRoblox(modelPath) {
+  if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
+    return modelPath;
+  }
+
+  const tempOutputPath = modelPath.replace(/\.glb$/i, ".roblox_safe.glb");
+
+  try {
+    execFileSync(
+      BLENDER_PATH,
+      [
+        "--background",
+        "--factory-startup",
+        "--python",
+        path.join(__dirname, "optimize_glb_for_roblox.py"),
+        "--",
+        modelPath,
+        tempOutputPath,
+        String(ROBLOX_MAX_TEXTURE_SIZE),
+      ],
+      { stdio: "inherit" }
+    );
+
+    if (fs.existsSync(tempOutputPath)) {
+      fs.copyFileSync(tempOutputPath, modelPath);
+      fs.rmSync(tempOutputPath, { force: true });
+    }
+  } catch (err) {
+    console.warn("Nao consegui otimizar texturas para Roblox:", err.message);
+  }
+
+  return modelPath;
+}
+
+function viewCachePath(ugcId) {
+  return path.join(VIEW_CACHE_DIR, String(ugcId));
+}
+
+function expectedViewFiles(renderDir) {
+  return ["frente.png", "direita.png", "costas.png", "esquerda.png", "isometrica.png"]
+    .map(file => path.join(renderDir, file));
+}
+
+function readViewCache(ugcId) {
+  const renderDir = viewCachePath(ugcId);
+  const metadataPath = path.join(renderDir, "metadata.json");
+
+  if (!fs.existsSync(metadataPath)) return null;
+  if (!expectedViewFiles(renderDir).every(file => fs.existsSync(file))) return null;
+
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+  const createdAt = Date.parse(metadata.createdAt || 0);
+
+  if (!createdAt || Date.now() - createdAt > VIEW_CACHE_MAX_AGE_MS) return null;
+
+  return { ...metadata, renderDir, cached: true };
+}
+
+function writeViewCache(ugcId, renderDir, metadata) {
+  const cacheDir = viewCachePath(ugcId);
+  fs.rmSync(cacheDir, { recursive: true, force: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  for (const file of expectedViewFiles(renderDir)) {
+    if (!fs.existsSync(file)) continue;
+    fs.copyFileSync(file, path.join(cacheDir, path.basename(file)));
+  }
+
+  fs.writeFileSync(
+    path.join(cacheDir, "metadata.json"),
+    JSON.stringify({ ...metadata, createdAt: new Date().toISOString() }, null, 2)
+  );
+
+  return cacheDir;
+}
+
 async function processUGC(ugcId, options = {}) {
   const shouldExportGlb = options.exportGlb !== false;
   const shouldRender = options.render !== false;
+
+  if (shouldRender && !shouldExportGlb && options.cacheViews) {
+    const cached = readViewCache(ugcId);
+
+    if (cached) {
+      return {
+        ugcId,
+        tempDir: null,
+        rbxmPath: null,
+        objPath: null,
+        glbPath: null,
+        texturePath: null,
+        hasTexture: Boolean(cached.textureId),
+        renderDir: cached.renderDir,
+        meshId: cached.meshId,
+        textureId: cached.textureId,
+        cached: true,
+      };
+    }
+  }
+
   const tempDir = path.join(__dirname, "temp", "refazer", `${ugcId}-${Date.now()}`);
   fs.mkdirSync(tempDir, { recursive: true });
 
@@ -3616,19 +3718,23 @@ async function processUGC(ugcId, options = {}) {
     throw new Error(`Nao consegui encontrar MeshId no UGC ${ugcId}.`);
   }
 
-  const meshBuffer = await downloadRobloxAsset(meshId);
+  const meshPromise = downloadRobloxAsset(meshId);
+  const texturePromise = textureId
+    ? downloadRobloxAsset(textureId).catch(err => {
+      console.warn("Nao consegui baixar textura:", err.message);
+      return null;
+    })
+    : Promise.resolve(null);
+
+  const meshBuffer = await meshPromise;
   const mesh = loadMeshParser().parse(meshBuffer);
 
   let hasTexture = false;
+  const textureBuffer = await texturePromise;
 
-  if (textureId) {
-    try {
-      const textureBuffer = await downloadRobloxAsset(textureId);
-      fs.writeFileSync(texturePath, textureBuffer);
-      hasTexture = true;
-    } catch (err) {
-      console.warn("Nao consegui baixar textura:", err.message);
-    }
+  if (textureBuffer) {
+    fs.writeFileSync(texturePath, textureBuffer);
+    hasTexture = true;
   }
 
   writeObj(mesh, objPath);
@@ -3641,9 +3747,17 @@ async function processUGC(ugcId, options = {}) {
     }
   }
 
-  const renderDir = shouldRender
+  let renderDir = shouldRender
     ? await renderImages(objPath, hasTexture ? texturePath : "", tempDir)
     : null;
+
+  if (renderDir && options.cacheViews) {
+    renderDir = writeViewCache(ugcId, renderDir, {
+      ugcId,
+      meshId,
+      textureId: hasTexture ? textureId : null,
+    });
+  }
 
   return {
     ugcId,
@@ -4221,6 +4335,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  optimizeGlbForRoblox(modelPath);
 
   return {
     skipped: false,
@@ -4280,6 +4395,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  optimizeGlbForRoblox(modelPath);
 
   return {
     taskId,
@@ -4321,6 +4437,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const modelBuffer = await downloadPublicUrl(modelUrl);
   const modelPath = path.join(tripoDir, "velvet_model.glb");
   fs.writeFileSync(modelPath, modelBuffer);
+  optimizeGlbForRoblox(modelPath);
 
   return {
     taskId,
@@ -4535,6 +4652,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   const modelPath = path.join(tripoDir, "refeito.glb");
   const jsonPath = path.join(tripoDir, "tripo_result.json");
   const savedPath = await writeResponseAsset(res, modelPath, jsonPath);
+  optimizeGlbForRoblox(savedPath);
 
   return {
     skipped: false,
@@ -5989,7 +6107,7 @@ client.on("interactionCreate", async interaction => {
           "Preparing front, right, back, left and isometric reference images..."
         );
 
-        const result = await processUGC(id, { exportGlb: false, render: true });
+        const result = await processUGC(id, { exportGlb: false, render: true, cacheViews: true });
         const files = ugcViewAttachments(result.renderDir);
 
         await interaction.editReply({
@@ -5998,6 +6116,7 @@ client.on("interactionCreate", async interaction => {
             `**UGC:** \`${id}\`\n` +
             `**MeshId:** \`${result.meshId}\`\n` +
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
+            (result.cached ? "**Source:** cached render\n\n" : "") +
             "Use these images to check the item from multiple angles or as references for `/multiview`.",
           files,
         });

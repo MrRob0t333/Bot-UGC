@@ -124,8 +124,9 @@ bpy.context.scene.world = world
 world.color = (0.50, 0.50, 0.50)
 
 scene = bpy.context.scene
-scene.render.resolution_x = 1024
-scene.render.resolution_y = 1024
+render_resolution = int(os.environ.get("REFAZER_RENDER_RESOLUTION", "768"))
+scene.render.resolution_x = render_resolution
+scene.render.resolution_y = render_resolution
 scene.render.film_transparent = False
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
@@ -139,6 +140,16 @@ try:
     scene.render.engine = "BLENDER_EEVEE_NEXT"
 except Exception:
     scene.render.engine = "BLENDER_EEVEE"
+
+try:
+    scene.eevee.taa_render_samples = int(os.environ.get("REFAZER_RENDER_SAMPLES", "16"))
+except Exception:
+    pass
+
+try:
+    scene.render.use_persistent_data = True
+except Exception:
+    pass
 
 def look_at(camera, direction):
     direction = Vector(direction).normalized()
