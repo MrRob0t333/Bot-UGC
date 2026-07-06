@@ -2221,7 +2221,7 @@ function creditAffiliateServiceCommission({ buyerId, walletAmount, priceBrl, sou
   return credited;
 }
 
-function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy" }) {
+function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy", channelId = null }) {
   const db = readWalletDb();
   const brl = Number((brlOverride ?? (amount / WALLET_TOKENS_PER_BRL)).toFixed(2));
   const request = {
@@ -2232,6 +2232,7 @@ function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, br
     currency,
     currencyAmount: Number((brl / (CURRENCIES[currency]?.brlRate || 1)).toFixed(2)),
     source,
+    channelId,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
@@ -2290,6 +2291,24 @@ async function notifyPurchaseApproved(request) {
     `**Amount:** ${formatTokenAmount(request.amount)}\n` +
     `**Wallet balance:** ${formatTokenAmount(balance)}\n\n` +
     "Your Velvet Coins are available now.";
+
+  if (request.channelId) {
+    try {
+      const channel = await client.channels.fetch(request.channelId);
+      if (channel?.isTextBased()) {
+        await channel.send({
+          content:
+            "## Purchase Approved\n" +
+            `**User:** <@${request.userId}>\n` +
+            `**Order ID:** \`${request.id}\`\n` +
+            `**Amount:** ${formatTokenAmount(request.amount)}\n` +
+            `**Wallet balance:** ${formatTokenAmount(balance)}`,
+        });
+      }
+    } catch (err) {
+      console.warn(`Nao consegui avisar compra aprovada no canal: ${request.id}`, err.message);
+    }
+  }
 
   try {
     const user = await client.users.fetch(request.userId);
@@ -2541,7 +2560,7 @@ function resolveWithdrawal({ requestId, action, actorId, reason }) {
 }
 
 function formatTokenAmount(amount) {
-  return `${amount} ${WALLET_TOKEN_NAME}`;
+  return `${Number(amount || 0).toLocaleString("en-US")} ${WALLET_TOKEN_NAME}`;
 }
 
 function uiLine(label, value) {
@@ -4258,7 +4277,12 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const request = createPurchaseRequest({ userId: interaction.user.id, amount, currency });
+      const request = createPurchaseRequest({
+        userId: interaction.user.id,
+        amount,
+        currency,
+        channelId: interaction.channelId,
+      });
       const priceLabel = formatCurrencyFromBrl(request.brl, currency);
       let paymentLink = null;
       let paymentProvider = "manual";
@@ -4605,6 +4629,7 @@ client.on("interactionCreate", async interaction => {
         currency: "BRL",
         brlOverride: priceBrl,
         source: "admin_buy",
+        channelId: interaction.channelId,
       });
 
       let paymentLink = null;
