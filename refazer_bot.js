@@ -411,7 +411,8 @@ const commands = [
         .addChoices(
           { name: "Padrao do bot", value: "default" },
           { name: "Stripe", value: "stripe" },
-          { name: "Mercado Pago", value: "mercadopago" }
+          { name: "Mercado Pago", value: "mercadopago" },
+          { name: "Mercado Pago Pix", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
@@ -516,7 +517,8 @@ const commands = [
         .addChoices(
           { name: "Bot default", value: "default" },
           { name: "Stripe", value: "stripe" },
-          { name: "Mercado Pago", value: "mercadopago" }
+          { name: "Mercado Pago", value: "mercadopago" },
+          { name: "Mercado Pago Pix", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
@@ -1051,7 +1053,8 @@ const commands = [
         .addChoices(
           { name: "Bot default", value: "default" },
           { name: "Stripe", value: "stripe" },
-          { name: "Mercado Pago", value: "mercadopago" }
+          { name: "Mercado Pago", value: "mercadopago" },
+          { name: "Mercado Pago Pix", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
@@ -2141,10 +2144,11 @@ function paymentProviderFor(selectedProvider) {
   const provider = selected && selected !== "default"
     ? selected
     : String(PAYMENT_PROVIDER || "stripe").toLowerCase();
-  return ["stripe", "mercadopago"].includes(provider) ? provider : "stripe";
+  return ["stripe", "mercadopago", "mercadopago_pix"].includes(provider) ? provider : "stripe";
 }
 
 function paymentProviderLabel(provider) {
+  if (provider === "mercadopago_pix") return "Mercado Pago Pix";
   return provider === "mercadopago" ? "Mercado Pago" : "Stripe";
 }
 
@@ -2438,7 +2442,7 @@ function verifyStripeWebhook(rawBody, signature) {
   return JSON.parse(rawBody || "{}");
 }
 
-async function createMercadoPagoPreference(request) {
+async function createMercadoPagoPreference(request, options = {}) {
   const payload = {
     items: [
       {
@@ -2464,6 +2468,12 @@ async function createMercadoPagoPreference(request) {
     },
     auto_return: "approved",
   };
+
+  if (options.defaultPaymentMethodId) {
+    payload.payment_methods = {
+      default_payment_method_id: options.defaultPaymentMethodId,
+    };
+  }
 
   if (MERCADO_PAGO_WEBHOOK_URL) payload.notification_url = MERCADO_PAGO_WEBHOOK_URL;
 
@@ -5449,9 +5459,11 @@ client.on("interactionCreate", async interaction => {
         } catch (err) {
           console.error(err);
         }
-      } else if (requestedProvider === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
+      } else if (requestedProvider.startsWith("mercadopago") && MERCADO_PAGO_ACCESS_TOKEN) {
         try {
-          const preference = await createMercadoPagoPreference(request);
+          const preference = await createMercadoPagoPreference(request, {
+            defaultPaymentMethodId: requestedProvider === "mercadopago_pix" ? "pix" : null,
+          });
           paymentLink = preference.init_point || preference.sandbox_init_point || null;
           paymentProvider = paymentProviderLabel(requestedProvider);
         } catch (err) {
@@ -5619,7 +5631,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (requestedProvider === "mercadopago" && !MERCADO_PAGO_ACCESS_TOKEN) {
+      if (requestedProvider.startsWith("mercadopago") && !MERCADO_PAGO_ACCESS_TOKEN) {
         await interaction.reply({
           content:
             `## ⚠️ Subscription checkout is not configured\n` +
@@ -5635,7 +5647,7 @@ client.on("interactionCreate", async interaction => {
         let link = null;
         let provider = paymentProviderLabel(requestedProvider);
 
-        if (requestedProvider === "mercadopago") {
+        if (requestedProvider.startsWith("mercadopago")) {
           const subscription = await createMercadoPagoSubscription({
             userId: interaction.user.id,
             planKey,
@@ -5797,9 +5809,11 @@ client.on("interactionCreate", async interaction => {
         } catch (err) {
           console.error(err);
         }
-      } else if (requestedProvider === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
+      } else if (requestedProvider.startsWith("mercadopago") && MERCADO_PAGO_ACCESS_TOKEN) {
         try {
-          const preference = await createMercadoPagoPreference(request);
+          const preference = await createMercadoPagoPreference(request, {
+            defaultPaymentMethodId: requestedProvider === "mercadopago_pix" ? "pix" : null,
+          });
           paymentLink = preference.init_point || preference.sandbox_init_point || null;
         } catch (err) {
           console.error(err);
