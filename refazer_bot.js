@@ -38,6 +38,14 @@ const TOKEN = cleanEnv(process.env.REFAZER_DISCORD_TOKEN || process.env.DISCORD_
 const CLIENT_ID = cleanEnv(process.env.REFAZER_CLIENT_ID || process.env.CLIENT_ID);
 const GUILD_ID = cleanEnv(process.env.REFAZER_GUILD_ID || process.env.GUILD_ID);
 const ROBLOSECURITY = cleanEnv(process.env.ROBLOSECURITY);
+const ROBLOX_COOKIES = [
+  ROBLOSECURITY,
+  cleanEnv(process.env.ROBLOSECURITY_2 || process.env.REFAZER_ROBLOSECURITY_2),
+  cleanEnv(process.env.ROBLOSECURITY_3 || process.env.REFAZER_ROBLOSECURITY_3),
+  ...String(process.env.REFAZER_ROBLOSECURITY_POOL || "")
+    .split(/\n|,(?=_\|WARNING:)|,(?=_\|)/)
+    .map(item => cleanEnv(item)),
+].filter((item, index, list) => item && list.indexOf(item) === index).slice(0, 3);
 
 const PREMIUM_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_ROLE, "1521989120745013459");
 const ELITE_ROLE = cleanEnv(process.env.REFAZER_ELITE_ROLE, "1523463473328292013");
@@ -153,13 +161,13 @@ const COPY_PLAN_CONFIG = {
 const CLOTHING_COPY_PLAN_CONFIG = {
   free: {
     label: "Free",
-    dailyLimit: 6,
-    overLimitTokens: 10,
+    dailyLimit: Number(process.env.REFAZER_FREE_CLOTHING_DAILY_LIMIT || 6),
+    overLimitTokens: Number(process.env.REFAZER_FREE_CLOTHING_PRICE || 10),
   },
   basic: {
     label: "Basic",
-    dailyLimit: 20,
-    overLimitTokens: 5,
+    dailyLimit: Number(process.env.REFAZER_BASIC_CLOTHING_DAILY_LIMIT || 20),
+    overLimitTokens: Number(process.env.REFAZER_BASIC_CLOTHING_PRICE || 5),
   },
   premium: {
     label: "Premium",
@@ -173,7 +181,17 @@ const CLOTHING_COPY_PLAN_CONFIG = {
   },
 };
 
-const BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_BULK_CLOTHING_LIMIT || 20);
+const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
+const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
+const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
+const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
+const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
+const ELITE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_ELITE_BULK_ASSET_LIMIT || 15);
+const BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_BULK_CLOTHING_LIMIT || 15);
+const FREE_BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_FREE_BULK_CLOTHING_LIMIT || 5);
+const BASIC_BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_BASIC_BULK_CLOTHING_LIMIT || 10);
+const PREMIUM_BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_CLOTHING_LIMIT || 15);
+const ELITE_BULK_CLOTHING_LIMIT = Number(process.env.REFAZER_ELITE_BULK_CLOTHING_LIMIT || 15);
 
 const IMAGE_ENHANCEMENTS = {
   none: {
@@ -675,7 +693,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("bulk_steal_clothing")
-    .setDescription("Copies up to 20 classic clothing templates")
+    .setDescription("Copies classic clothing templates in bulk")
     .addStringOption(o =>
       o.setName("ids").setDescription("Clothing IDs or URLs, separated by space or comma").setRequired(true)
     )
@@ -683,9 +701,9 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("bulk_steal")
-    .setDescription("Premium: copies up to 10 original assets")
+    .setDescription("Copies original assets in bulk")
     .addStringOption(o =>
-      o.setName("ids").setDescription("Up to 10 UGC IDs, separated by space or comma").setRequired(true)
+      o.setName("ids").setDescription("UGC IDs, separated by space or comma").setRequired(true)
     )
     .toJSON(),
 
@@ -1865,6 +1883,22 @@ function calculateBulkClothingCopyPrice(interaction, count, usedTodayOverride) {
     walletAmount,
     perPaidItem: plan.overLimitTokens,
   };
+}
+
+function bulkClothingLimitFor(interaction) {
+  const planKey = userCopyPlan(interaction);
+  if (planKey === "elite") return Math.min(ELITE_BULK_CLOTHING_LIMIT, BULK_CLOTHING_LIMIT);
+  if (planKey === "premium") return Math.min(PREMIUM_BULK_CLOTHING_LIMIT, BULK_CLOTHING_LIMIT);
+  if (planKey === "basic") return Math.min(BASIC_BULK_CLOTHING_LIMIT, BULK_CLOTHING_LIMIT);
+  return Math.min(FREE_BULK_CLOTHING_LIMIT, BULK_CLOTHING_LIMIT);
+}
+
+function bulkAssetLimitFor(interaction) {
+  const planKey = userCopyPlan(interaction);
+  if (planKey === "elite") return Math.min(ELITE_BULK_ASSET_LIMIT, BULK_ASSET_LIMIT);
+  if (planKey === "premium") return Math.min(PREMIUM_BULK_ASSET_LIMIT, BULK_ASSET_LIMIT);
+  if (planKey === "basic") return Math.min(BASIC_BULK_ASSET_LIMIT, BULK_ASSET_LIMIT);
+  return Math.min(FREE_BULK_ASSET_LIMIT, BULK_ASSET_LIMIT);
 }
 
 function formatCopyAllowance(quote) {
@@ -3716,17 +3750,41 @@ async function downloadRobloxAsset(assetId) {
   return downloadBuffer(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`);
 }
 
-function robloxHeaders(extra = {}) {
+function robloxHeaders(extra = {}, cookie = ROBLOX_COOKIES[0]) {
   const headers = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
     ...extra,
   };
 
-  if (ROBLOSECURITY) {
-    headers.Cookie = `.ROBLOSECURITY=${ROBLOSECURITY}`;
+  if (cookie) {
+    headers.Cookie = `.ROBLOSECURITY=${cookie}`;
   }
 
   return headers;
+}
+
+const ROBLOX_ASSET_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
+const ROBLOX_REQUEST_INTERVAL_MS = Number(process.env.REFAZER_ROBLOX_REQUEST_INTERVAL_MS || 1200);
+const ROBLOX_RATE_LIMIT_PAUSE_MS = Number(process.env.REFAZER_ROBLOX_RATE_LIMIT_PAUSE_MS || 120000);
+const robloxAssetSourceCache = new Map();
+let nextRobloxRequestAt = 0;
+let robloxRateLimitedUntil = 0;
+
+function isRobloxRateLimitError(err) {
+  const message = String(err?.message || err || "");
+  return message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
+}
+
+async function waitForRobloxSlot() {
+  const now = Date.now();
+  const waitUntil = Math.max(nextRobloxRequestAt, robloxRateLimitedUntil);
+  if (waitUntil > now) {
+    await wait(waitUntil - now);
+  }
+
+  nextRobloxRequestAt = Date.now() + ROBLOX_REQUEST_INTERVAL_MS;
 }
 
 function wait(ms) {
@@ -3745,19 +3803,44 @@ function retryDelayFromResponse(res, attempt) {
 async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
   let lastText = "";
   let lastStatus = 0;
+  const cookies = ROBLOX_COOKIES.length ? ROBLOX_COOKIES : [""];
+  const originalHeaders = options.headers || {};
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const res = await fetch(url, options);
+    let retryDelay = 0;
 
-    if (res.status !== 429) {
-      return res;
+    for (let cookieIndex = 0; cookieIndex < cookies.length; cookieIndex += 1) {
+      await waitForRobloxSlot();
+
+      const headers = { ...originalHeaders };
+      if (headers.Cookie && cookies[cookieIndex]) {
+        headers.Cookie = `.ROBLOSECURITY=${cookies[cookieIndex]}`;
+      }
+
+      const res = await fetch(url, { ...options, headers });
+
+      if (res.status === 401 && cookieIndex < cookies.length - 1) {
+        lastStatus = res.status;
+        lastText = await res.text().catch(() => "");
+        continue;
+      }
+
+      if (res.status !== 429) {
+        return res;
+      }
+
+      lastStatus = res.status;
+      lastText = await res.text().catch(() => "");
+      retryDelay = retryDelayFromResponse(res, attempt);
+      robloxRateLimitedUntil = Date.now() + Math.max(retryDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
+      throw new Error(
+        "Roblox is rate-limiting clothing downloads right now. Wait a few minutes and try again. " +
+        `Last response (${lastStatus}): ${lastText.slice(0, 300)}`
+      );
     }
 
-    lastStatus = res.status;
-    lastText = await res.text().catch(() => "");
-
-    if (attempt < attempts - 1) {
-      await wait(retryDelayFromResponse(res, attempt));
+    if (retryDelay && attempt < attempts - 1) {
+      await wait(retryDelay);
     }
   }
 
@@ -3779,11 +3862,27 @@ async function fetchRobloxJson(url) {
 }
 
 async function fetchRobloxAssetSource(assetId) {
-  const directRes = await fetchRobloxWithRetry(
-    `https://assetdelivery.roblox.com/v1/asset?id=${assetId}`,
-    { headers: robloxHeaders() },
-    2
-  ).catch(() => null);
+  const cacheKey = String(assetId);
+  const cached = robloxAssetSourceCache.get(cacheKey);
+  if (cached && Date.now() - cached.savedAt < ROBLOX_ASSET_SOURCE_CACHE_TTL_MS) {
+    return {
+      buffer: Buffer.from(cached.buffer),
+      contentType: cached.contentType,
+    };
+  }
+
+  let directRes = null;
+  try {
+    directRes = await fetchRobloxWithRetry(
+      `https://assetdelivery.roblox.com/v1/asset?id=${assetId}`,
+      { headers: robloxHeaders() },
+      3
+    );
+  } catch (err) {
+    if (isRobloxRateLimitError(err)) {
+      throw err;
+    }
+  }
 
   if (directRes?.ok) {
     const rawBuffer = Buffer.from(await directRes.arrayBuffer());
@@ -3795,10 +3894,10 @@ async function fetchRobloxAssetSource(assetId) {
       buffer = rawBuffer;
     }
 
-    return {
-      buffer,
-      contentType: directRes.headers.get("content-type") || "",
-    };
+    const contentType = directRes.headers.get("content-type") || "";
+    robloxAssetSourceCache.set(cacheKey, { buffer, contentType, savedAt: Date.now() });
+
+    return { buffer, contentType };
   }
 
   const delivery = await fetchRobloxJson(`https://assetdelivery.roblox.com/v2/asset/?id=${assetId}`);
@@ -3824,10 +3923,10 @@ async function fetchRobloxAssetSource(assetId) {
     buffer = rawBuffer;
   }
 
-  return {
-    buffer,
-    contentType: res.headers.get("content-type") || "",
-  };
+  const contentType = res.headers.get("content-type") || "";
+  robloxAssetSourceCache.set(cacheKey, { buffer, contentType, savedAt: Date.now() });
+
+  return { buffer, contentType };
 }
 
 function parseRobloxNumericId(raw) {
@@ -5183,7 +5282,7 @@ function parseBulkIds(raw) {
     .split(/[\s,;]+/)
     .map(id => id.trim())
     .filter(id => /^\d+$/.test(id)))]
-    .slice(0, 10);
+    .slice(0, BULK_ASSET_LIMIT);
 }
 
 function parseBulkClothingIds(raw) {
@@ -5213,8 +5312,8 @@ function formatCommandsHelp(interaction) {
     "📎 `/copiar` - envia o modelo original e textura",
     "📎 `/steal` - copies original asset files",
     "👕 `/steal_clothing` - copies classic clothing templates",
-    "👚 `/bulk_steal_clothing` - copies up to 20 clothing templates",
-    "📦 `/bulk_steal` - premium copies up to 10 assets",
+    "👚 `/bulk_steal_clothing` - copies clothing templates in bulk",
+    "📦 `/bulk_steal` - copies original assets in bulk",
     "🧾 `/bulk_remake` - premium quote/request for up to 10 remakes",
     "🎨 `/refazer` - refaz um UGC por ID",
     "🖼️ `/refazer_multiview` - usa frente, direita, costas e esquerda",
@@ -5253,7 +5352,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "## Services",
     "📎 `/steal` - copy original asset files",
     "👕 `/steal_clothing` - copy classic clothing templates",
-    "👚 `/bulk_steal_clothing` - copy up to 20 clothing templates",
+    "👚 `/bulk_steal_clothing` - copy clothing templates in bulk",
     "🎨 `/remake` - remake a UGC with AI",
     "🖼️ `/multiview` - remake from front/right/back/left images",
     "🧾 `/price` - preview the price before ordering",
@@ -5271,7 +5370,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     lines.push(
       "",
       "## Premium / Elite",
-      "📦 `/bulk_steal` - copy up to 10 assets",
+      "📦 `/bulk_steal` - copy original assets in bulk",
       "🧾 `/bulk_remake` - quote up to 10 remakes"
     );
   }
@@ -6366,10 +6465,11 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "bulk_steal_clothing") {
       await interaction.deferReply();
 
-      const ids = parseBulkClothingIds(interaction.options.getString("ids"));
+      const bulkLimit = bulkClothingLimitFor(interaction);
+      const ids = parseBulkClothingIds(interaction.options.getString("ids")).slice(0, bulkLimit);
 
       if (!ids.length) {
-        await interaction.editReply(`## No valid clothing IDs found\nSend up to ${BULK_CLOTHING_LIMIT} IDs or links separated by space or comma.`);
+        await interaction.editReply(`## No valid clothing IDs found\nSend up to ${bulkLimit} IDs or links separated by space or comma.`);
         return;
       }
 
@@ -6408,7 +6508,9 @@ client.on("interactionCreate", async interaction => {
           failures.push({ id, error: String(err.message || err).slice(0, 180) });
         }
 
-        await wait(600);
+        if (id !== ids[ids.length - 1]) {
+          await wait(BULK_ITEM_DELAY_MS);
+        }
       }
 
       if (!results.length) {
@@ -6572,6 +6674,107 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "bulk_steal") {
+      const bulkLimit = bulkAssetLimitFor(interaction);
+      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, bulkLimit);
+
+      if (!ids.length) {
+        await interaction.reply({
+          content: `## No valid IDs found\nSend up to ${bulkLimit} UGC IDs separated by space or comma.`,
+          flags: 64,
+        });
+        return;
+      }
+
+      const usedBefore = walletCopyUsage(interaction.user.id).count;
+      const quotes = ids.map((_, index) => calculateCopyPrice(interaction, usedBefore + index));
+      const totalWalletAmount = quotes.reduce((sum, quote) => sum + quote.walletAmount, 0);
+      const balanceBefore = walletBalance(interaction.user.id);
+      const planLabel = quotes[0]?.planLabel || "Free";
+
+      if (balanceBefore < totalWalletAmount) {
+        await interaction.reply({
+          content:
+            `## Insufficient Balance\n` +
+            `**Service:** Bulk asset copy\n` +
+            `**Plan:** ${planLabel}\n` +
+            `**Bulk amount:** ${ids.length}/${bulkLimit}\n` +
+            `**Maximum price:** ${formatTokenAmount(totalWalletAmount)}\n` +
+            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+            "Use `/buy` to add Velvet Coins.",
+          flags: 64,
+        });
+        return;
+      }
+
+      await interaction.reply(
+        `## Bulk Copy Started\n` +
+        `**Plan:** ${planLabel}\n` +
+        `**Assets:** ${ids.length}/${bulkLimit}\n` +
+        `**Estimated price:** ${formatTokenAmount(totalWalletAmount)}\n` +
+        `**Pace:** one item every ${Math.ceil(BULK_ITEM_DELAY_MS / 1000)}s\n\n` +
+        "I will send each asset as soon as it is ready."
+      );
+
+      const results = [];
+      let charged = 0;
+
+      for (let index = 0; index < ids.length; index += 1) {
+        const id = ids[index];
+        try {
+          await interaction.followUp(`Preparing \`${id}\`...`).catch(() => {});
+          const result = await processUGC(id, { render: false });
+          const files = [
+            result.glbPath,
+            result.objPath,
+            result.rbxmPath,
+            result.hasTexture ? result.texturePath : null,
+          ];
+
+          await interaction.followUp({
+            content: `## Asset Copied\n**UGC:** \`${id}\``,
+            files: attachmentsFromPaths(files).slice(0, 10),
+          });
+
+          const itemQuote = calculateCopyPrice(interaction);
+          if (itemQuote.walletAmount > 0) {
+            const debit = removeWalletBalance({
+              userId: interaction.user.id,
+              amount: itemQuote.walletAmount,
+              actorId: client.user.id,
+              reason: "Bulk original asset copied",
+              meta: {
+                command: "bulk_steal",
+                ugcId: id,
+                priceTokens: itemQuote.walletAmount,
+              },
+            });
+            if (debit.ok) charged += itemQuote.walletAmount;
+          }
+
+          addCopyUsage(interaction.user.id, 1);
+          results.push({ id, ok: true });
+        } catch (err) {
+          console.error(err);
+          await interaction.followUp(`I could not copy \`${id}\`.`).catch(() => {});
+          results.push({ id, ok: false });
+        }
+
+        if (index < ids.length - 1) {
+          await wait(BULK_ITEM_DELAY_MS);
+        }
+      }
+
+      await interaction.followUp(
+        `## Bulk Copy Finished\n` +
+        `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+        `**Charged:** ${formatTokenAmount(charged)}\n` +
+        `**Remaining balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
+        `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
+      ).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName === "bulk_steal") {
       if (!userHasPremiumAccess(interaction) && !userIsAdmin(interaction)) {
         await interaction.reply({
           content: "## 🔒 Premium / Elite only\nBulk copy is available for Premium and Elite members.",
@@ -6628,7 +6831,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "admin_bulk_views") {
-      const ids = parseBulkIds(interaction.options.getString("ids"));
+      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
       const renderSettings = renderSettingsForInteraction(interaction);
 
       if (!ids.length) {
@@ -6734,7 +6937,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const ids = parseBulkIds(interaction.options.getString("ids"));
+      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
 
       if (!ids.length) {
         await interaction.reply({ content: "## ⚠️ No valid IDs found", flags: 64 });
