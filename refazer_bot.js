@@ -449,7 +449,7 @@ const commands = [
           { name: "Bot default", value: "default" },
           { name: "Stripe", value: "stripe" },
           { name: "Mercado Pago", value: "mercadopago" },
-          { name: "Mercado Pago Pix - 30 days", value: "mercadopago_pix" }
+          { name: "Mercado Pago Pix", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
@@ -520,7 +520,7 @@ const commands = [
           { name: "Bot default", value: "default" },
           { name: "Stripe", value: "stripe" },
           { name: "Mercado Pago", value: "mercadopago" },
-          { name: "Mercado Pago Pix", value: "mercadopago_pix" }
+          { name: "Mercado Pago Pix - 30 days", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
