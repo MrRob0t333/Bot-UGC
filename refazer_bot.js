@@ -1894,7 +1894,7 @@ function formatClothingAllowance(quote) {
     `**Plan:** ${quote.planLabel}`,
     `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
     `**Free remaining before this copy:** ${quote.freeRemaining}`,
-  ].join("\n");
+  ].filter(line => line !== null).join("\n");
 }
 
 function formatBulkClothingAllowance(quote) {
@@ -2907,7 +2907,6 @@ async function notifyPurchaseApproved(request) {
           content:
             "## Purchase Approved\n" +
             `**User:** <@${request.userId}>\n` +
-            `**Order ID:** \`${request.id}\`\n` +
             `**Amount:** ${formatTokenAmount(request.amount)}\n` +
             `**Wallet balance:** ${formatTokenAmount(balance)}`,
         });
@@ -3004,6 +3003,7 @@ async function activatePrepaidSubscription({ request, provider, paymentId }) {
 async function notifyPrepaidSubscriptionApproved(request, plan, expiresAt) {
   const message =
     "## Subscription Activated\n" +
+    `**Order ID:** \`${request.id}\`\n` +
     `**Plan:** Velvet ${plan.label}\n` +
     `**Valid until:** ${new Date(expiresAt).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}\n\n` +
     "Your role is active now.";
@@ -3369,7 +3369,7 @@ function formatAffiliateMessage(profile) {
   ].join("\n");
 }
 
-function formatSubscriptionMessage({ plan, provider, email, link }) {
+function formatSubscriptionMessage({ plan, provider, email, link, orderId = null }) {
   const isPrepaid = provider === "Mercado Pago Pix";
   return [
     `# ⭐ Velvet ${plan.label}`,
@@ -3379,6 +3379,7 @@ function formatSubscriptionMessage({ plan, provider, email, link }) {
     "",
     uiLine("Price", isPrepaid ? `R$ ${plan.brl.toFixed(2)} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `R$ ${plan.brl.toFixed(2)}/month`),
     uiLine("Provider", provider),
+    orderId ? uiLine("Order ID", `\`${orderId}\``) : null,
     uiLine("Email", email),
     "",
     link
@@ -5841,6 +5842,7 @@ client.on("interactionCreate", async interaction => {
       try {
         let link = null;
         let provider = paymentProviderLabel(requestedProvider);
+        let orderId = null;
 
         if (requestedProvider === "mercadopago_pix") {
           const request = createPurchaseRequest({
@@ -5860,6 +5862,7 @@ client.on("interactionCreate", async interaction => {
           const preference = await createMercadoPagoPrepaidSubscriptionPreference(request);
           link = preference.init_point || preference.sandbox_init_point || null;
           provider = "Mercado Pago Pix";
+          orderId = request.id;
         } else if (requestedProvider.startsWith("mercadopago")) {
           const subscription = await createMercadoPagoSubscription({
             userId: interaction.user.id,
@@ -5877,7 +5880,7 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.reply({
-          content: formatSubscriptionMessage({ plan, provider, email, link }),
+          content: formatSubscriptionMessage({ plan, provider, email, link, orderId }),
           flags: 64,
         });
         return;
