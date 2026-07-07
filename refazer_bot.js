@@ -247,6 +247,7 @@ const SUBSCRIPTION_PLANS = {
     roleId: ELITE_ROLE,
   },
 };
+const PREPAID_SUBSCRIPTION_DAYS = Number(process.env.REFAZER_PREPAID_SUBSCRIPTION_DAYS || 30);
 const DEFAULT_CURRENCY = "BRL";
 const DEFAULT_LANGUAGE = "en";
 const CURRENCIES = {
@@ -447,7 +448,8 @@ const commands = [
         .addChoices(
           { name: "Bot default", value: "default" },
           { name: "Stripe", value: "stripe" },
-          { name: "Mercado Pago", value: "mercadopago" }
+          { name: "Mercado Pago", value: "mercadopago" },
+          { name: "Mercado Pago Pix - 30 days", value: "mercadopago_pix" }
         )
     )
     .toJSON(),
@@ -2509,6 +2511,47 @@ async function createMercadoPagoSubscription({ userId, planKey, email }) {
   return mercadoPagoRequest("/preapproval", payload);
 }
 
+async function createMercadoPagoPrepaidSubscriptionPreference(request) {
+  const planKey = request.meta?.planKey;
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan) throw new Error("Plano invalido.");
+
+  const payload = {
+    items: [
+      {
+        id: request.id,
+        title: `Velvet ${plan.label} - ${PREPAID_SUBSCRIPTION_DAYS} days`,
+        description: "Prepaid Velvet subscription access",
+        quantity: 1,
+        currency_id: "BRL",
+        unit_price: request.brl,
+      },
+    ],
+    external_reference: request.id,
+    metadata: {
+      type: "velvet_subscription_pix",
+      user_id: request.userId,
+      plan: planKey,
+      role_id: plan.roleId,
+      request_id: request.id,
+      days: PREPAID_SUBSCRIPTION_DAYS,
+    },
+    payment_methods: {
+      default_payment_method_id: "pix",
+    },
+    back_urls: {
+      success: MERCADO_PAGO_SUCCESS_URL,
+      failure: MERCADO_PAGO_FAILURE_URL,
+      pending: MERCADO_PAGO_PENDING_URL,
+    },
+    auto_return: "approved",
+  };
+
+  if (MERCADO_PAGO_WEBHOOK_URL) payload.notification_url = MERCADO_PAGO_WEBHOOK_URL;
+
+  return mercadoPagoRequest("/checkout/preferences", payload);
+}
+
 function makeAffiliateCode(userId) {
   return `VELVET${String(userId).slice(-6)}`;
 }
@@ -2784,7 +2827,7 @@ function creditAffiliateServiceCommission({ buyerId, walletAmount, priceBrl, sou
   return credited;
 }
 
-function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy", channelId = null }) {
+function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy", channelId = null, meta = {} }) {
   const db = readWalletDb();
   const brl = Number((brlOverride ?? (amount / WALLET_TOKENS_PER_BRL)).toFixed(2));
   const request = {
@@ -2796,6 +2839,7 @@ function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, br
     currencyAmount: Number((brl / (CURRENCIES[currency]?.brlRate || 1)).toFixed(2)),
     source,
     channelId,
+    meta,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
@@ -2894,6 +2938,134 @@ async function syncSubscriptionRole({ userId, roleId, active }) {
   }
 }
 
+function addDays(date, days) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+async function activatePrepaidSubscription({ request, provider, paymentId }) {
+  const planKey = request.meta?.planKey;
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan) return { ok: false, reason: "Plano invalido." };
+
+  const now = new Date();
+  const db = readWalletDb();
+  const storedRequest = db.purchaseRequests.find(item => item.id === request.id);
+  if (!storedRequest) return { ok: false, reason: "Pedido nao encontrado." };
+  if (storedRequest.status !== "pending") return { ok: false, reason: "Esse pedido ja foi resolvido." };
+
+  const user = walletUser(db, request.userId);
+  user.prepaidSubscriptions ||= {};
+
+  const current = user.prepaidSubscriptions[planKey];
+  const currentExpiry = current?.active && Date.parse(current.expiresAt) > now.getTime()
+    ? new Date(current.expiresAt)
+    : now;
+  const expiresAt = addDays(currentExpiry, PREPAID_SUBSCRIPTION_DAYS).toISOString();
+
+  user.prepaidSubscriptions[planKey] = {
+    plan: planKey,
+    roleId: plan.roleId,
+    active: true,
+    provider,
+    requestId: request.id,
+    paymentId,
+    startedAt: current?.startedAt || now.toISOString(),
+    renewedAt: now.toISOString(),
+    expiresAt,
+  };
+
+  storedRequest.status = "approved";
+  storedRequest.resolvedBy = provider;
+  storedRequest.resolvedAt = now.toISOString();
+  storedRequest.reason = `${provider} prepaid subscription ${paymentId || ""}`.trim();
+
+  walletTransaction(db, {
+    userId: request.userId,
+    type: "subscription_prepaid",
+    amount: 0,
+    actorId: provider,
+    reason: `Velvet ${plan.label} prepaid subscription`,
+    meta: { requestId: request.id, plan: planKey, brl: request.brl, expiresAt, paymentId },
+  });
+
+  creditAffiliateCommission(db, {
+    buyerId: request.userId,
+    brl: request.brl,
+    source: "subscription",
+    actorId: provider,
+    meta: { requestId: request.id, plan: planKey, paymentId },
+  });
+
+  writeWalletDb(db);
+  await syncSubscriptionRole({ userId: request.userId, roleId: plan.roleId, active: true });
+  return { ok: true, plan, expiresAt };
+}
+
+async function notifyPrepaidSubscriptionApproved(request, plan, expiresAt) {
+  const message =
+    "## Subscription Activated\n" +
+    `**Plan:** Velvet ${plan.label}\n` +
+    `**Valid until:** ${new Date(expiresAt).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}\n\n` +
+    "Your role is active now.";
+
+  if (request.channelId) {
+    try {
+      const channel = await client.channels.fetch(request.channelId);
+      if (channel?.isTextBased()) {
+        await channel.send({
+          content:
+            "## Subscription Activated\n" +
+            `**User:** <@${request.userId}>\n` +
+            `**Plan:** Velvet ${plan.label}\n` +
+            `**Valid until:** ${new Date(expiresAt).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+        });
+      }
+    } catch (err) {
+      console.warn(`Nao consegui avisar assinatura aprovada no canal: ${request.id}`, err.message);
+    }
+  }
+
+  try {
+    const user = await client.users.fetch(request.userId);
+    await user.send(message);
+  } catch (err) {
+    console.warn(`Nao consegui avisar assinatura aprovada por DM: ${request.id}`, err.message);
+  }
+}
+
+async function expirePrepaidSubscriptions() {
+  const db = readWalletDb();
+  const now = Date.now();
+  const expired = [];
+
+  for (const [userId, user] of Object.entries(db.users || {})) {
+    for (const [planKey, subscription] of Object.entries(user.prepaidSubscriptions || {})) {
+      if (!subscription.active || !subscription.expiresAt) continue;
+      if (Date.parse(subscription.expiresAt) > now) continue;
+
+      subscription.active = false;
+      subscription.expiredAt = new Date().toISOString();
+      expired.push({ userId, planKey, roleId: subscription.roleId });
+      walletTransaction(db, {
+        userId,
+        type: "subscription_prepaid_expired",
+        amount: 0,
+        actorId: client.user?.id || "system",
+        reason: "Prepaid subscription expired",
+        meta: { plan: planKey, expiresAt: subscription.expiresAt },
+      });
+    }
+  }
+
+  if (expired.length) writeWalletDb(db);
+
+  for (const item of expired) {
+    await syncSubscriptionRole({ userId: item.userId, roleId: item.roleId, active: false }).catch(err => {
+      console.warn(`Nao consegui remover cargo vencido de ${item.userId}:`, err.message);
+    });
+  }
+}
+
 async function handleMercadoPagoPayment(paymentId) {
   const payment = await mercadoPagoGet(`/v1/payments/${paymentId}`);
   const requestId = payment.external_reference || payment.metadata?.request_id;
@@ -2911,6 +3083,22 @@ async function handleMercadoPagoPayment(paymentId) {
 
   if (payment.status !== "approved") {
     console.log(`Pagamento ${paymentId} ainda nao aprovado: ${payment.status}`);
+    return;
+  }
+
+  if (request.source === "subscription_pix") {
+    const activated = await activatePrepaidSubscription({
+      request,
+      provider: "mercado_pago_pix",
+      paymentId,
+    });
+
+    if (activated.ok) {
+      console.log(`Assinatura Pix aprovada automaticamente: ${requestId}`);
+      await notifyPrepaidSubscriptionApproved(request, activated.plan, activated.expiresAt);
+    } else {
+      console.log(`Assinatura Pix nao aprovada automaticamente: ${requestId} - ${activated.reason}`);
+    }
     return;
   }
 
@@ -3182,11 +3370,14 @@ function formatAffiliateMessage(profile) {
 }
 
 function formatSubscriptionMessage({ plan, provider, email, link }) {
+  const isPrepaid = provider === "Mercado Pago Pix";
   return [
     `# ⭐ Velvet ${plan.label}`,
-    "Your subscription checkout is ready.",
+    isPrepaid
+      ? `Your prepaid ${PREPAID_SUBSCRIPTION_DAYS}-day subscription checkout is ready.`
+      : "Your subscription checkout is ready.",
     "",
-    uiLine("Price", `R$ ${plan.brl.toFixed(2)}/month`),
+    uiLine("Price", isPrepaid ? `R$ ${plan.brl.toFixed(2)} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `R$ ${plan.brl.toFixed(2)}/month`),
     uiLine("Provider", provider),
     uiLine("Email", email),
     "",
@@ -5249,6 +5440,10 @@ client.once("clientReady", async () => {
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
   startWebhookServer();
+  expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
+  setInterval(() => {
+    expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
+  }, 60 * 60 * 1000);
 });
 
 client.on("guildMemberAdd", async member => {
@@ -5647,7 +5842,25 @@ client.on("interactionCreate", async interaction => {
         let link = null;
         let provider = paymentProviderLabel(requestedProvider);
 
-        if (requestedProvider.startsWith("mercadopago")) {
+        if (requestedProvider === "mercadopago_pix") {
+          const request = createPurchaseRequest({
+            userId: interaction.user.id,
+            amount: 0,
+            currency: "BRL",
+            brlOverride: plan.brl,
+            source: "subscription_pix",
+            channelId: interaction.channelId,
+            meta: {
+              planKey,
+              roleId: plan.roleId,
+              days: PREPAID_SUBSCRIPTION_DAYS,
+              email,
+            },
+          });
+          const preference = await createMercadoPagoPrepaidSubscriptionPreference(request);
+          link = preference.init_point || preference.sandbox_init_point || null;
+          provider = "Mercado Pago Pix";
+        } else if (requestedProvider.startsWith("mercadopago")) {
           const subscription = await createMercadoPagoSubscription({
             userId: interaction.user.id,
             planKey,
