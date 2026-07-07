@@ -403,6 +403,17 @@ const commands = [
           { name: "GBP - Pound", value: "GBP" }
         )
     )
+    .addStringOption(o =>
+      o
+        .setName("gateway")
+        .setDescription("Gateway de pagamento")
+        .setRequired(false)
+        .addChoices(
+          { name: "Padrao do bot", value: "default" },
+          { name: "Stripe", value: "stripe" },
+          { name: "Mercado Pago", value: "mercadopago" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -425,6 +436,17 @@ const commands = [
           { name: "USD - Dollar", value: "USD" },
           { name: "EUR - Euro", value: "EUR" },
           { name: "GBP - Pound", value: "GBP" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("provider")
+        .setDescription("Payment gateway")
+        .setRequired(false)
+        .addChoices(
+          { name: "Bot default", value: "default" },
+          { name: "Stripe", value: "stripe" },
+          { name: "Mercado Pago", value: "mercadopago" }
         )
     )
     .toJSON(),
@@ -485,6 +507,17 @@ const commands = [
     )
     .addStringOption(o =>
       o.setName("email").setDescription("Payment email").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("provider")
+        .setDescription("Payment gateway")
+        .setRequired(false)
+        .addChoices(
+          { name: "Bot default", value: "default" },
+          { name: "Stripe", value: "stripe" },
+          { name: "Mercado Pago", value: "mercadopago" }
+        )
     )
     .toJSON(),
 
@@ -1009,6 +1042,17 @@ const commands = [
     )
     .addNumberOption(o =>
       o.setName("price_brl").setDescription("Custom checkout price in BRL").setRequired(true).setMinValue(1)
+    )
+    .addStringOption(o =>
+      o
+        .setName("provider")
+        .setDescription("Payment gateway")
+        .setRequired(false)
+        .addChoices(
+          { name: "Bot default", value: "default" },
+          { name: "Stripe", value: "stripe" },
+          { name: "Mercado Pago", value: "mercadopago" }
+        )
     )
     .toJSON(),
 
@@ -2090,6 +2134,18 @@ function languageFor(interaction) {
 function currencyFor(interaction, selectedCurrency) {
   const prefs = walletPreferences(interaction.user.id);
   return CURRENCIES[selectedCurrency] ? selectedCurrency : prefs.currency || DEFAULT_CURRENCY;
+}
+
+function paymentProviderFor(selectedProvider) {
+  const selected = String(selectedProvider || "").toLowerCase();
+  const provider = selected && selected !== "default"
+    ? selected
+    : String(PAYMENT_PROVIDER || "stripe").toLowerCase();
+  return ["stripe", "mercadopago"].includes(provider) ? provider : "stripe";
+}
+
+function paymentProviderLabel(provider) {
+  return provider === "mercadopago" ? "Mercado Pago" : "Stripe";
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -5363,6 +5419,8 @@ client.on("interactionCreate", async interaction => {
       const amount = interaction.options.getInteger("quantidade") || interaction.options.getInteger("amount");
       const selectedCurrency = interaction.options.getString("moeda") || interaction.options.getString("currency");
       const currency = currencyFor(interaction, selectedCurrency);
+      const selectedProvider = interaction.options.getString("gateway") || interaction.options.getString("provider");
+      const requestedProvider = paymentProviderFor(selectedProvider);
       if (amount < WALLET_MIN_PURCHASE) {
         await interaction.reply({
           content: lang === "pt-BR"
@@ -5383,19 +5441,19 @@ client.on("interactionCreate", async interaction => {
       let paymentLink = null;
       let paymentProvider = "manual";
 
-      if (PAYMENT_PROVIDER === "stripe" && STRIPE_SECRET_KEY) {
+      if (requestedProvider === "stripe" && STRIPE_SECRET_KEY) {
         try {
           const session = await createStripeCheckoutSession(request);
           paymentLink = session.url || null;
-          paymentProvider = "Stripe";
+          paymentProvider = paymentProviderLabel(requestedProvider);
         } catch (err) {
           console.error(err);
         }
-      } else if (PAYMENT_PROVIDER === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
+      } else if (requestedProvider === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
         try {
           const preference = await createMercadoPagoPreference(request);
           paymentLink = preference.init_point || preference.sandbox_init_point || null;
-          paymentProvider = "Mercado Pago";
+          paymentProvider = paymentProviderLabel(requestedProvider);
         } catch (err) {
           console.error(err);
         }
@@ -5542,6 +5600,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "subscribe") {
       const planKey = interaction.options.getString("plan");
       const email = interaction.options.getString("email").trim();
+      const requestedProvider = paymentProviderFor(interaction.options.getString("provider"));
       const plan = SUBSCRIPTION_PLANS[planKey];
 
       if (!plan) {
@@ -5549,7 +5608,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (PAYMENT_PROVIDER === "stripe" && !STRIPE_SECRET_KEY) {
+      if (requestedProvider === "stripe" && !STRIPE_SECRET_KEY) {
         await interaction.reply({
           content:
             `## ⚠️ Stripe checkout is not configured\n` +
@@ -5560,7 +5619,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (PAYMENT_PROVIDER === "mercadopago" && !MERCADO_PAGO_ACCESS_TOKEN) {
+      if (requestedProvider === "mercadopago" && !MERCADO_PAGO_ACCESS_TOKEN) {
         await interaction.reply({
           content:
             `## ⚠️ Subscription checkout is not configured\n` +
@@ -5574,16 +5633,15 @@ client.on("interactionCreate", async interaction => {
 
       try {
         let link = null;
-        let provider = "Stripe";
+        let provider = paymentProviderLabel(requestedProvider);
 
-        if (PAYMENT_PROVIDER === "mercadopago") {
+        if (requestedProvider === "mercadopago") {
           const subscription = await createMercadoPagoSubscription({
             userId: interaction.user.id,
             planKey,
             email,
           });
           link = subscription.init_point || subscription.sandbox_init_point || null;
-          provider = "Mercado Pago";
         } else {
           const session = await createStripeSubscriptionSession({
             userId: interaction.user.id,
@@ -5719,6 +5777,7 @@ client.on("interactionCreate", async interaction => {
       const target = interaction.options.getUser("user");
       const amount = interaction.options.getInteger("amount");
       const priceBrl = interaction.options.getNumber("price_brl");
+      const requestedProvider = paymentProviderFor(interaction.options.getString("provider"));
       const request = createPurchaseRequest({
         userId: target.id,
         amount,
@@ -5729,11 +5788,19 @@ client.on("interactionCreate", async interaction => {
       });
 
       let paymentLink = null;
+      let paymentProvider = paymentProviderLabel(requestedProvider);
 
-      if (PAYMENT_PROVIDER === "stripe" && STRIPE_SECRET_KEY) {
+      if (requestedProvider === "stripe" && STRIPE_SECRET_KEY) {
         try {
           const session = await createStripeCheckoutSession(request);
           paymentLink = session.url || null;
+        } catch (err) {
+          console.error(err);
+        }
+      } else if (requestedProvider === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
+        try {
+          const preference = await createMercadoPagoPreference(request);
+          paymentLink = preference.init_point || preference.sandbox_init_point || null;
         } catch (err) {
           console.error(err);
         }
@@ -5747,8 +5814,8 @@ client.on("interactionCreate", async interaction => {
           `**Credits:** ${formatTokenAmount(amount)}\n` +
           `**Price:** R$ ${priceBrl.toFixed(2)}\n\n` +
           (paymentLink
-            ? `Stripe checkout:\n${paymentLink}`
-            : "Stripe checkout could not be created. Check PM2 logs."),
+            ? `${paymentProvider} checkout:\n${paymentLink}`
+            : `${paymentProvider} checkout could not be created. Check PM2 logs.`),
         flags: 64,
       });
       return;
