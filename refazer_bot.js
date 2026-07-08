@@ -4427,6 +4427,25 @@ const SNIPER_CATEGORY_LABELS = {
   collectibles: "Collectibles",
 };
 
+const SNIPER_CATEGORY_ASSET_TYPES = {
+  accessories: [8, 41, 42, 43, 44, 45, 46, 47],
+  hats: [8],
+  hair: [41],
+  face_accessories: [42],
+  neck_accessories: [43],
+  shoulder_accessories: [44],
+  front_accessories: [45],
+  back_accessories: [46],
+  waist_accessories: [47],
+  faces: [18],
+  heads: [17, 79],
+  classic_shirts: [11],
+  classic_pants: [12],
+  tshirts: [2],
+  layered_clothing: [64, 65, 66, 67, 68, 69, 70, 71, 72],
+  clothing: [2, 11, 12, 64, 65, 66, 67, 68, 69, 70, 71, 72],
+};
+
 const SNIPER_WINDOW_PARAMS = {
   recent: [
     { SortType: "3" },
@@ -4446,6 +4465,39 @@ const SNIPER_WINDOW_PARAMS = {
 
 function catalogItemId(item) {
   return item.id || item.assetId || item.itemTargetId || item.item?.id || null;
+}
+
+function catalogAssetTypeId(item, details = {}) {
+  const candidates = [
+    item.assetType,
+    item.assetTypeId,
+    item.assetTypeID,
+    item.item?.assetType,
+    item.item?.assetTypeId,
+    details.AssetTypeId,
+    details.AssetTypeID,
+    details.AssetType,
+  ];
+  const value = candidates.find(candidate => Number.isFinite(Number(candidate)));
+  return value === undefined ? null : Number(value);
+}
+
+function catalogItemKind(item, details = {}) {
+  return String(item.itemType || item.item?.itemType || details.ItemType || details.AssetType || "").toLowerCase();
+}
+
+function sniperCategoryMatches(category, item, details = {}) {
+  if (!category || category === "all" || category === "collectibles") return true;
+
+  if (category === "bundles") {
+    return catalogItemKind(item, details).includes("bundle");
+  }
+
+  const allowedTypes = SNIPER_CATEGORY_ASSET_TYPES[category];
+  if (!allowedTypes) return true;
+
+  const assetTypeId = catalogAssetTypeId(item, details);
+  return assetTypeId !== null && allowedTypes.includes(assetTypeId);
 }
 
 function catalogItemPrice(item, details = {}) {
@@ -4481,6 +4533,10 @@ function normalizeCatalogNumber(...values) {
 }
 
 function sniperScore(item, details = {}) {
+  return sniperScoreBreakdown(item, details).score;
+}
+
+function sniperScoreBreakdown(item, details = {}) {
   const price = catalogItemPrice(item, details);
   const favorites = normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites);
   const sales = normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount);
@@ -4492,26 +4548,50 @@ function sniperScore(item, details = {}) {
   ].map(value => String(value).toLowerCase());
 
   let score = 0;
-  score += Math.min(35, Math.log10(favorites + 1) * 12);
-  score += Math.min(35, Math.log10(sales + 1) * 14);
+  const reasons = [];
+  const favoriteScore = Math.min(35, Math.log10(favorites + 1) * 12);
+  const salesScore = Math.min(35, Math.log10(sales + 1) * 14);
+  score += favoriteScore;
+  score += salesScore;
+
+  if (favoriteScore >= 1) reasons.push(`favorites +${Math.round(favoriteScore)}`);
+  if (salesScore >= 1) reasons.push(`sales +${Math.round(salesScore)}`);
 
   if (price !== null) {
-    if (price <= 25) score += 18;
-    else if (price <= 75) score += 12;
-    else if (price <= 150) score += 7;
+    if (price <= 25) {
+      score += 18;
+      reasons.push("low price +18");
+    } else if (price <= 75) {
+      score += 12;
+      reasons.push("fair price +12");
+    } else if (price <= 150) {
+      score += 7;
+      reasons.push("mid price +7");
+    }
   }
 
   if (ageDays !== null) {
-    if (ageDays <= 2) score += 18;
-    else if (ageDays <= 7) score += 12;
-    else if (ageDays <= 30) score += 6;
+    if (ageDays <= 2) {
+      score += 18;
+      reasons.push("fresh item +18");
+    } else if (ageDays <= 7) {
+      score += 12;
+      reasons.push("this week +12");
+    } else if (ageDays <= 30) {
+      score += 6;
+      reasons.push("this month +6");
+    }
   }
 
   if (restrictions.some(value => value.includes("limited") || value.includes("collectible"))) {
     score += 12;
+    reasons.push("collectible signal +12");
   }
 
-  return Math.round(score);
+  return {
+    score: Math.round(score),
+    reasons,
+  };
 }
 
 async function fetchCatalogDetailsSafe(itemId) {
@@ -4526,7 +4606,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const baseParams = {
-    Limit: "30",
+    Limit: "120",
     ...categoryParams,
   };
 
@@ -4557,28 +4637,83 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     if (!id || seen.has(String(id))) continue;
     seen.add(String(id));
     unique.push(item);
-    if (unique.length >= 12) break;
+    if (unique.length >= 40) break;
   }
 
   const enriched = [];
   for (const item of unique) {
     const id = catalogItemId(item);
     const details = await fetchCatalogDetailsSafe(id);
+    if (!sniperCategoryMatches(category, item, details)) continue;
+    const breakdown = sniperScoreBreakdown(item, details);
     enriched.push({
       item,
       details,
       id,
       name: item.name || details.Name || `Item ${id}`,
       creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
+      assetTypeId: catalogAssetTypeId(item, details),
       price: catalogItemPrice(item, details),
       favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
       sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
       createdAt: item.created || item.createdAt || details.Created || null,
-      score: sniperScore(item, details),
+      score: breakdown.score,
+      reasons: breakdown.reasons,
     });
   }
 
-  return enriched.sort((a, b) => b.score - a.score).slice(0, 5);
+  return enriched.sort((a, b) => b.score - a.score).slice(0, 15);
+}
+
+function sniperSeenIdsFor(user) {
+  user.sniperSeenIds ||= [];
+  if (!Array.isArray(user.sniperSeenIds)) user.sniperSeenIds = [];
+  return user.sniperSeenIds;
+}
+
+function pickSniperCandidates(candidates, userId, count = 1) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const seenIds = new Set(sniperSeenIdsFor(user).map(String));
+  const fresh = candidates.filter(candidate => !seenIds.has(String(candidate.id)));
+  const pool = (fresh.length ? fresh : candidates).slice(0, 10);
+  const selected = [];
+
+  while (pool.length && selected.length < count) {
+    const totalWeight = pool.reduce((sum, candidate, index) => {
+      return sum + Math.max(1, candidate.score) + Math.max(0, 10 - index);
+    }, 0);
+    let cursor = Math.random() * totalWeight;
+    let chosenIndex = 0;
+
+    for (let index = 0; index < pool.length; index += 1) {
+      cursor -= Math.max(1, pool[index].score) + Math.max(0, 10 - index);
+      if (cursor <= 0) {
+        chosenIndex = index;
+        break;
+      }
+    }
+
+    selected.push(pool.splice(chosenIndex, 1)[0]);
+  }
+
+  return selected;
+}
+
+function markSniperCandidatesSeen(userId, candidates) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const seenIds = sniperSeenIdsFor(user);
+
+  for (const candidate of candidates) {
+    const id = String(candidate.id);
+    const existingIndex = seenIds.indexOf(id);
+    if (existingIndex >= 0) seenIds.splice(existingIndex, 1);
+    seenIds.unshift(id);
+  }
+
+  user.sniperSeenIds = seenIds.slice(0, 100);
+  writeWalletDb(db);
 }
 
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice }) {
@@ -4604,14 +4739,15 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     ].filter(Boolean).join(" • ");
 
     return [
-      `**${index + 1}. ${name}**`,
+      `**${name}**`,
       `Score: **${candidate.score}/100** | Creator: **${creator}**`,
       [
         candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
-        candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : null,
+        candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : "sales unavailable",
         price,
         ageText,
       ].filter(Boolean).join(" | "),
+      `Why: ${candidate.reasons?.length ? candidate.reasons.slice(0, 4).join(" | ") : "public signal match"}`,
       `https://www.roblox.com/catalog/${candidate.id}`,
     ].join("\n");
   }).join("\n\n");
@@ -4628,7 +4764,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     "## Filters",
     filters,
     "",
-    "## Top Signals",
+    "## Selected Signal",
     rows || "No strong candidates found for these filters.",
     "",
     "Review each item manually before investing, copying trends, or ordering a remake.",
@@ -7435,6 +7571,8 @@ client.on("interactionCreate", async interaction => {
           return;
         }
 
+        const selectedCandidates = pickSniperCandidates(candidates, interaction.user.id, 1);
+
         const debit = removeWalletBalance({
           userId: interaction.user.id,
           amount: quote.walletAmount,
@@ -7448,15 +7586,16 @@ client.on("interactionCreate", async interaction => {
             keyword,
             minPrice,
             maxPrice,
-            resultIds: candidates.map(item => item.id),
+            resultIds: selectedCandidates.map(item => item.id),
             priceTokens: quote.walletAmount,
           },
         });
         addSniperUsage(interaction.user.id, 1);
+        markSniperCandidatesSeen(interaction.user.id, selectedCandidates);
 
         await interaction.editReply(
           formatSniperReport({
-            candidates,
+            candidates: selectedCandidates,
             quote,
             window,
             category,
