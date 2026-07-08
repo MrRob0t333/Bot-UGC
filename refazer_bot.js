@@ -4293,6 +4293,7 @@ const ROBLOX_RATE_LIMIT_PAUSE_MS = Number(process.env.REFAZER_ROBLOX_RATE_LIMIT_
 const robloxAssetSourceCache = new Map();
 let nextRobloxRequestAt = 0;
 let robloxRateLimitedUntil = 0;
+let nextRobloxPublicRequestAt = 0;
 
 function isRobloxRateLimitError(err) {
   const message = String(err?.message || err || "");
@@ -4307,6 +4308,15 @@ async function waitForRobloxSlot() {
   }
 
   nextRobloxRequestAt = Date.now() + ROBLOX_REQUEST_INTERVAL_MS;
+}
+
+async function waitForRobloxPublicSlot() {
+  const now = Date.now();
+  if (nextRobloxPublicRequestAt > now) {
+    await wait(nextRobloxPublicRequestAt - now);
+  }
+
+  nextRobloxPublicRequestAt = Date.now() + Math.max(500, ROBLOX_REQUEST_INTERVAL_MS);
 }
 
 function wait(ms) {
@@ -4383,6 +4393,25 @@ async function fetchRobloxJson(url) {
   return JSON.parse(text);
 }
 
+async function fetchRobloxPublicJson(url) {
+  await waitForRobloxPublicSlot();
+
+  const res = await fetch(url, {
+    headers: robloxHeaders({}, ""),
+  });
+  const text = await res.text();
+
+  if (res.status === 429) {
+    throw new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
+  }
+
+  if (!res.ok) {
+    throw new Error(`Roblox public catalog request failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+
+  return JSON.parse(text);
+}
+
 const SNIPER_CATEGORY_PARAMS = {
   all: {},
   accessories: { Category: "11" },
@@ -4446,6 +4475,34 @@ const SNIPER_CATEGORY_ASSET_TYPES = {
   clothing: [2, 11, 12, 64, 65, 66, 67, 68, 69, 70, 71, 72],
 };
 
+const ROBLOX_ASSET_TYPE_NAME_TO_ID = {
+  tshirt: 2,
+  t_shirt: 2,
+  hat: 8,
+  shirt: 11,
+  pants: 12,
+  head: 17,
+  face: 18,
+  hairaccessory: 41,
+  hair: 41,
+  faceaccessory: 42,
+  neckaccessory: 43,
+  shoulderaccessory: 44,
+  frontaccessory: 45,
+  backaccessory: 46,
+  waistaccessory: 47,
+  tshirtaccessory: 64,
+  shirtaccessory: 65,
+  pantsaccessory: 66,
+  jacketaccessory: 67,
+  sweateraccessory: 68,
+  shortsaccessory: 69,
+  leftshoeaccessory: 70,
+  rightshoeaccessory: 71,
+  dressskirtaccessory: 72,
+  dynamichead: 79,
+};
+
 const SNIPER_WINDOW_PARAMS = {
   recent: [
     { SortType: "3" },
@@ -4478,8 +4535,15 @@ function catalogAssetTypeId(item, details = {}) {
     details.AssetTypeID,
     details.AssetType,
   ];
-  const value = candidates.find(candidate => Number.isFinite(Number(candidate)));
-  return value === undefined ? null : Number(value);
+  for (const candidate of candidates) {
+    const number = Number(candidate);
+    if (Number.isFinite(number)) return number;
+
+    const key = String(candidate || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    if (ROBLOX_ASSET_TYPE_NAME_TO_ID[key]) return ROBLOX_ASSET_TYPE_NAME_TO_ID[key];
+  }
+
+  return null;
 }
 
 function catalogItemKind(item, details = {}) {
@@ -4596,7 +4660,7 @@ function sniperScoreBreakdown(item, details = {}) {
 
 async function fetchCatalogDetailsSafe(itemId) {
   try {
-    return await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${encodeURIComponent(itemId)}/details`);
+    return await fetchRobloxPublicJson(`https://economy.roblox.com/v2/assets/${encodeURIComponent(itemId)}/details`);
   } catch {
     return {};
   }
@@ -4606,7 +4670,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const baseParams = {
-    Limit: "120",
+    Limit: "60",
     ...categoryParams,
   };
 
@@ -4620,7 +4684,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   for (const attemptParams of windowAttempts) {
     const params = new URLSearchParams({ ...baseParams, ...attemptParams });
     try {
-      const response = await fetchRobloxJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
+      const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
       data = Array.isArray(response.data) ? response.data : [];
       if (data.length) break;
     } catch (err) {
@@ -4637,13 +4701,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     if (!id || seen.has(String(id))) continue;
     seen.add(String(id));
     unique.push(item);
-    if (unique.length >= 40) break;
+    if (unique.length >= 25) break;
   }
 
   const enriched = [];
   for (const item of unique) {
     const id = catalogItemId(item);
-    const details = await fetchCatalogDetailsSafe(id);
+    const details = {};
     if (!sniperCategoryMatches(category, item, details)) continue;
     const breakdown = sniperScoreBreakdown(item, details);
     enriched.push({
@@ -4660,6 +4724,29 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       score: breakdown.score,
       reasons: breakdown.reasons,
     });
+  }
+
+  if (!enriched.length && category !== "all" && category !== "collectibles") {
+    for (const item of unique.slice(0, 8)) {
+      const id = catalogItemId(item);
+      const details = await fetchCatalogDetailsSafe(id);
+      if (!sniperCategoryMatches(category, item, details)) continue;
+      const breakdown = sniperScoreBreakdown(item, details);
+      enriched.push({
+        item,
+        details,
+        id,
+        name: item.name || details.Name || `Item ${id}`,
+        creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
+        assetTypeId: catalogAssetTypeId(item, details),
+        price: catalogItemPrice(item, details),
+        favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
+        sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
+        createdAt: item.created || item.createdAt || details.Created || null,
+        score: breakdown.score,
+        reasons: breakdown.reasons,
+      });
+    }
   }
 
   return enriched.sort((a, b) => b.score - a.score).slice(0, 15);
