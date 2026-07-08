@@ -4846,6 +4846,21 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
   };
 }
 
+function addSniperDebugSample(reason, item, details = {}) {
+  if (!lastSniperDebug?.samples || lastSniperDebug.samples.length >= 8) return;
+
+  lastSniperDebug.samples.push({
+    reason,
+    id: catalogItemId(item),
+    name: item.name || item.item?.name || details.Name || null,
+    price: catalogItemPrice(item, details),
+    assetTypeId: catalogAssetTypeId(item, details),
+    assetType: item.assetType || item.item?.assetType || details.AssetType || null,
+    itemType: item.itemType || item.item?.itemType || details.ItemType || null,
+    creator: item.creatorName || item.creator?.name || details.Creator?.Name || null,
+  });
+}
+
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const cacheKey = JSON.stringify({ window, category, keyword, minPrice, maxPrice });
@@ -4872,6 +4887,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       category: 0,
       nameHint: 0,
     },
+    samples: [],
     enriched: 0,
     inferred: 0,
     candidates: 0,
@@ -4952,14 +4968,17 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const id = catalogItemId(item);
     if (!id) {
       lastSniperDebug.rejected.missingId += 1;
+      addSniperDebugSample("missingId", item);
       continue;
     }
     if (seen.has(String(id))) {
       lastSniperDebug.rejected.duplicate += 1;
+      addSniperDebugSample("duplicate", item);
       continue;
     }
     if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) {
       lastSniperDebug.rejected.price += 1;
+      addSniperDebugSample("price", item);
       continue;
     }
     seen.add(String(id));
@@ -4978,15 +4997,18 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
     if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) {
       lastSniperDebug.rejected.price += 1;
+      addSniperDebugSample("price", item, details);
       continue;
     }
     if (canVerify && !matches) {
       lastSniperDebug.rejected.category += 1;
+      addSniperDebugSample("category", item, details);
       continue;
     }
 
     if (!canVerify && !sniperNameSuggestsCategory(category, item, details)) {
       lastSniperDebug.rejected.nameHint += 1;
+      addSniperDebugSample("nameHint", item, details);
       continue;
     }
 
