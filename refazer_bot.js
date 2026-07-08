@@ -4308,6 +4308,7 @@ let robloxRateLimitedUntil = 0;
 let nextRobloxPublicRequestAt = 0;
 let robloxPublicRateLimitedUntil = 0;
 const sniperCatalogCache = new Map();
+let lastSniperDebug = null;
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
 
 function isRobloxRateLimitError(err) {
@@ -4808,8 +4809,31 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const cacheKey = JSON.stringify({ window, category, keyword, minPrice, maxPrice });
   const cached = sniperCatalogCache.get(cacheKey);
   if (cached && Date.now() - cached.savedAt < SNIPER_CATALOG_CACHE_TTL_MS) {
+    lastSniperDebug = {
+      fromCache: true,
+      request: { window, category, keyword, minPrice, maxPrice },
+      candidates: cached.candidates.length,
+    };
     return cached.candidates;
   }
+
+  lastSniperDebug = {
+    fromCache: false,
+    request: { window, category, keyword, minPrice, maxPrice },
+    attempts: [],
+    rawRows: 0,
+    uniqueRows: 0,
+    rejected: {
+      duplicate: 0,
+      missingId: 0,
+      price: 0,
+      category: 0,
+      nameHint: 0,
+    },
+    enriched: 0,
+    inferred: 0,
+    candidates: 0,
+  };
 
   const categoriesToTry = [
     category,
@@ -4844,15 +4868,25 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
       for (const attemptParams of windowAttempts) {
         const params = new URLSearchParams({ ...baseParams, ...attemptParams });
+        const debugAttempt = {
+          category: searchCategory,
+          reason: queryVariant.reason,
+          params: params.toString(),
+          rows: 0,
+          error: null,
+        };
+        lastSniperDebug.attempts.push(debugAttempt);
         try {
           const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
           data = Array.isArray(response.data) ? response.data : [];
+          debugAttempt.rows = data.length;
           if (data.length) {
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             break;
           }
         } catch (err) {
           lastError = err;
+          debugAttempt.error = String(err.message || err).slice(0, 300);
           if (isRobloxRateLimitError(err)) break;
         }
       }
@@ -4868,17 +4902,29 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   if (!data.length && lastError) throw lastError;
+  lastSniperDebug.rawRows = data.length;
 
   const unique = [];
   const seen = new Set();
   for (const item of data) {
     const id = catalogItemId(item);
-    if (!id || seen.has(String(id))) continue;
-    if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
+    if (!id) {
+      lastSniperDebug.rejected.missingId += 1;
+      continue;
+    }
+    if (seen.has(String(id))) {
+      lastSniperDebug.rejected.duplicate += 1;
+      continue;
+    }
+    if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) {
+      lastSniperDebug.rejected.price += 1;
+      continue;
+    }
     seen.add(String(id));
     unique.push(item);
     if (unique.length >= 15) break;
   }
+  lastSniperDebug.uniqueRows = unique.length;
 
   const enriched = [];
   const inferred = [];
@@ -4888,10 +4934,19 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
 
-    if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
-    if (canVerify && !matches) continue;
+    if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) {
+      lastSniperDebug.rejected.price += 1;
+      continue;
+    }
+    if (canVerify && !matches) {
+      lastSniperDebug.rejected.category += 1;
+      continue;
+    }
 
-    if (!canVerify && !sniperNameSuggestsCategory(category, item, details)) continue;
+    if (!canVerify && !sniperNameSuggestsCategory(category, item, details)) {
+      lastSniperDebug.rejected.nameHint += 1;
+      continue;
+    }
 
     const candidate = buildSniperCandidate(item, details, category, canVerify && matches);
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
@@ -4933,6 +4988,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   const finalPool = enriched.length ? enriched : inferred;
   const candidates = finalPool.sort((a, b) => b.score - a.score).slice(0, 15);
+  lastSniperDebug.enriched = enriched.length;
+  lastSniperDebug.inferred = inferred.length;
+  lastSniperDebug.candidates = candidates.length;
   if (candidates.length) {
     sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
   }
@@ -7846,7 +7904,10 @@ client.on("interactionCreate", async interaction => {
             await interaction.followUp({
               content:
                 "## Admin diagnostic\n" +
-                "No catalog rows survived the sniper search/fallback pipeline. Try `category: All` once to check whether Roblox returned any public catalog rows from this VPS.",
+                "No catalog rows survived the sniper search/fallback pipeline.\n" +
+                "```json\n" +
+                `${JSON.stringify(lastSniperDebug, null, 2).slice(0, 1800)}\n` +
+                "```",
               flags: 64,
             }).catch(() => {});
           }
