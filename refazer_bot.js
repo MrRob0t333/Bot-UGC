@@ -4583,6 +4583,18 @@ const SNIPER_CATEGORY_DEFAULT_KEYWORD = {
   layered_clothing: "jacket",
 };
 
+const SNIPER_FORBIDDEN_TYPE_HINTS = [
+  "emote",
+  "animation",
+  "pose",
+  "walk",
+  "run",
+  "jump",
+  "idle",
+  "swim",
+  "climb",
+];
+
 const SNIPER_WINDOW_PARAMS = {
   recent: [
     { SortType: "3" },
@@ -4656,8 +4668,28 @@ function sniperNameSuggestsCategory(category, item, details = {}) {
   return hints.some(hint => text.includes(normalizeSniperText(hint)));
 }
 
+function sniperLooksForbiddenForSpecificCategory(category, item, details = {}) {
+  if (!category || ["all", "accessories", "clothing", "collectibles"].includes(category)) return false;
+
+  const text = normalizeSniperText([
+    item.name,
+    item.item?.name,
+    item.assetType,
+    item.item?.assetType,
+    item.itemType,
+    details.Name,
+    details.AssetType,
+    details.ItemType,
+  ].filter(Boolean).join(" "));
+
+  return SNIPER_FORBIDDEN_TYPE_HINTS.some(hint => text.includes(hint));
+}
+
 function sniperCategoryMatches(category, item, details = {}) {
-  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) return true;
+  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) {
+    return !sniperLooksForbiddenForSpecificCategory(category, item, details) &&
+      (sniperNameSuggestsCategory(category, item, details) || catalogAssetTypeId(item, details) === null);
+  }
   if (!category || category === "all" || category === "collectibles") return true;
 
   if (category === "bundles") {
@@ -4672,7 +4704,9 @@ function sniperCategoryMatches(category, item, details = {}) {
 }
 
 function sniperCategoryCanBeVerified(category, item, details = {}) {
-  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) return true;
+  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) {
+    return sniperNameSuggestsCategory(category, item, details) || catalogAssetTypeId(item, details) !== null || sniperLooksForbiddenForSpecificCategory(category, item, details);
+  }
   if (!category || category === "all" || category === "collectibles") return true;
   if (category === "bundles") return Boolean(catalogItemKind(item, details));
   return catalogAssetTypeId(item, details) !== null;
