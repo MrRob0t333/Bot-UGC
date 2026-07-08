@@ -84,7 +84,7 @@ def image_name_is_safe_color(image):
 
 
 def should_adjust_tone(image, color_images):
-    if texture_tone == "normal":
+    if texture_tone == "normal" and tone_value == 1.0 and tone_saturation == 1.0 and tone_gamma == 1.0:
         return False
 
     if not image or image.type in {"RENDER_RESULT", "VIEWER"}:

@@ -120,6 +120,10 @@ const TEXTURE_TONES = {
   },
 };
 const DEFAULT_TEXTURE_TONE = TEXTURE_TONES[RAW_DEFAULT_TEXTURE_TONE] ? RAW_DEFAULT_TEXTURE_TONE : "brighter";
+const DEFAULT_TEXTURE_ADJUSTMENTS = {
+  saturation: 1,
+  value: 1,
+};
 
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
@@ -420,6 +424,12 @@ const commands = [
           { name: "Brighter", value: "brighter" },
           { name: "Vibrant", value: "vibrant" }
         )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Default texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Default texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
     .toJSON(),
 
@@ -883,6 +893,12 @@ const commands = [
           { name: "Vibrant", value: "vibrant" }
         )
     )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -939,6 +955,12 @@ const commands = [
           { name: "Brighter", value: "brighter" },
           { name: "Vibrant", value: "vibrant" }
         )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
     .addStringOption(o =>
       o
@@ -1014,6 +1036,12 @@ const commands = [
           { name: "Brighter", value: "brighter" },
           { name: "Vibrant", value: "vibrant" }
         )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
     .toJSON(),
 
@@ -1117,6 +1145,12 @@ const commands = [
           { name: "Brighter", value: "brighter" },
           { name: "Vibrant", value: "vibrant" }
         )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
     .toJSON(),
 
@@ -1368,6 +1402,12 @@ const commands = [
           { name: "Vibrant", value: "vibrant" }
         )
     )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1424,6 +1464,12 @@ const commands = [
           { name: "Mais clara", value: "brighter" },
           { name: "Mais viva", value: "vibrant" }
         )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Saturacao da textura. 1.00 mantem original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Brilho/value da textura. 1.00 mantem original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
     .addStringOption(o =>
       o
@@ -2240,6 +2286,7 @@ function walletPreferences(userId) {
     language: user.language || DEFAULT_LANGUAGE,
     currency: user.currency || DEFAULT_CURRENCY,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
+    textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -2253,6 +2300,12 @@ function updateWalletPreferences(userId, updates) {
   if (updates.language) user.language = updates.language;
   if (updates.currency && CURRENCIES[updates.currency]) user.currency = updates.currency;
   if (updates.textureTone) user.textureTone = normalizeTextureTone(updates.textureTone);
+  if (updates.textureAdjustments) {
+    user.textureAdjustments = normalizeTextureAdjustments({
+      ...(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
+      ...updates.textureAdjustments,
+    });
+  }
   if (updates.renderSettings) {
     user.renderSettings = {
       ...DEFAULT_RENDER_SETTINGS,
@@ -2265,6 +2318,7 @@ function updateWalletPreferences(userId, updates) {
     language: user.language,
     currency: user.currency,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
+    textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -2307,6 +2361,13 @@ function normalizeTextureTone(value) {
   return TEXTURE_TONES[key] ? key : DEFAULT_TEXTURE_TONE;
 }
 
+function normalizeTextureAdjustments(value = {}) {
+  return {
+    saturation: clampNumber(value.saturation, 0.5, 1.5, DEFAULT_TEXTURE_ADJUSTMENTS.saturation),
+    value: clampNumber(value.value, 0.6, 1.6, DEFAULT_TEXTURE_ADJUSTMENTS.value),
+  };
+}
+
 function textureToneForInteraction(interaction) {
   const prefs = walletPreferences(interaction.user.id);
   const selected = interaction.options.getString("texture_tone");
@@ -2315,9 +2376,24 @@ function textureToneForInteraction(interaction) {
     : normalizeTextureTone(prefs.textureTone);
 }
 
+function textureAdjustmentsForInteraction(interaction) {
+  const prefs = walletPreferences(interaction.user.id);
+  const base = normalizeTextureAdjustments(prefs.textureAdjustments);
+
+  return normalizeTextureAdjustments({
+    saturation: interaction.options.getNumber("texture_saturation") ?? base.saturation,
+    value: interaction.options.getNumber("texture_value") ?? base.value,
+  });
+}
+
 function textureToneSummary(textureTone) {
   const key = normalizeTextureTone(textureTone);
   return TEXTURE_TONES[key]?.label || TEXTURE_TONES[DEFAULT_TEXTURE_TONE].label;
+}
+
+function textureAdjustmentsSummary(adjustments) {
+  const normalized = normalizeTextureAdjustments(adjustments);
+  return `Saturation ${normalized.saturation.toFixed(2)}x, Value ${normalized.value.toFixed(2)}x`;
 }
 
 function normalizeRenderSettings(settings = {}) {
@@ -4268,7 +4344,19 @@ function exportGlb(objPath, texturePath, glbPath) {
   );
 }
 
-function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE) {
+function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
+  const tone = TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE];
+  const normalizedAdjustments = normalizeTextureAdjustments(adjustments);
+
+  return {
+    label: tone.label,
+    value: tone.value * normalizedAdjustments.value,
+    saturation: tone.saturation * normalizedAdjustments.saturation,
+    gamma: tone.gamma,
+  };
+}
+
+function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
   }
@@ -4288,7 +4376,7 @@ function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE) {
         tempOutputPath,
         String(ROBLOX_MAX_TEXTURE_SIZE),
         normalizeTextureTone(textureTone),
-        JSON.stringify(TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE]),
+        JSON.stringify(textureToneConfig(textureTone, textureAdjustments)),
       ],
       { stdio: "inherit" }
     );
@@ -4977,7 +5065,7 @@ function selectImageForTripo(imagePaths, preferredView) {
     imagePaths[0];
 }
 
-async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, onProgress }) {
+async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, textureAdjustments, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -5023,7 +5111,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
 
   return {
     skipped: false,
@@ -5036,7 +5124,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   };
 }
 
-async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangles, tempDir, textureTone, onProgress }) {
+async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangles, tempDir, textureTone, textureAdjustments, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -5084,7 +5172,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
 
   return {
     taskId,
@@ -5094,7 +5182,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   };
 }
 
-async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles, tempDir, textureTone, onProgress }) {
+async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles, tempDir, textureTone, textureAdjustments, onProgress }) {
   const tripoDir = path.join(tempDir, "text_model");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -5127,7 +5215,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const modelPath = path.join(tripoDir, "velvet_model.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
 
   return {
     taskId,
@@ -5303,6 +5391,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
       tempDir,
       preferredView: options.preferredView || null,
       textureTone: options.textureTone || DEFAULT_TEXTURE_TONE,
+      textureAdjustments: options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS,
       onProgress: options.onProgress,
     });
   }
@@ -5343,7 +5432,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   const modelPath = path.join(tripoDir, "refeito.glb");
   const jsonPath = path.join(tripoDir, "tripo_result.json");
   const savedPath = await writeResponseAsset(res, modelPath, jsonPath);
-  optimizeGlbForRoblox(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE);
+  optimizeGlbForRoblox(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE, options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS);
 
   return {
     skipped: false,
@@ -5769,6 +5858,8 @@ client.on("interactionCreate", async interaction => {
       const language = interaction.options.getString("language");
       const currency = interaction.options.getString("currency");
       const textureTone = interaction.options.getString("texture_tone");
+      const textureSaturation = interaction.options.getNumber("texture_saturation");
+      const textureValue = interaction.options.getNumber("texture_value");
       const renderUpdates = {};
       const renderLighting = interaction.options.getString("render_lighting");
       const renderIor = interaction.options.getNumber("render_ior");
@@ -5786,6 +5877,12 @@ client.on("interactionCreate", async interaction => {
         language,
         currency,
         textureTone,
+        textureAdjustments: textureSaturation !== null || textureValue !== null
+          ? {
+            saturation: textureSaturation ?? walletPreferences(interaction.user.id).textureAdjustments.saturation,
+            value: textureValue ?? walletPreferences(interaction.user.id).textureAdjustments.value,
+          }
+          : null,
         renderSettings: Object.keys(renderUpdates).length ? normalizeRenderSettings(renderUpdates) : null,
       });
       const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
@@ -5796,6 +5893,7 @@ client.on("interactionCreate", async interaction => {
           `**Language:** ${resolvedLanguage}\n` +
           `**Currency:** ${prefs.currency}\n\n` +
           `**Texture tone:** ${textureToneSummary(prefs.textureTone)}\n\n` +
+          `**Texture controls:** ${textureAdjustmentsSummary(prefs.textureAdjustments)}\n\n` +
           `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
           `Payment previews will use **${prefs.currency}**. Bot messages will follow your language preference when available.`,
         flags: 64,
@@ -7365,6 +7463,7 @@ client.on("interactionCreate", async interaction => {
       const texture = interaction.options.getString("texture") || "standard";
       const triangles = interaction.options.getInteger("triangles");
       const textureTone = textureToneForInteraction(interaction);
+      const textureAdjustments = textureAdjustmentsForInteraction(interaction);
       const quote = calculatePromptModelPrice(interaction, { texture, triangles });
       const price = quote.walletAmount;
 
@@ -7395,6 +7494,7 @@ client.on("interactionCreate", async interaction => {
           triangles,
           tempDir,
           textureTone,
+          textureAdjustments,
           onProgress: async ({ status, progress }) => {
             await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
@@ -7424,6 +7524,8 @@ client.on("interactionCreate", async interaction => {
             "## Model Ready\n" +
             `**Plan:** ${quote.planLabel}\n` +
             `${quote.lines.map(line => `**${line}**`).join("\n")}\n` +
+            `**Texture tone:** ${textureToneSummary(textureTone)}\n` +
+            `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
             `**Price:** ${formatTokenAmount(price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
           files: [publicModelAttachment(model.modelPath)],
@@ -7452,6 +7554,7 @@ client.on("interactionCreate", async interaction => {
       const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
       const triangles = interaction.options.getInteger("triangles");
       const textureTone = textureToneForInteraction(interaction);
+      const textureAdjustments = textureAdjustmentsForInteraction(interaction);
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
@@ -7512,6 +7615,7 @@ client.on("interactionCreate", async interaction => {
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
+          `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
           "\n\n### Reference Check\n" +
           (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
@@ -7563,6 +7667,7 @@ client.on("interactionCreate", async interaction => {
           triangles,
           tempDir,
           textureTone,
+          textureAdjustments,
           onProgress: async ({ status, progress }) => {
             await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
@@ -7668,6 +7773,7 @@ client.on("interactionCreate", async interaction => {
   const triangles = interaction.options.getInteger("triangles");
   const preferredView = interaction.options.getString("vista") || interaction.options.getString("view");
   const textureTone = textureToneForInteraction(interaction);
+  const textureAdjustments = textureAdjustmentsForInteraction(interaction);
 
   if (!["none", "economy"].includes(enhancement)) {
     await interaction.editReply(
@@ -7736,6 +7842,7 @@ client.on("interactionCreate", async interaction => {
     `**Textura:** ${texture === "none" ? "sem textura" : texture === "hd" ? "HD" : "padrão"}\n` +
     `**Melhoria:** ${(IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label}\n` +
     `**Tom da textura:** ${textureToneSummary(textureTone)}\n` +
+    `**Controles da textura:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
     `**Triangles:** ${triangles || "sem limite especial"}\n` +
     `**Vista de referência:** ${preferredView || "auto"}\n` +
     `**Preço estimado:** ${formatTokenAmount(quote.walletAmount)}\n` +
@@ -7793,6 +7900,7 @@ client.on("interactionCreate", async interaction => {
         triangles,
         preferredView,
         textureTone,
+        textureAdjustments,
         onProgress: async ({ status, progress }) => {
           await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
         },
