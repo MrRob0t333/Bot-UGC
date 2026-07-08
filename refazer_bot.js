@@ -268,6 +268,16 @@ const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
 const IMAGE_GENERATION_PRICE = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE || 100);
 const PROMPT_MODEL_PRICE = Number(process.env.REFAZER_PROMPT_MODEL_PRICE || 1100);
+const SERVICE_CREDIT_SCOPES = {
+  all: "All services",
+  copy: "UGC copy",
+  clothing: "Clothing copy",
+  remake: "AI remake",
+  multiview: "Multiview model",
+  prompt_model: "Prompt model",
+  image: "Image generation",
+  enhancement: "Reference cleanup",
+};
 const AFFILIATE_WALLET_PURCHASE_RATE = Number(process.env.REFAZER_AFFILIATE_WALLET_RATE || 0.10);
 const AFFILIATE_SERVICE_RATE = Number(process.env.REFAZER_AFFILIATE_SERVICE_RATE || 0.05);
 const AFFILIATE_SUBSCRIPTION_RATE = Number(process.env.REFAZER_AFFILIATE_SUBSCRIPTION_RATE || 0.20);
@@ -1215,6 +1225,12 @@ const commands = [
       o.setName("uses").setDescription("Maximum number of users that can redeem it").setRequired(true).setMinValue(1)
     )
     .addStringOption(o =>
+      o
+        .setName("services")
+        .setDescription("Optional: all, copy, clothing, remake, multiview, prompt_model, image, enhancement")
+        .setRequired(false)
+    )
+    .addStringOption(o =>
       o.setName("note").setDescription("Internal note").setRequired(false)
     )
     .toJSON(),
@@ -2141,6 +2157,7 @@ function walletUser(db, userId) {
   if (!db.users[userId]) {
     db.users[userId] = {
       balance: 0,
+      serviceCredits: [],
       language: DEFAULT_LANGUAGE,
       currency: DEFAULT_CURRENCY,
       affiliateCode: null,
@@ -2153,6 +2170,7 @@ function walletUser(db, userId) {
   db.users[userId].language ||= DEFAULT_LANGUAGE;
   db.users[userId].currency ||= DEFAULT_CURRENCY;
   db.users[userId].affiliateBalance ||= 0;
+  db.users[userId].serviceCredits ||= [];
   copyUsageFor(db.users[userId]);
   clothingUsageFor(db.users[userId]);
 
@@ -2172,9 +2190,64 @@ function promoCodeList(db) {
   return db.promoCodes;
 }
 
-function createPromoCode({ code, amount, maxUses, actorId, note }) {
+function normalizeServiceScopes(input) {
+  if (!input) return [];
+  const raw = Array.isArray(input) ? input : String(input).split(/[,\s]+/);
+  const scopes = raw
+    .map(item => String(item || "").trim().toLowerCase().replace(/-/g, "_"))
+    .filter(Boolean)
+    .map(item => {
+      if (["ugc", "asset", "assets", "steal", "copiar"].includes(item)) return "copy";
+      if (["clothes", "roupa", "roupas", "steal_clothing"].includes(item)) return "clothing";
+      if (["refazer", "single", "ai_remake"].includes(item)) return "remake";
+      if (["multi", "refazer_multiview"].includes(item)) return "multiview";
+      if (["prompt", "text", "text_model"].includes(item)) return "prompt_model";
+      if (["images", "generate_image"].includes(item)) return "image";
+      if (["enhance", "cleanup", "clean", "enhance_images"].includes(item)) return "enhancement";
+      return item;
+    })
+    .filter(item => SERVICE_CREDIT_SCOPES[item]);
+
+  return [...new Set(scopes)];
+}
+
+function formatServiceScopes(scopes) {
+  const normalized = normalizeServiceScopes(scopes);
+  if (!normalized.length) return "Wallet balance";
+  if (normalized.includes("all")) return SERVICE_CREDIT_SCOPES.all;
+  return normalized.map(scope => SERVICE_CREDIT_SCOPES[scope] || scope).join(", ");
+}
+
+function serviceScopeMatches(scopes, serviceKey) {
+  const normalized = normalizeServiceScopes(scopes);
+  if (!normalized.length) return false;
+  return normalized.includes("all") || normalized.includes(serviceKey);
+}
+
+function serviceCreditBalanceFor(user, serviceKey) {
+  if (!serviceKey) return 0;
+  return (user.serviceCredits || []).reduce((sum, credit) => {
+    if (!credit.active || credit.remaining <= 0) return sum;
+    return serviceScopeMatches(credit.services, serviceKey) ? sum + credit.remaining : sum;
+  }, 0);
+}
+
+function walletAvailableBalance(userId, serviceKey = null) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  return user.balance + serviceCreditBalanceFor(user, serviceKey);
+}
+
+function createPromoCode({ code, amount, maxUses, actorId, note, services }) {
   const normalized = normalizePromoCode(code);
   if (!normalized) return { ok: false, reason: "Invalid code. Use letters, numbers, _ or -." };
+  const serviceScopes = normalizeServiceScopes(services);
+  if (services && !serviceScopes.length) {
+    return {
+      ok: false,
+      reason: `Invalid service scope. Use: ${Object.keys(SERVICE_CREDIT_SCOPES).join(", ")}.`,
+    };
+  }
 
   const db = readWalletDb();
   const codes = promoCodeList(db);
@@ -2189,6 +2262,7 @@ function createPromoCode({ code, amount, maxUses, actorId, note }) {
     usedBy: [],
     active: true,
     note: note || "",
+    services: serviceScopes,
     createdBy: actorId,
     createdAt: new Date().toISOString(),
     disabledAt: null,
@@ -2200,7 +2274,7 @@ function createPromoCode({ code, amount, maxUses, actorId, note }) {
     amount: 0,
     actorId,
     reason: `Promo code ${normalized} created`,
-    meta: { code: normalized, amount, maxUses, note: note || "" },
+    meta: { code: normalized, amount, maxUses, note: note || "", services: serviceScopes },
   });
 
   writeWalletDb(db);
@@ -2254,7 +2328,20 @@ function redeemPromoCode({ userId, code }) {
   }
 
   const user = walletUser(db, userId);
-  user.balance += promo.amount;
+  if (normalizeServiceScopes(promo.services).length) {
+    user.serviceCredits ||= [];
+    user.serviceCredits.push({
+      id: `${normalized}-${Date.now()}`,
+      code: normalized,
+      amount: promo.amount,
+      remaining: promo.amount,
+      services: normalizeServiceScopes(promo.services),
+      active: true,
+      createdAt: new Date().toISOString(),
+    });
+  } else {
+    user.balance += promo.amount;
+  }
   promo.usedBy.push(userId);
   if (promo.usedBy.length >= promo.maxUses) {
     promo.active = false;
@@ -2267,16 +2354,29 @@ function redeemPromoCode({ userId, code }) {
     amount: promo.amount,
     actorId: userId,
     reason: `Promo code ${normalized} redeemed`,
-    meta: { code: normalized },
+    meta: { code: normalized, services: normalizeServiceScopes(promo.services) },
   });
 
   writeWalletDb(db);
-  return { ok: true, promo, balance: user.balance };
+  return { ok: true, promo, balance: user.balance, serviceCredits: user.serviceCredits || [] };
 }
 
 function walletBalance(userId) {
   const db = readWalletDb();
   return walletUser(db, userId).balance;
+}
+
+function walletServiceCreditsSummary(userId) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const activeCredits = (user.serviceCredits || [])
+    .filter(credit => credit.active && credit.remaining > 0)
+    .slice(0, 8);
+  if (!activeCredits.length) return "";
+
+  return activeCredits
+    .map(credit => `- \`${credit.code}\`: ${formatTokenAmount(credit.remaining)} for ${formatServiceScopes(credit.services)}`)
+    .join("\n");
 }
 
 function walletPreferences(userId) {
@@ -2462,14 +2562,45 @@ function addWalletBalance({ userId, amount, actorId, reason, meta }) {
 function removeWalletBalance({ userId, amount, actorId, reason, meta }) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
-  if (user.balance < amount) {
-    return { ok: false, balance: user.balance };
+  const serviceKey = meta?.serviceKey || meta?.service || meta?.command || null;
+  const serviceCreditAvailable = serviceCreditBalanceFor(user, serviceKey);
+  if (user.balance + serviceCreditAvailable < amount) {
+    return { ok: false, balance: user.balance, available: user.balance + serviceCreditAvailable };
   }
 
-  user.balance -= amount;
-  walletTransaction(db, { userId, type: "debit", amount: -amount, actorId, reason, meta });
+  let remaining = amount;
+  const serviceCreditsUsed = [];
+
+  if (serviceKey && remaining > 0) {
+    for (const credit of user.serviceCredits || []) {
+      if (!credit.active || credit.remaining <= 0 || !serviceScopeMatches(credit.services, serviceKey)) continue;
+      const used = Math.min(credit.remaining, remaining);
+      credit.remaining -= used;
+      remaining -= used;
+      serviceCreditsUsed.push({ code: credit.code, amount: used, services: credit.services });
+      if (credit.remaining <= 0) credit.active = false;
+      if (remaining <= 0) break;
+    }
+  }
+
+  if (remaining > 0) {
+    user.balance -= remaining;
+  }
+
+  walletTransaction(db, {
+    userId,
+    type: "debit",
+    amount: -amount,
+    actorId,
+    reason,
+    meta: {
+      ...(meta || {}),
+      paidWithServiceCredits: serviceCreditsUsed,
+      paidWithWallet: remaining,
+    },
+  });
   writeWalletDb(db);
-  return { ok: true, balance: user.balance };
+  return { ok: true, balance: user.balance, serviceCreditsUsed, paidWithWallet: remaining };
 }
 
 function formatCurrencyFromBrl(brl, currencyCode = DEFAULT_CURRENCY) {
@@ -3558,15 +3689,16 @@ function uiMoney(value) {
   return `**${value}**`;
 }
 
-function formatBalanceMessage({ balance }) {
+function formatBalanceMessage({ balance, serviceCredits = "" }) {
   return [
     "# 💎 Velvet Wallet",
     "Your available balance is ready to use on copies, remakes and services.",
     "",
     uiLine("Balance", formatTokenAmount(balance)),
+    serviceCredits ? `\n## Service Credits\n${serviceCredits}` : "",
     "",
     "🛒 Need more? Use `/buy` to add Velvet Coins.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
@@ -5934,7 +6066,10 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "velvet_saldo" || interaction.commandName === "balance") {
       await interaction.reply({
-        content: formatBalanceMessage({ balance: walletBalance(interaction.user.id) }),
+        content: formatBalanceMessage({
+          balance: walletBalance(interaction.user.id),
+          serviceCredits: walletServiceCreditsSummary(interaction.user.id),
+        }),
         flags: 64,
       });
       return;
@@ -6399,6 +6534,7 @@ client.on("interactionCreate", async interaction => {
           "## Velvet Code Redeemed\n" +
           `**Code:** \`${redeemed.promo.code}\`\n` +
           `**Added:** ${formatTokenAmount(redeemed.promo.amount)}\n` +
+          `**Type:** ${formatServiceScopes(redeemed.promo.services)}\n` +
           `**New balance:** ${formatTokenAmount(redeemed.balance)}`,
         flags: 64,
       });
@@ -6409,6 +6545,7 @@ client.on("interactionCreate", async interaction => {
       const code = interaction.options.getString("code");
       const amount = interaction.options.getInteger("amount");
       const maxUses = interaction.options.getInteger("uses");
+      const services = interaction.options.getString("services") || "";
       const note = interaction.options.getString("note") || "";
       const created = createPromoCode({
         code,
@@ -6416,6 +6553,7 @@ client.on("interactionCreate", async interaction => {
         maxUses,
         actorId: interaction.user.id,
         note,
+        services,
       });
 
       if (!created.ok) {
@@ -6428,6 +6566,7 @@ client.on("interactionCreate", async interaction => {
           "## Promo Code Created\n" +
           `**Code:** \`${created.promo.code}\`\n` +
           `**Reward:** ${formatTokenAmount(created.promo.amount)}\n` +
+          `**Valid for:** ${formatServiceScopes(created.promo.services)}\n` +
           `**Uses:** 0/${created.promo.maxUses}\n` +
           `**Status:** Active`,
         flags: 64,
@@ -6459,7 +6598,7 @@ client.on("interactionCreate", async interaction => {
           ? [
             "## Promo Codes",
             ...codes.map(code =>
-              `\`${code.code}\` | ${formatTokenAmount(code.amount)} | ${code.usedBy?.length || 0}/${code.maxUses} | ${code.active ? "Active" : "Disabled"}`
+              `\`${code.code}\` | ${formatTokenAmount(code.amount)} | ${formatServiceScopes(code.services)} | ${code.usedBy?.length || 0}/${code.maxUses} | ${code.active ? "Active" : "Disabled"}`
             ),
           ].join("\n")
           : "## Promo Codes\nNo codes created yet.",
@@ -6613,7 +6752,7 @@ client.on("interactionCreate", async interaction => {
       const idInput = interaction.options.getString("id").trim();
       const quote = calculateClothingCopyPrice(interaction);
       const allowanceText = formatClothingAllowance(quote);
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
 
       if (balanceBefore < quote.walletAmount) {
         await interaction.reply({
@@ -6646,6 +6785,7 @@ client.on("interactionCreate", async interaction => {
           reason: "Classic clothing template copied",
           meta: {
             command: "steal_clothing",
+            serviceKey: "clothing",
             catalogId: result.catalogId,
             templateId: result.templateId,
             assetTypeId: result.assetTypeId,
@@ -6705,7 +6845,7 @@ client.on("interactionCreate", async interaction => {
 
       const usedBefore = walletClothingUsage(interaction.user.id).count;
       const maxQuote = calculateBulkClothingCopyPrice(interaction, ids.length, usedBefore);
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
 
       if (balanceBefore < maxQuote.walletAmount) {
         await interaction.editReply(
@@ -6768,6 +6908,7 @@ client.on("interactionCreate", async interaction => {
         reason: "Bulk classic clothing templates copied",
         meta: {
           command: "bulk_steal_clothing",
+          serviceKey: "clothing",
           requestedIds: ids,
           copiedIds: results.map(item => item.catalogId),
           failedIds: failures.map(item => item.id),
@@ -6822,7 +6963,7 @@ client.on("interactionCreate", async interaction => {
       const id = interaction.options.getString("id").trim();
       const quote = calculateCopyPrice(interaction);
       const allowanceText = formatCopyAllowance(quote);
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "copy");
 
       if (balanceBefore < quote.walletAmount) {
         await interaction.reply({
@@ -6872,7 +7013,7 @@ client.on("interactionCreate", async interaction => {
           amount: quote.walletAmount,
           actorId: client.user.id,
           reason: "Copia de modelo original",
-          meta: { command: "copiar", ugcId: id, priceBrl: quote.price },
+          meta: { command: "copiar", serviceKey: "copy", ugcId: id, priceBrl: quote.price },
         });
         const usage = addCopyUsage(interaction.user.id, 1);
         const finalQuote = calculateCopyPrice(interaction, usage.count);
@@ -6918,7 +7059,7 @@ client.on("interactionCreate", async interaction => {
       const usedBefore = walletCopyUsage(interaction.user.id).count;
       const quotes = ids.map((_, index) => calculateCopyPrice(interaction, usedBefore + index));
       const totalWalletAmount = quotes.reduce((sum, quote) => sum + quote.walletAmount, 0);
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "copy");
       const planLabel = quotes[0]?.planLabel || "Free";
 
       if (balanceBefore < totalWalletAmount) {
@@ -6974,6 +7115,7 @@ client.on("interactionCreate", async interaction => {
               reason: "Bulk original asset copied",
               meta: {
                 command: "bulk_steal",
+                serviceKey: "copy",
                 ugcId: id,
                 priceTokens: itemQuote.walletAmount,
               },
@@ -7226,7 +7368,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "image");
       if (balanceBefore < price) {
         await interaction.editReply(formatInsufficientBalanceMessage({
           service: "Reference image generation",
@@ -7255,7 +7397,7 @@ client.on("interactionCreate", async interaction => {
           amount: price,
           actorId: client.user.id,
           reason: "Reference image generated",
-          meta: { command: "generate_image", quality, resolution, aspectRatio },
+            meta: { command: "generate_image", serviceKey: "image", quality, resolution, aspectRatio },
         });
 
         await interaction.editReply({
@@ -7312,7 +7454,7 @@ client.on("interactionCreate", async interaction => {
       const expectedPrice = qualityUsesAiEnhancement(quality)
         ? quote.price
         : localCleanupPriceForPlan(quote.plan, selectedEntries.length);
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "enhancement");
 
       if (balanceBefore < expectedPrice) {
         await interaction.editReply(formatInsufficientBalanceMessage({
@@ -7413,6 +7555,7 @@ client.on("interactionCreate", async interaction => {
           reason: "Reference images enhanced",
           meta: {
             command: "enhance_images",
+            serviceKey: "enhancement",
             quality,
             imageCount: selectedEntries.length,
             enhancedCount: enhancedViews.length,
@@ -7472,7 +7615,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "prompt_model");
       if (balanceBefore < price) {
         await interaction.editReply(formatInsufficientBalanceMessage({
           service: "Prompt model generation",
@@ -7505,14 +7648,14 @@ client.on("interactionCreate", async interaction => {
           amount: price,
           actorId: client.user.id,
           reason: "Prompt model generated",
-          meta: { command: "prompt_model", priceTokens: price },
+            meta: { command: "prompt_model", serviceKey: "prompt_model", priceTokens: price },
         });
 
-        if (debit.ok) {
+        if (debit.ok && debit.paidWithWallet > 0) {
           creditAffiliateServiceCommission({
             buyerId: interaction.user.id,
-            walletAmount: price,
-            priceBrl: price / WALLET_TOKENS_PER_BRL,
+            walletAmount: debit.paidWithWallet,
+            priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
             source: "prompt_model",
             actorId: client.user.id,
             meta: { mode: "prompt" },
@@ -7645,7 +7788,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const balanceBefore = walletBalance(interaction.user.id);
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
       if (balanceBefore < quote.walletAmount) {
         await interaction.followUp({
           content:
@@ -7695,13 +7838,13 @@ client.on("interactionCreate", async interaction => {
         amount: quote.walletAmount,
         actorId: client.user.id,
         reason: "Modelo multiview gerado",
-        meta: { command: "refazer_multiview", priceBrl: quote.price },
+        meta: { command: "refazer_multiview", serviceKey: "multiview", priceBrl: quote.price },
       });
-      if (debit.ok) {
+      if (debit.ok && debit.paidWithWallet > 0) {
         creditAffiliateServiceCommission({
           buyerId: interaction.user.id,
-          walletAmount: quote.walletAmount,
-          priceBrl: quote.price,
+          walletAmount: debit.paidWithWallet,
+          priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
           source: "remake_multiview",
           actorId: client.user.id,
           meta: { mode: "multiview" },
@@ -7799,7 +7942,7 @@ client.on("interactionCreate", async interaction => {
   }
 
   if (!mockIa && TRIPO_API_KEY) {
-    const balanceBefore = walletBalance(interaction.user.id);
+    const balanceBefore = walletAvailableBalance(interaction.user.id, "remake");
     if (balanceBefore < quote.walletAmount) {
       await interaction.editReply(
         formatInsufficientBalanceMessage({
@@ -7821,7 +7964,7 @@ client.on("interactionCreate", async interaction => {
   }
 
   if (!mockIa && TRIPO_API_KEY) {
-    const balanceBefore = walletBalance(interaction.user.id);
+    const balanceBefore = walletAvailableBalance(interaction.user.id, "remake");
     if (balanceBefore < quote.walletAmount) {
       await interaction.reply({
         content:
@@ -7936,13 +8079,13 @@ client.on("interactionCreate", async interaction => {
         amount: quote.walletAmount,
         actorId: client.user.id,
         reason: "Modelo por imagem unica gerado",
-        meta: { command: "refazer", ugcId: id, priceBrl: quote.price },
+        meta: { command: "refazer", serviceKey: "remake", ugcId: id, priceBrl: quote.price },
       });
-      if (debit.ok) {
+      if (debit.ok && debit.paidWithWallet > 0) {
         creditAffiliateServiceCommission({
           buyerId: interaction.user.id,
-          walletAmount: quote.walletAmount,
-          priceBrl: quote.price,
+          walletAmount: debit.paidWithWallet,
+          priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
           source: "remake_single",
           actorId: client.user.id,
           meta: { ugcId: id, mode: "single" },
