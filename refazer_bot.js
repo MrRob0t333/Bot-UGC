@@ -2113,6 +2113,18 @@ function addSniperUsage(userId, count = 1) {
 }
 
 function calculateSniperPrice(interaction) {
+  if (userIsAdmin(interaction)) {
+    const usage = walletSniperUsage(interaction.user.id);
+    return {
+      plan: "owner",
+      planLabel: "Owner",
+      dailyLimit: null,
+      usedToday: usage.count,
+      remaining: null,
+      walletAmount: 0,
+    };
+  }
+
   const planKey = userCopyPlan(interaction);
   const plan = SNIPER_PLAN_CONFIG[planKey] || SNIPER_PLAN_CONFIG.free;
   const usage = walletSniperUsage(interaction.user.id);
@@ -4530,6 +4542,40 @@ const ROBLOX_ASSET_TYPE_NAME_TO_ID = {
   dynamichead: 79,
 };
 
+const SNIPER_CATEGORY_NAME_HINTS = {
+  hats: ["hat", "cap", "helmet", "crown", "chapeu", "chapéu", "bone", "boné", "capacete", "coroa"],
+  hair: ["hair", "cabelo", "cabelos", "penteado"],
+  face_accessories: ["face accessory", "face", "rosto", "mask", "mascara", "máscara", "glasses", "oculos", "óculos"],
+  neck_accessories: ["neck", "collar", "chain", "necklace", "pescoço", "pescoco", "colar", "corrente"],
+  shoulder_accessories: ["shoulder", "ombro"],
+  front_accessories: ["front", "chest", "frente", "peito"],
+  back_accessories: ["back", "costas", "asa", "wings", "mochila", "backpack"],
+  waist_accessories: ["waist", "belt", "cintura", "cinto"],
+  faces: ["face", "rosto", "smile", "sorriso"],
+  heads: ["head", "cabeça", "cabeca"],
+  classic_shirts: ["shirt", "camisa"],
+  classic_pants: ["pants", "calca", "calça"],
+  tshirts: ["t-shirt", "tshirt", "camiseta"],
+  layered_clothing: ["jacket", "sweater", "shorts", "dress", "skirt", "jaqueta", "vestido", "saia"],
+};
+
+const SNIPER_CATEGORY_DEFAULT_KEYWORD = {
+  hats: "hat",
+  hair: "hair",
+  face_accessories: "face",
+  neck_accessories: "neck",
+  shoulder_accessories: "shoulder",
+  front_accessories: "front",
+  back_accessories: "back",
+  waist_accessories: "waist",
+  faces: "face",
+  heads: "head",
+  classic_shirts: "shirt",
+  classic_pants: "pants",
+  tshirts: "tshirt",
+  layered_clothing: "jacket",
+};
+
 const SNIPER_WINDOW_PARAMS = {
   recent: [
     { SortType: "3" },
@@ -4575,6 +4621,32 @@ function catalogAssetTypeId(item, details = {}) {
 
 function catalogItemKind(item, details = {}) {
   return String(item.itemType || item.item?.itemType || details.ItemType || details.AssetType || "").toLowerCase();
+}
+
+function normalizeSniperText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function sniperNameSuggestsCategory(category, item, details = {}) {
+  if (!category || ["all", "accessories", "clothing", "collectibles"].includes(category)) return true;
+
+  const hints = SNIPER_CATEGORY_NAME_HINTS[category];
+  if (!hints?.length) return true;
+
+  const text = normalizeSniperText([
+    item.name,
+    item.item?.name,
+    item.assetType,
+    item.assetTypeId,
+    item.item?.assetType,
+    details.Name,
+    details.AssetType,
+  ].filter(Boolean).join(" "));
+
+  return hints.some(hint => text.includes(normalizeSniperText(hint)));
 }
 
 function sniperCategoryMatches(category, item, details = {}) {
@@ -4736,6 +4808,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   ].filter((item, index, list) => item && list.indexOf(item) === index);
   const queryVariants = [
     { keyword, minPrice, maxPrice, reason: "requested filters" },
+    !keyword && SNIPER_CATEGORY_DEFAULT_KEYWORD[category]
+      ? { keyword: SNIPER_CATEGORY_DEFAULT_KEYWORD[category], minPrice, maxPrice, reason: "category keyword" }
+      : null,
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
     Number.isFinite(minPrice) || Number.isFinite(maxPrice)
       ? { keyword, minPrice: null, maxPrice: null, reason: "without price range" }
@@ -4807,6 +4882,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
     if (canVerify && !matches) continue;
 
+    if (!canVerify && !sniperNameSuggestsCategory(category, item, details)) continue;
+
     const candidate = buildSniperCandidate(item, details, category, canVerify && matches);
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
     else inferred.push(candidate);
@@ -4823,6 +4900,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   if (!enriched.length && !inferred.length) {
     for (const item of unique.slice(0, 10)) {
+      if (!sniperNameSuggestsCategory(category, item, {})) continue;
       inferred.push(buildSniperCandidate(item, {}, category, false));
     }
   }
@@ -4934,7 +5012,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     "",
     `## Access`,
     `Plan: **${quote.planLabel}**`,
-    `Usage today: **${quote.usedToday + 1}/${quote.dailyLimit}**`,
+    `Usage today: **${quote.usedToday + 1}/${quote.dailyLimit === null ? "unlimited" : quote.dailyLimit}**`,
     `Price: **${formatTokenAmount(quote.walletAmount)}**`,
     "",
     "## Filters",
@@ -7705,7 +7783,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (quote.usedToday >= quote.dailyLimit) {
+      if (quote.dailyLimit !== null && quote.usedToday >= quote.dailyLimit) {
         await interaction.editReply(
           "## Sniper limit reached\n" +
           `**Plan:** ${quote.planLabel}\n` +
