@@ -4905,6 +4905,14 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
   }
 
+  if (!enriched.length && !inferred.length && category !== "all") {
+    for (const item of unique.slice(0, 5)) {
+      const candidate = buildSniperCandidate(item, {}, category, false);
+      candidate.reasons.push("broad fallback: category not confirmed");
+      inferred.push(candidate);
+    }
+  }
+
   if (searchFallbackReason) {
     for (const candidate of [...enriched, ...inferred]) {
       candidate.reasons.push(`fallback: ${searchFallbackReason}`);
@@ -7822,6 +7830,14 @@ client.on("interactionCreate", async interaction => {
             "## No sniper candidates found\n" +
             "No charge was deducted. Try a broader category, remove the keyword, or change the price range."
           );
+          if (userIsAdmin(interaction)) {
+            await interaction.followUp({
+              content:
+                "## Admin diagnostic\n" +
+                "No catalog rows survived the sniper search/fallback pipeline. Try `category: All` once to check whether Roblox returned any public catalog rows from this VPS.",
+              flags: 64,
+            }).catch(() => {});
+          }
           return;
         }
 
