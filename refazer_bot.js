@@ -98,6 +98,28 @@ const DEFAULT_RENDER_SETTINGS = {
   exposure: 0.15,
   lightPower: 1,
 };
+const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "brighter").toLowerCase();
+const TEXTURE_TONES = {
+  normal: {
+    label: "Roblox Safe",
+    value: 1,
+    saturation: 1,
+    gamma: 1,
+  },
+  brighter: {
+    label: "Brighter",
+    value: 1.16,
+    saturation: 1.04,
+    gamma: 0.92,
+  },
+  vibrant: {
+    label: "Vibrant",
+    value: 1.2,
+    saturation: 1.12,
+    gamma: 0.9,
+  },
+};
+const DEFAULT_TEXTURE_TONE = TEXTURE_TONES[RAW_DEFAULT_TEXTURE_TONE] ? RAW_DEFAULT_TEXTURE_TONE : "brighter";
 
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
@@ -387,6 +409,17 @@ const commands = [
     )
     .addNumberOption(o =>
       o.setName("render_light_power").setDescription("Default light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Default final texture tone for Roblox")
+        .setRequired(false)
+        .addChoices(
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
     )
     .toJSON(),
 
@@ -838,6 +871,18 @@ const commands = [
     .addIntegerOption(o =>
       o.setName("triangles").setDescription("Triangle limit. Max: 3950").setRequired(false).setMinValue(500).setMaxValue(3950)
     )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -882,6 +927,18 @@ const commands = [
         .setRequired(false)
         .setMinValue(500)
         .setMaxValue(3950)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
     )
     .addStringOption(o =>
       o
@@ -945,6 +1002,18 @@ const commands = [
         .setRequired(false)
         .setMinValue(500)
         .setMaxValue(3950)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
     )
     .toJSON(),
 
@@ -1036,6 +1105,18 @@ const commands = [
     )
     .addIntegerOption(o =>
       o.setName("triangles").setDescription("Triangle limit. Max: 3950").setRequired(false).setMinValue(500).setMaxValue(3950)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
     )
     .toJSON(),
 
@@ -1275,6 +1356,18 @@ const commands = [
         .setMinValue(500)
         .setMaxValue(3950)
     )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1319,6 +1412,18 @@ const commands = [
         .setRequired(false)
         .setMinValue(500)
         .setMaxValue(3950)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Tom final da textura")
+        .setRequired(false)
+        .addChoices(
+          { name: "Usar meu padrao", value: "default" },
+          { name: "Roblox seguro", value: "normal" },
+          { name: "Mais clara", value: "brighter" },
+          { name: "Mais viva", value: "vibrant" }
+        )
     )
     .addStringOption(o =>
       o
@@ -2134,6 +2239,7 @@ function walletPreferences(userId) {
   return {
     language: user.language || DEFAULT_LANGUAGE,
     currency: user.currency || DEFAULT_CURRENCY,
+    textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -2146,6 +2252,7 @@ function updateWalletPreferences(userId, updates) {
   const user = walletUser(db, userId);
   if (updates.language) user.language = updates.language;
   if (updates.currency && CURRENCIES[updates.currency]) user.currency = updates.currency;
+  if (updates.textureTone) user.textureTone = normalizeTextureTone(updates.textureTone);
   if (updates.renderSettings) {
     user.renderSettings = {
       ...DEFAULT_RENDER_SETTINGS,
@@ -2157,6 +2264,7 @@ function updateWalletPreferences(userId, updates) {
   return {
     language: user.language,
     currency: user.currency,
+    textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -2192,6 +2300,24 @@ function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeTextureTone(value) {
+  const key = String(value || "").toLowerCase();
+  return TEXTURE_TONES[key] ? key : DEFAULT_TEXTURE_TONE;
+}
+
+function textureToneForInteraction(interaction) {
+  const prefs = walletPreferences(interaction.user.id);
+  const selected = interaction.options.getString("texture_tone");
+  return selected && selected !== "default"
+    ? normalizeTextureTone(selected)
+    : normalizeTextureTone(prefs.textureTone);
+}
+
+function textureToneSummary(textureTone) {
+  const key = normalizeTextureTone(textureTone);
+  return TEXTURE_TONES[key]?.label || TEXTURE_TONES[DEFAULT_TEXTURE_TONE].label;
 }
 
 function normalizeRenderSettings(settings = {}) {
@@ -4142,7 +4268,7 @@ function exportGlb(objPath, texturePath, glbPath) {
   );
 }
 
-function optimizeGlbForRoblox(modelPath) {
+function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
   }
@@ -4161,6 +4287,8 @@ function optimizeGlbForRoblox(modelPath) {
         modelPath,
         tempOutputPath,
         String(ROBLOX_MAX_TEXTURE_SIZE),
+        normalizeTextureTone(textureTone),
+        JSON.stringify(TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE]),
       ],
       { stdio: "inherit" }
     );
@@ -4849,7 +4977,7 @@ function selectImageForTripo(imagePaths, preferredView) {
     imagePaths[0];
 }
 
-async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, onProgress }) {
+async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -4895,7 +5023,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath);
+  optimizeGlbForRoblox(modelPath, textureTone);
 
   return {
     skipped: false,
@@ -4908,7 +5036,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   };
 }
 
-async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangles, tempDir, onProgress }) {
+async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangles, tempDir, textureTone, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -4956,7 +5084,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath);
+  optimizeGlbForRoblox(modelPath, textureTone);
 
   return {
     taskId,
@@ -4966,7 +5094,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   };
 }
 
-async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles, tempDir, onProgress }) {
+async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles, tempDir, textureTone, onProgress }) {
   const tripoDir = path.join(tempDir, "text_model");
   fs.mkdirSync(tripoDir, { recursive: true });
 
@@ -4999,7 +5127,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const modelPath = path.join(tripoDir, "velvet_model.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath);
+  optimizeGlbForRoblox(modelPath, textureTone);
 
   return {
     taskId,
@@ -5174,6 +5302,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
       triangles: options.triangles || null,
       tempDir,
       preferredView: options.preferredView || null,
+      textureTone: options.textureTone || DEFAULT_TEXTURE_TONE,
       onProgress: options.onProgress,
     });
   }
@@ -5214,7 +5343,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   const modelPath = path.join(tripoDir, "refeito.glb");
   const jsonPath = path.join(tripoDir, "tripo_result.json");
   const savedPath = await writeResponseAsset(res, modelPath, jsonPath);
-  optimizeGlbForRoblox(savedPath);
+  optimizeGlbForRoblox(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE);
 
   return {
     skipped: false,
@@ -5639,6 +5768,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "settings") {
       const language = interaction.options.getString("language");
       const currency = interaction.options.getString("currency");
+      const textureTone = interaction.options.getString("texture_tone");
       const renderUpdates = {};
       const renderLighting = interaction.options.getString("render_lighting");
       const renderIor = interaction.options.getNumber("render_ior");
@@ -5655,6 +5785,7 @@ client.on("interactionCreate", async interaction => {
       const prefs = updateWalletPreferences(interaction.user.id, {
         language,
         currency,
+        textureTone,
         renderSettings: Object.keys(renderUpdates).length ? normalizeRenderSettings(renderUpdates) : null,
       });
       const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
@@ -5664,6 +5795,7 @@ client.on("interactionCreate", async interaction => {
           `## ⚙️ Velvet Settings\n` +
           `**Language:** ${resolvedLanguage}\n` +
           `**Currency:** ${prefs.currency}\n\n` +
+          `**Texture tone:** ${textureToneSummary(prefs.textureTone)}\n\n` +
           `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
           `Payment previews will use **${prefs.currency}**. Bot messages will follow your language preference when available.`,
         flags: 64,
@@ -7232,6 +7364,7 @@ client.on("interactionCreate", async interaction => {
       const prompt = interaction.options.getString("prompt").trim();
       const texture = interaction.options.getString("texture") || "standard";
       const triangles = interaction.options.getInteger("triangles");
+      const textureTone = textureToneForInteraction(interaction);
       const quote = calculatePromptModelPrice(interaction, { texture, triangles });
       const price = quote.walletAmount;
 
@@ -7261,6 +7394,7 @@ client.on("interactionCreate", async interaction => {
           texture,
           triangles,
           tempDir,
+          textureTone,
           onProgress: async ({ status, progress }) => {
             await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
@@ -7317,6 +7451,7 @@ client.on("interactionCreate", async interaction => {
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
       const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
       const triangles = interaction.options.getInteger("triangles");
+      const textureTone = textureToneForInteraction(interaction);
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
@@ -7376,6 +7511,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.editReply({
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
+          `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           "\n\n### Reference Check\n" +
           (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
@@ -7426,6 +7562,7 @@ client.on("interactionCreate", async interaction => {
           texture,
           triangles,
           tempDir,
+          textureTone,
           onProgress: async ({ status, progress }) => {
             await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
           },
@@ -7530,6 +7667,7 @@ client.on("interactionCreate", async interaction => {
   const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
   const triangles = interaction.options.getInteger("triangles");
   const preferredView = interaction.options.getString("vista") || interaction.options.getString("view");
+  const textureTone = textureToneForInteraction(interaction);
 
   if (!["none", "economy"].includes(enhancement)) {
     await interaction.editReply(
@@ -7597,6 +7735,7 @@ client.on("interactionCreate", async interaction => {
     `**Diferença:** ${difference}/10\n` +
     `**Textura:** ${texture === "none" ? "sem textura" : texture === "hd" ? "HD" : "padrão"}\n` +
     `**Melhoria:** ${(IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label}\n` +
+    `**Tom da textura:** ${textureToneSummary(textureTone)}\n` +
     `**Triangles:** ${triangles || "sem limite especial"}\n` +
     `**Vista de referência:** ${preferredView || "auto"}\n` +
     `**Preço estimado:** ${formatTokenAmount(quote.walletAmount)}\n` +
@@ -7653,6 +7792,7 @@ client.on("interactionCreate", async interaction => {
         texture,
         triangles,
         preferredView,
+        textureTone,
         onProgress: async ({ status, progress }) => {
           await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
         },
