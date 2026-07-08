@@ -18,6 +18,9 @@ const {
   REST,
   Routes,
   AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 
 function cleanEnv(value, fallback = "") {
@@ -57,6 +60,7 @@ const AFFILIATE_ROLE = cleanEnv(process.env.REFAZER_AFFILIATE_ROLE, "15231083783
 const BLENDER_PATH =
   cleanEnv(process.env.BLENDER_PATH) ||
   "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
+const PYTHON_PATH = cleanEnv(process.env.PYTHON_PATH || process.env.REFAZER_PYTHON_PATH, "python");
 
 const NANO_BANANA_PRO_ENDPOINT = cleanEnv(process.env.NANO_BANANA_PRO_ENDPOINT);
 const NANO_BANANA_PRO_API_KEY = cleanEnv(process.env.NANO_BANANA_PRO_API_KEY);
@@ -2133,6 +2137,7 @@ function emptyWalletDb() {
     withdrawalRequests: [],
     affiliateWithdrawals: [],
     promoCodes: {},
+    clothingTemplateActions: {},
     transactions: [],
   };
 }
@@ -2188,6 +2193,47 @@ function normalizePromoCode(code) {
 function promoCodeList(db) {
   db.promoCodes ||= {};
   return db.promoCodes;
+}
+
+function clothingTemplateActionList(db) {
+  db.clothingTemplateActions ||= {};
+  return db.clothingTemplateActions;
+}
+
+function createClothingTemplateAction({ userId, result }) {
+  const db = readWalletDb();
+  const actions = clothingTemplateActionList(db);
+  const actionId = crypto.randomBytes(8).toString("hex");
+
+  actions[actionId] = {
+    id: actionId,
+    userId,
+    catalogId: result.catalogId,
+    templateId: result.templateId,
+    assetTypeId: result.assetTypeId,
+    typeLabel: result.typeLabel,
+    name: result.name,
+    creator: result.creator,
+    filePath: result.filePath,
+    createdAt: new Date().toISOString(),
+  };
+
+  writeWalletDb(db);
+  return actions[actionId];
+}
+
+function getClothingTemplateAction(actionId) {
+  const db = readWalletDb();
+  return clothingTemplateActionList(db)[actionId] || null;
+}
+
+function clothingResetButton(actionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`clothing_reset:${actionId}`)
+      .setLabel("Reset Template")
+      .setStyle(ButtonStyle.Secondary)
+  );
 }
 
 function normalizeServiceScopes(input) {
@@ -5588,6 +5634,21 @@ function publicImageAttachment(file, name = "velvet_image.jpg") {
   return new AttachmentBuilder(file, { name });
 }
 
+async function createResetTemplateImage(action) {
+  const sourcePath = action.filePath;
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    const fresh = await downloadClassicClothingTemplate(action.catalogId);
+    action.filePath = fresh.filePath;
+  }
+
+  const outputDir = path.join(__dirname, "temp", "refazer", "clothing-reset");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const outputPath = path.join(outputDir, `${action.catalogId}_reset_template_${Date.now()}.png`);
+  const scriptPath = path.join(__dirname, "scripts", "create_clothing_reset_overlay.py");
+  await execFileAsync(PYTHON_PATH, [scriptPath, action.filePath, outputPath], { timeout: 30000 });
+  return outputPath;
+}
+
 function formatGenerationProgress({ status, progress }) {
   if (status === "finalizing") {
     return "Finalizing Roblox-ready file...";
@@ -5909,6 +5970,62 @@ client.on("guildMemberAdd", async member => {
 });
 
 client.on("interactionCreate", async interaction => {
+  if (interaction.isButton()) {
+    const [kind, actionId] = String(interaction.customId || "").split(":");
+    if (kind !== "clothing_reset") return;
+
+    const action = getClothingTemplateAction(actionId);
+    if (!action) {
+      await interaction.reply({
+        content: "This reset button expired. Copy the clothing again to create a new reset button.",
+        flags: 64,
+      });
+      return;
+    }
+
+    if (action.userId !== interaction.user.id && !userIsAdmin(interaction)) {
+      await interaction.reply({
+        content: "Only the user who copied this clothing can reset this template.",
+        flags: 64,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: 64 });
+
+    try {
+      const resetPath = await createResetTemplateImage(action);
+      await interaction.message.delete().catch(() => {});
+      await interaction.channel.send({
+        content:
+          `## Clothing Template Reset\n` +
+          `**Item:** ${action.name}\n` +
+          `**Catalog ID:** \`${action.catalogId}\`\n` +
+          `**Template ID:** \`${action.templateId}\`\n` +
+          `**Type:** ${action.typeLabel}\n\n` +
+          "Template guide applied on top. Only the original requester can use this reset button.",
+        files: [publicImageAttachment(resetPath, `${action.catalogId}_reset_template.png`)],
+        components: [clothingResetButton(action.id)],
+      });
+      await interaction.editReply("Template reset sent.");
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply(
+        "I could not reset this template right now. The team can review it manually."
+      );
+
+      if (userIsAdmin(interaction)) {
+        await interaction.followUp({
+          content:
+            "## Admin diagnostic\n" +
+            `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+          flags: 64,
+        }).catch(() => {});
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (![
     "refazer_comandos",
@@ -6794,6 +6911,7 @@ client.on("interactionCreate", async interaction => {
         });
         const usage = addClothingUsage(interaction.user.id, 1);
         const finalQuote = calculateClothingCopyPrice(interaction, usage.count);
+        const resetAction = createClothingTemplateAction({ userId: interaction.user.id, result });
 
         await interaction.editReply({
           content:
@@ -6806,8 +6924,10 @@ client.on("interactionCreate", async interaction => {
             `${formatClothingAllowance(finalQuote)}\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-            "Original template file is attached below.",
+            "Original template file is attached below.\n\n" +
+            "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
           files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
+          components: [clothingResetButton(resetAction.id)],
         });
       } catch (err) {
         console.error(err);
