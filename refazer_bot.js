@@ -212,6 +212,29 @@ const CLOTHING_COPY_PLAN_CONFIG = {
   },
 };
 
+const SNIPER_PLAN_CONFIG = {
+  free: {
+    label: "No subscription",
+    dailyLimit: Number(process.env.REFAZER_FREE_SNIPER_DAILY_LIMIT || 1),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_FREE_SNIPER_PRICE_BRL || 75) * WALLET_TOKENS_PER_BRL),
+  },
+  basic: {
+    label: "Basic",
+    dailyLimit: Number(process.env.REFAZER_BASIC_SNIPER_DAILY_LIMIT || 1),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_BASIC_SNIPER_PRICE_BRL || 50) * WALLET_TOKENS_PER_BRL),
+  },
+  premium: {
+    label: "Premium",
+    dailyLimit: Number(process.env.REFAZER_PREMIUM_SNIPER_DAILY_LIMIT || 2),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_PREMIUM_SNIPER_PRICE_BRL || 35) * WALLET_TOKENS_PER_BRL),
+  },
+  elite: {
+    label: "Elite",
+    dailyLimit: Number(process.env.REFAZER_ELITE_SNIPER_DAILY_LIMIT || 3),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_ELITE_SNIPER_PRICE_BRL || 30) * WALLET_TOKENS_PER_BRL),
+  },
+};
+
 const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
@@ -282,6 +305,7 @@ const SERVICE_CREDIT_SCOPES = {
   prompt_model: "Prompt model",
   image: "Image generation",
   enhancement: "Reference cleanup",
+  sniper: "Market sniper",
 };
 const AFFILIATE_WALLET_PURCHASE_RATE = Number(process.env.REFAZER_AFFILIATE_WALLET_RATE || 0.10);
 const AFFILIATE_SERVICE_RATE = Number(process.env.REFAZER_AFFILIATE_SERVICE_RATE || 0.05);
@@ -746,6 +770,43 @@ const commands = [
     .setDescription("Copies a classic clothing template")
     .addStringOption(o =>
       o.setName("id").setDescription("Clothing catalog ID or URL").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("sniper")
+    .setDescription("Premium market radar for high-potential Roblox items")
+    .addStringOption(o =>
+      o
+        .setName("window")
+        .setDescription("Market window")
+        .setRequired(true)
+        .addChoices(
+          { name: "Recently published", value: "recent" },
+          { name: "Best this week", value: "week" },
+          { name: "Best all time", value: "total" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("category")
+        .setDescription("Catalog category")
+        .setRequired(false)
+        .addChoices(
+          { name: "All", value: "all" },
+          { name: "Accessories", value: "accessories" },
+          { name: "Clothing", value: "clothing" },
+          { name: "Collectibles", value: "collectibles" }
+        )
+    )
+    .addStringOption(o =>
+      o.setName("keyword").setDescription("Optional niche keyword, for example horror, vkei, hair").setRequired(false)
+    )
+    .addIntegerOption(o =>
+      o.setName("min_price").setDescription("Minimum Robux price").setRequired(false).setMinValue(0)
+    )
+    .addIntegerOption(o =>
+      o.setName("max_price").setDescription("Maximum Robux price").setRequired(false).setMinValue(1)
     )
     .toJSON(),
 
@@ -1232,7 +1293,7 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("services")
-        .setDescription("Optional: all, copy, clothing, remake, multiview, prompt_model, image, enhancement")
+        .setDescription("Optional: all, copy, clothing, remake, multiview, prompt_model, image, enhancement, sniper")
         .setRequired(false)
     )
     .addStringOption(o =>
@@ -1950,6 +2011,17 @@ function clothingUsageFor(user) {
   return user.clothingUsage;
 }
 
+function sniperUsageFor(user) {
+  const dayKey = getSaoPauloDayKey();
+  user.sniperUsage ||= { day: dayKey, count: 0 };
+
+  if (user.sniperUsage.day !== dayKey) {
+    user.sniperUsage = { day: dayKey, count: 0 };
+  }
+
+  return user.sniperUsage;
+}
+
 function walletCopyUsage(userId) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
@@ -1962,6 +2034,14 @@ function walletClothingUsage(userId) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
   const usage = clothingUsageFor(user);
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function walletSniperUsage(userId) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = sniperUsageFor(user);
   writeWalletDb(db);
   return { day: usage.day, count: usage.count };
 }
@@ -1998,6 +2078,39 @@ function addClothingUsage(userId, count = 1) {
   });
   writeWalletDb(db);
   return { day: usage.day, count: usage.count };
+}
+
+function addSniperUsage(userId, count = 1) {
+  const db = readWalletDb();
+  const user = walletUser(db, userId);
+  const usage = sniperUsageFor(user);
+  usage.count += count;
+  walletTransaction(db, {
+    userId,
+    type: "usage",
+    amount: 0,
+    actorId: client.user.id,
+    reason: "Daily sniper usage",
+    meta: { day: usage.day, count, totalToday: usage.count },
+  });
+  writeWalletDb(db);
+  return { day: usage.day, count: usage.count };
+}
+
+function calculateSniperPrice(interaction) {
+  const planKey = userCopyPlan(interaction);
+  const plan = SNIPER_PLAN_CONFIG[planKey] || SNIPER_PLAN_CONFIG.free;
+  const usage = walletSniperUsage(interaction.user.id);
+  const remaining = Math.max(plan.dailyLimit - usage.count, 0);
+
+  return {
+    plan: planKey,
+    planLabel: plan.label,
+    dailyLimit: plan.dailyLimit,
+    usedToday: usage.count,
+    remaining,
+    walletAmount: plan.walletAmount,
+  };
 }
 
 function calculateCopyPrice(interaction, usedTodayOverride) {
@@ -2179,6 +2292,7 @@ function walletUser(db, userId) {
   db.users[userId].serviceCredits ||= [];
   copyUsageFor(db.users[userId]);
   clothingUsageFor(db.users[userId]);
+  sniperUsageFor(db.users[userId]);
 
   return db.users[userId];
 }
@@ -2262,6 +2376,7 @@ function normalizeServiceScopes(input) {
       if (["prompt", "text", "text_model"].includes(item)) return "prompt_model";
       if (["images", "generate_image"].includes(item)) return "image";
       if (["enhance", "cleanup", "clean", "enhance_images"].includes(item)) return "enhancement";
+      if (["market", "radar", "market_sniper"].includes(item)) return "sniper";
       return item;
     })
     .filter(item => SERVICE_CREDIT_SCOPES[item]);
@@ -4253,6 +4368,216 @@ async function fetchRobloxJson(url) {
   return JSON.parse(text);
 }
 
+const SNIPER_CATEGORY_PARAMS = {
+  all: {},
+  accessories: { Category: "11" },
+  clothing: { Category: "3" },
+  collectibles: { SalesTypeFilter: "2" },
+};
+
+const SNIPER_WINDOW_PARAMS = {
+  recent: [
+    { SortType: "3" },
+    { SortType: "0" },
+  ],
+  week: [
+    { SortType: "2", SortAggregation: "3" },
+    { SortType: "1", SortAggregation: "3" },
+    { SortType: "2" },
+  ],
+  total: [
+    { SortType: "2", SortAggregation: "5" },
+    { SortType: "1", SortAggregation: "5" },
+    { SortType: "2" },
+  ],
+};
+
+function catalogItemId(item) {
+  return item.id || item.assetId || item.itemTargetId || item.item?.id || null;
+}
+
+function catalogItemPrice(item, details = {}) {
+  const candidates = [
+    item.price,
+    item.lowestPrice,
+    item.lowestResalePrice,
+    item.purchasePrice,
+    details.PriceInRobux,
+    details.Price,
+    details.LowestPrice,
+  ];
+  const value = candidates.find(number => Number.isFinite(Number(number)));
+  return value === undefined ? null : Number(value);
+}
+
+function parseRobloxDate(value) {
+  const time = Date.parse(value || "");
+  return Number.isFinite(time) ? time : null;
+}
+
+function daysSince(time) {
+  if (!time) return null;
+  return Math.max(0, Math.floor((Date.now() - time) / 86400000));
+}
+
+function normalizeCatalogNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
+}
+
+function sniperScore(item, details = {}) {
+  const price = catalogItemPrice(item, details);
+  const favorites = normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites);
+  const sales = normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount);
+  const createdAt = parseRobloxDate(item.created || item.createdAt || details.Created);
+  const ageDays = daysSince(createdAt);
+  const restrictions = [
+    ...(item.itemRestrictions || []),
+    ...(details.ItemRestrictions || []),
+  ].map(value => String(value).toLowerCase());
+
+  let score = 0;
+  score += Math.min(35, Math.log10(favorites + 1) * 12);
+  score += Math.min(35, Math.log10(sales + 1) * 14);
+
+  if (price !== null) {
+    if (price <= 25) score += 18;
+    else if (price <= 75) score += 12;
+    else if (price <= 150) score += 7;
+  }
+
+  if (ageDays !== null) {
+    if (ageDays <= 2) score += 18;
+    else if (ageDays <= 7) score += 12;
+    else if (ageDays <= 30) score += 6;
+  }
+
+  if (restrictions.some(value => value.includes("limited") || value.includes("collectible"))) {
+    score += 12;
+  }
+
+  return Math.round(score);
+}
+
+async function fetchCatalogDetailsSafe(itemId) {
+  try {
+    return await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${encodeURIComponent(itemId)}/details`);
+  } catch {
+    return {};
+  }
+}
+
+async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice }) {
+  const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
+  const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
+  const baseParams = {
+    Limit: "30",
+    ...categoryParams,
+  };
+
+  if (keyword) baseParams.Keyword = keyword;
+  if (Number.isFinite(minPrice)) baseParams.MinPrice = String(minPrice);
+  if (Number.isFinite(maxPrice)) baseParams.MaxPrice = String(maxPrice);
+
+  let data = [];
+  let lastError = null;
+
+  for (const attemptParams of windowAttempts) {
+    const params = new URLSearchParams({ ...baseParams, ...attemptParams });
+    try {
+      const response = await fetchRobloxJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
+      data = Array.isArray(response.data) ? response.data : [];
+      if (data.length) break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (!data.length && lastError) throw lastError;
+
+  const unique = [];
+  const seen = new Set();
+  for (const item of data) {
+    const id = catalogItemId(item);
+    if (!id || seen.has(String(id))) continue;
+    seen.add(String(id));
+    unique.push(item);
+    if (unique.length >= 12) break;
+  }
+
+  const enriched = [];
+  for (const item of unique) {
+    const id = catalogItemId(item);
+    const details = await fetchCatalogDetailsSafe(id);
+    enriched.push({
+      item,
+      details,
+      id,
+      name: item.name || details.Name || `Item ${id}`,
+      creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
+      price: catalogItemPrice(item, details),
+      favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
+      sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
+      createdAt: item.created || item.createdAt || details.Created || null,
+      score: sniperScore(item, details),
+    });
+  }
+
+  return enriched.sort((a, b) => b.score - a.score).slice(0, 5);
+}
+
+function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice }) {
+  const filters = [
+    `Window: ${window}`,
+    `Category: ${category}`,
+    keyword ? `Keyword: ${keyword}` : null,
+    Number.isFinite(minPrice) ? `Min price: ${minPrice} Robux` : null,
+    Number.isFinite(maxPrice) ? `Max price: ${maxPrice} Robux` : null,
+  ].filter(Boolean).join("\n");
+
+  const rows = candidates.map((candidate, index) => {
+    const name = String(candidate.name || `Item ${candidate.id}`).slice(0, 55);
+    const creator = String(candidate.creator || "Unknown").slice(0, 30);
+    const price = candidate.price === null ? "unknown" : `${candidate.price} Robux`;
+    const age = daysSince(parseRobloxDate(candidate.createdAt));
+    const ageText = age === null ? "unknown age" : `${age}d old`;
+    const signals = [
+      candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
+      candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : null,
+      price,
+      ageText,
+    ].filter(Boolean).join(" • ");
+
+    return [
+      `**${index + 1}. ${name}**`,
+      `Score: **${candidate.score}/100** | Creator: **${creator}**`,
+      signals,
+      `https://www.roblox.com/catalog/${candidate.id}`,
+    ].join("\n");
+  }).join("\n\n");
+
+  return [
+    "# 🎯 Market Sniper Report",
+    "This report uses public catalog signals to highlight items worth reviewing. It is not a guarantee of profit.",
+    "",
+    `## Access`,
+    `Plan: **${quote.planLabel}**`,
+    `Usage today: **${quote.usedToday + 1}/${quote.dailyLimit}**`,
+    `Price: **${formatTokenAmount(quote.walletAmount)}**`,
+    "",
+    "## Filters",
+    filters,
+    "",
+    "## Top Signals",
+    rows || "No strong candidates found for these filters.",
+    "",
+    "Review each item manually before investing, copying trends, or ordering a remake.",
+  ].join("\n");
+}
+
 async function fetchRobloxAssetSource(assetId) {
   const cacheKey = String(assetId);
   const cached = robloxAssetSourceCache.get(cacheKey);
@@ -5798,6 +6123,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "👚 `/bulk_steal_clothing` - copy clothing templates in bulk",
     "🎨 `/remake` - remake a UGC with AI",
     "🖼️ `/multiview` - remake from front/right/back/left images",
+    "🎯 `/sniper` - limited market radar for high-potential items",
     "🧾 `/price` - preview the price before ordering",
     "✨ `/enhance_images` - clean references before multiview",
     "",
@@ -6106,6 +6432,7 @@ client.on("interactionCreate", async interaction => {
     "copiar",
     "steal",
     "steal_clothing",
+    "sniper",
     "bulk_steal_clothing",
     "bulk_steal",
     "views",
@@ -6978,6 +7305,115 @@ client.on("interactionCreate", async interaction => {
           isRateLimited
             ? "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal_clothing` again. No charge was deducted."
             : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
+        );
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+      }
+      return;
+    }
+
+    if (interaction.commandName === "sniper") {
+      await interaction.deferReply({ flags: 64 });
+
+      const window = interaction.options.getString("window");
+      const category = interaction.options.getString("category") || "all";
+      const keyword = (interaction.options.getString("keyword") || "").trim();
+      const minPriceRaw = interaction.options.getInteger("min_price");
+      const maxPriceRaw = interaction.options.getInteger("max_price");
+      const minPrice = Number.isFinite(minPriceRaw) ? minPriceRaw : null;
+      const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : null;
+      const quote = calculateSniperPrice(interaction);
+
+      if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+        await interaction.editReply("## Invalid price range\n`min_price` cannot be higher than `max_price`.");
+        return;
+      }
+
+      if (quote.usedToday >= quote.dailyLimit) {
+        await interaction.editReply(
+          "## Sniper limit reached\n" +
+          `**Plan:** ${quote.planLabel}\n` +
+          `**Daily limit:** ${quote.dailyLimit}\n\n` +
+          "This tool is intentionally limited because market intelligence is valuable. Try again tomorrow or contact the team for a manual review."
+        );
+        return;
+      }
+
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "sniper");
+      if (balanceBefore < quote.walletAmount) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Market Sniper",
+          price: quote.walletAmount,
+          balance: balanceBefore,
+        }));
+        return;
+      }
+
+      await interaction.editReply(
+        "## Market Sniper\n" +
+        "Scanning public catalog signals. This can take a moment..."
+      );
+
+      try {
+        const candidates = await fetchSniperCandidates({
+          window,
+          category,
+          keyword,
+          minPrice,
+          maxPrice,
+        });
+
+        if (!candidates.length) {
+          await interaction.editReply(
+            "## No sniper candidates found\n" +
+            "No charge was deducted. Try a broader category, remove the keyword, or change the price range."
+          );
+          return;
+        }
+
+        const debit = removeWalletBalance({
+          userId: interaction.user.id,
+          amount: quote.walletAmount,
+          actorId: client.user.id,
+          reason: "Market sniper report generated",
+          meta: {
+            command: "sniper",
+            serviceKey: "sniper",
+            window,
+            category,
+            keyword,
+            minPrice,
+            maxPrice,
+            resultIds: candidates.map(item => item.id),
+            priceTokens: quote.walletAmount,
+          },
+        });
+        addSniperUsage(interaction.user.id, 1);
+
+        await interaction.editReply(
+          formatSniperReport({
+            candidates,
+            quote,
+            window,
+            category,
+            keyword,
+            minPrice,
+            maxPrice,
+          }) +
+          `\n\n**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`
+        );
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply(
+          "## Market Sniper unavailable\n" +
+          "No charge was deducted. Roblox may be rate-limiting catalog data right now. Try again later."
         );
 
         if (userIsAdmin(interaction)) {
