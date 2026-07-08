@@ -4453,6 +4453,12 @@ const SNIPER_CATEGORY_PARAMS = {
   collectibles: { SalesTypeFilter: "2" },
 };
 
+const SNIPER_TAXONOMY_CATEGORIES = new Set(
+  Object.entries(SNIPER_CATEGORY_PARAMS)
+    .filter(([, params]) => params.taxonomy)
+    .map(([category]) => category)
+);
+
 const SNIPER_CATEGORY_LABELS = {
   all: "All",
   accessories: "Accessories",
@@ -4651,6 +4657,7 @@ function sniperNameSuggestsCategory(category, item, details = {}) {
 }
 
 function sniperCategoryMatches(category, item, details = {}) {
+  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) return true;
   if (!category || category === "all" || category === "collectibles") return true;
 
   if (category === "bundles") {
@@ -4665,6 +4672,7 @@ function sniperCategoryMatches(category, item, details = {}) {
 }
 
 function sniperCategoryCanBeVerified(category, item, details = {}) {
+  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) return true;
   if (!category || category === "all" || category === "collectibles") return true;
   if (category === "bundles") return Boolean(catalogItemKind(item, details));
   return catalogAssetTypeId(item, details) !== null;
