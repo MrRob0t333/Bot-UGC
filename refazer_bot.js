@@ -4683,6 +4683,15 @@ function catalogItemPrice(item, details = {}) {
   return value === undefined ? null : Number(value);
 }
 
+function sniperPriceMatchesFilter(item, details = {}, minPrice = null, maxPrice = null) {
+  const price = catalogItemPrice(item, details);
+
+  if (Number.isFinite(minPrice) && (price === null || price < minPrice)) return false;
+  if (Number.isFinite(maxPrice) && (price === null || price > maxPrice)) return false;
+
+  return true;
+}
+
 function parseRobloxDate(value) {
   const time = Date.parse(value || "");
   return Number.isFinite(time) ? time : null;
@@ -4812,12 +4821,6 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       ? { keyword: SNIPER_CATEGORY_DEFAULT_KEYWORD[category], minPrice, maxPrice, reason: "category keyword" }
       : null,
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
-    Number.isFinite(minPrice) || Number.isFinite(maxPrice)
-      ? { keyword, minPrice: null, maxPrice: null, reason: "without price range" }
-      : null,
-    keyword || Number.isFinite(minPrice) || Number.isFinite(maxPrice)
-      ? { keyword: "", minPrice: null, maxPrice: null, reason: "broad fallback" }
-      : null,
   ].filter(Boolean);
   let data = [];
   let lastError = null;
@@ -4836,6 +4839,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (queryVariant.keyword) baseParams.Keyword = queryVariant.keyword;
       if (Number.isFinite(queryVariant.minPrice)) baseParams.pxMin = String(queryVariant.minPrice);
       if (Number.isFinite(queryVariant.maxPrice)) baseParams.pxMax = String(queryVariant.maxPrice);
+      if (Number.isFinite(queryVariant.minPrice)) baseParams.MinPrice = String(queryVariant.minPrice);
+      if (Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
 
       for (const attemptParams of windowAttempts) {
         const params = new URLSearchParams({ ...baseParams, ...attemptParams });
@@ -4869,6 +4874,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   for (const item of data) {
     const id = catalogItemId(item);
     if (!id || seen.has(String(id))) continue;
+    if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
     seen.add(String(id));
     unique.push(item);
     if (unique.length >= 15) break;
@@ -4882,6 +4888,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
 
+    if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
     if (canVerify && !matches) continue;
 
     if (!canVerify && !sniperNameSuggestsCategory(category, item, details)) continue;
@@ -4895,6 +4902,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     for (const item of unique.slice(0, 3)) {
       const id = catalogItemId(item);
       const details = await fetchCatalogDetailsSafe(id);
+      if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
       if (!sniperCategoryMatches(category, item, details)) continue;
       enriched.push(buildSniperCandidate(item, details, category, true));
     }
@@ -4902,6 +4910,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   if (!enriched.length && !inferred.length) {
     for (const item of unique.slice(0, 10)) {
+      if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       if (!sniperNameSuggestsCategory(category, item, {})) continue;
       inferred.push(buildSniperCandidate(item, {}, category, false));
     }
@@ -4909,6 +4918,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   if (!enriched.length && !inferred.length && ["all", "accessories", "clothing", "collectibles"].includes(category)) {
     for (const item of unique.slice(0, 5)) {
+      if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       const candidate = buildSniperCandidate(item, {}, category, false);
       candidate.reasons.push("broad fallback: category not confirmed");
       inferred.push(candidate);
