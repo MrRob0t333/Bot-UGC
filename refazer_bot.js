@@ -2216,6 +2216,7 @@ function createClothingTemplateAction({ userId, result }) {
     name: result.name,
     creator: result.creator,
     filePath: result.filePath,
+    used: false,
     createdAt: new Date().toISOString(),
   };
 
@@ -2226,6 +2227,16 @@ function createClothingTemplateAction({ userId, result }) {
 function getClothingTemplateAction(actionId) {
   const db = readWalletDb();
   return clothingTemplateActionList(db)[actionId] || null;
+}
+
+function markClothingTemplateActionUsed(actionId) {
+  const db = readWalletDb();
+  const action = clothingTemplateActionList(db)[actionId];
+  if (!action) return null;
+  action.used = true;
+  action.usedAt = new Date().toISOString();
+  writeWalletDb(db);
+  return action;
 }
 
 function clothingResetButton(actionId) {
@@ -6004,6 +6015,14 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (action.used) {
+      await interaction.reply({
+        content: "This template was already reset. Copy the clothing again if you need a new reset.",
+        flags: 64,
+      });
+      return;
+    }
+
     if (action.userId !== interaction.user.id && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Only the user who copied this clothing can reset this template.",
@@ -6016,6 +6035,7 @@ client.on("interactionCreate", async interaction => {
 
     try {
       const resetPath = await createResetTemplateImage(action);
+      markClothingTemplateActionUsed(action.id);
       await interaction.message.delete().catch(() => {});
       await interaction.channel.send({
         content:
@@ -6024,9 +6044,8 @@ client.on("interactionCreate", async interaction => {
           `**Catalog ID:** \`${action.catalogId}\`\n` +
           `**Template ID:** \`${action.templateId}\`\n` +
           `**Type:** ${action.typeLabel}\n\n` +
-          "Template guide applied on top. Only the original requester can use this reset button.",
+          "Template guide applied on top.",
         files: [publicImageAttachment(resetPath, `${action.catalogId}_reset_template.png`)],
-        components: [clothingResetButton(action.id)],
       });
       await interaction.editReply("Template reset sent.");
     } catch (err) {
