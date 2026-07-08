@@ -4434,7 +4434,7 @@ const SNIPER_CATEGORY_PARAMS = {
   all: {},
   accessories: { Category: "11" },
   hats: { Category: "11", AssetTypes: "8" },
-  hair: { Category: "11", AssetTypes: "41" },
+  hair: { taxonomy: "d6a7M7r9MMrpf7z7VxW9ZS" },
   face_accessories: { Category: "11", AssetTypes: "42" },
   neck_accessories: { Category: "11", AssetTypes: "43" },
   shoulder_accessories: { Category: "11", AssetTypes: "44" },
@@ -4827,13 +4827,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     for (const searchCategory of categoriesToTry) {
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
       const baseParams = {
+        CurrencyType: "3",
         Limit: "30",
+        salesTypeFilter: "1",
         ...categoryParams,
       };
 
       if (queryVariant.keyword) baseParams.Keyword = queryVariant.keyword;
-      if (Number.isFinite(queryVariant.minPrice)) baseParams.MinPrice = String(queryVariant.minPrice);
-      if (Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
+      if (Number.isFinite(queryVariant.minPrice)) baseParams.pxMin = String(queryVariant.minPrice);
+      if (Number.isFinite(queryVariant.maxPrice)) baseParams.pxMax = String(queryVariant.maxPrice);
 
       for (const attemptParams of windowAttempts) {
         const params = new URLSearchParams({ ...baseParams, ...attemptParams });
@@ -4905,7 +4907,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
   }
 
-  if (!enriched.length && !inferred.length && category !== "all") {
+  if (!enriched.length && !inferred.length && ["all", "accessories", "clothing", "collectibles"].includes(category)) {
     for (const item of unique.slice(0, 5)) {
       const candidate = buildSniperCandidate(item, {}, category, false);
       candidate.reasons.push("broad fallback: category not confirmed");
