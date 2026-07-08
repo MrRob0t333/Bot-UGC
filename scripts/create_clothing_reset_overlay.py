@@ -26,27 +26,7 @@ def draw_label(draw, box, text, fill):
 
 
 def template_overlay_layer(template_path, size):
-    template = Image.open(template_path).convert("RGBA").resize(size, Image.LANCZOS)
-    pixels = template.load()
-    width, height = template.size
-
-    for y in range(height):
-        for x in range(width):
-            r, g, b, a = pixels[x, y]
-            if a == 0 or (r > 245 and g > 245 and b > 245):
-                pixels[x, y] = (r, g, b, 0)
-                continue
-
-            brightness = (r + g + b) / 3
-            if brightness < 35:
-                alpha = 72
-            elif brightness < 160:
-                alpha = 145
-            else:
-                alpha = 95
-            pixels[x, y] = (r, g, b, min(a, alpha))
-
-    return template
+    return Image.open(template_path).convert("RGBA").resize(size, Image.LANCZOS)
 
 
 def main():
