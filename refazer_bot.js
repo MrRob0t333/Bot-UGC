@@ -4481,6 +4481,27 @@ const SNIPER_CATEGORY_ASSET_TYPES = {
   clothing: [2, 11, 12, 64, 65, 66, 67, 68, 69, 70, 71, 72],
 };
 
+const SNIPER_CATEGORY_FALLBACKS = {
+  hats: ["accessories", "all"],
+  hair: ["accessories", "all"],
+  face_accessories: ["accessories", "all"],
+  neck_accessories: ["accessories", "all"],
+  shoulder_accessories: ["accessories", "all"],
+  front_accessories: ["accessories", "all"],
+  back_accessories: ["accessories", "all"],
+  waist_accessories: ["accessories", "all"],
+  faces: ["all"],
+  heads: ["all"],
+  bundles: ["all"],
+  classic_shirts: ["clothing", "all"],
+  classic_pants: ["clothing", "all"],
+  tshirts: ["clothing", "all"],
+  layered_clothing: ["clothing", "all"],
+  clothing: ["all"],
+  accessories: ["all"],
+  collectibles: ["all"],
+};
+
 const ROBLOX_ASSET_TYPE_NAME_TO_ID = {
   tshirt: 2,
   t_shirt: 2,
@@ -4702,35 +4723,65 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
 }
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice }) {
-  const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
-  const baseParams = {
-    Limit: "30",
-    ...categoryParams,
-  };
-
-  if (keyword) baseParams.Keyword = keyword;
-  if (Number.isFinite(minPrice)) baseParams.MinPrice = String(minPrice);
-  if (Number.isFinite(maxPrice)) baseParams.MaxPrice = String(maxPrice);
-
   const cacheKey = JSON.stringify({ window, category, keyword, minPrice, maxPrice });
   const cached = sniperCatalogCache.get(cacheKey);
   if (cached && Date.now() - cached.savedAt < SNIPER_CATALOG_CACHE_TTL_MS) {
     return cached.candidates;
   }
 
+  const categoriesToTry = [
+    category,
+    ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
+  ].filter((item, index, list) => item && list.indexOf(item) === index);
+  const queryVariants = [
+    { keyword, minPrice, maxPrice, reason: "requested filters" },
+    keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
+    Number.isFinite(minPrice) || Number.isFinite(maxPrice)
+      ? { keyword, minPrice: null, maxPrice: null, reason: "without price range" }
+      : null,
+    keyword || Number.isFinite(minPrice) || Number.isFinite(maxPrice)
+      ? { keyword: "", minPrice: null, maxPrice: null, reason: "broad fallback" }
+      : null,
+  ].filter(Boolean);
   let data = [];
   let lastError = null;
+  let searchFallbackReason = "";
 
-  for (const attemptParams of windowAttempts) {
-    const params = new URLSearchParams({ ...baseParams, ...attemptParams });
-    try {
-      const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
-      data = Array.isArray(response.data) ? response.data : [];
-      if (data.length) break;
-    } catch (err) {
-      lastError = err;
-      if (isRobloxRateLimitError(err)) break;
+  for (const queryVariant of queryVariants) {
+    for (const searchCategory of categoriesToTry) {
+      const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
+      const baseParams = {
+        Limit: "30",
+        ...categoryParams,
+      };
+
+      if (queryVariant.keyword) baseParams.Keyword = queryVariant.keyword;
+      if (Number.isFinite(queryVariant.minPrice)) baseParams.MinPrice = String(queryVariant.minPrice);
+      if (Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
+
+      for (const attemptParams of windowAttempts) {
+        const params = new URLSearchParams({ ...baseParams, ...attemptParams });
+        try {
+          const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
+          data = Array.isArray(response.data) ? response.data : [];
+          if (data.length) {
+            searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
+            break;
+          }
+        } catch (err) {
+          lastError = err;
+          if (isRobloxRateLimitError(err)) break;
+        }
+      }
+
+      if (data.length || isRobloxRateLimitError(lastError)) {
+        break;
+      }
+    }
+
+    if (data.length || isRobloxRateLimitError(lastError)) {
+      break;
     }
   }
 
@@ -4770,9 +4821,23 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
   }
 
+  if (!enriched.length && !inferred.length) {
+    for (const item of unique.slice(0, 10)) {
+      inferred.push(buildSniperCandidate(item, {}, category, false));
+    }
+  }
+
+  if (searchFallbackReason) {
+    for (const candidate of [...enriched, ...inferred]) {
+      candidate.reasons.push(`fallback: ${searchFallbackReason}`);
+    }
+  }
+
   const finalPool = enriched.length ? enriched : inferred;
   const candidates = finalPool.sort((a, b) => b.score - a.score).slice(0, 15);
-  sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
+  if (candidates.length) {
+    sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
+  }
   return candidates;
 }
 
