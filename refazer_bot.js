@@ -217,22 +217,22 @@ const SNIPER_PLAN_CONFIG = {
   free: {
     label: "No subscription",
     dailyLimit: Number(process.env.REFAZER_FREE_SNIPER_DAILY_LIMIT || 1),
-    walletAmount: Math.ceil(Number(process.env.REFAZER_FREE_SNIPER_PRICE_BRL || 75) * WALLET_TOKENS_PER_BRL),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_FREE_SNIPER_PRICE_BRL || 50) * WALLET_TOKENS_PER_BRL),
   },
   basic: {
     label: "Basic",
     dailyLimit: Number(process.env.REFAZER_BASIC_SNIPER_DAILY_LIMIT || 1),
-    walletAmount: Math.ceil(Number(process.env.REFAZER_BASIC_SNIPER_PRICE_BRL || 50) * WALLET_TOKENS_PER_BRL),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_BASIC_SNIPER_PRICE_BRL || 35) * WALLET_TOKENS_PER_BRL),
   },
   premium: {
     label: "Premium",
     dailyLimit: Number(process.env.REFAZER_PREMIUM_SNIPER_DAILY_LIMIT || 2),
-    walletAmount: Math.ceil(Number(process.env.REFAZER_PREMIUM_SNIPER_PRICE_BRL || 35) * WALLET_TOKENS_PER_BRL),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_PREMIUM_SNIPER_PRICE_BRL || 20) * WALLET_TOKENS_PER_BRL),
   },
   elite: {
     label: "Elite",
     dailyLimit: Number(process.env.REFAZER_ELITE_SNIPER_DAILY_LIMIT || 3),
-    walletAmount: Math.ceil(Number(process.env.REFAZER_ELITE_SNIPER_PRICE_BRL || 30) * WALLET_TOKENS_PER_BRL),
+    walletAmount: Math.ceil(Number(process.env.REFAZER_ELITE_SNIPER_PRICE_BRL || 10) * WALLET_TOKENS_PER_BRL),
   },
 };
 
@@ -795,6 +795,21 @@ const commands = [
         .addChoices(
           { name: "All", value: "all" },
           { name: "Accessories", value: "accessories" },
+          { name: "Hats", value: "hats" },
+          { name: "Hair", value: "hair" },
+          { name: "Face accessories", value: "face_accessories" },
+          { name: "Neck accessories", value: "neck_accessories" },
+          { name: "Shoulder accessories", value: "shoulder_accessories" },
+          { name: "Front accessories", value: "front_accessories" },
+          { name: "Back accessories", value: "back_accessories" },
+          { name: "Waist accessories", value: "waist_accessories" },
+          { name: "Faces", value: "faces" },
+          { name: "Heads", value: "heads" },
+          { name: "Bundles", value: "bundles" },
+          { name: "Classic shirts", value: "classic_shirts" },
+          { name: "Classic pants", value: "classic_pants" },
+          { name: "T-shirts", value: "tshirts" },
+          { name: "Layered clothing", value: "layered_clothing" },
           { name: "Clothing", value: "clothing" },
           { name: "Collectibles", value: "collectibles" }
         )
@@ -4371,8 +4386,45 @@ async function fetchRobloxJson(url) {
 const SNIPER_CATEGORY_PARAMS = {
   all: {},
   accessories: { Category: "11" },
+  hats: { Category: "11", AssetTypes: "8" },
+  hair: { Category: "11", AssetTypes: "41" },
+  face_accessories: { Category: "11", AssetTypes: "42" },
+  neck_accessories: { Category: "11", AssetTypes: "43" },
+  shoulder_accessories: { Category: "11", AssetTypes: "44" },
+  front_accessories: { Category: "11", AssetTypes: "45" },
+  back_accessories: { Category: "11", AssetTypes: "46" },
+  waist_accessories: { Category: "11", AssetTypes: "47" },
+  faces: { Category: "4", AssetTypes: "18" },
+  heads: { Category: "4", AssetTypes: "17,79" },
+  bundles: { Category: "17", BundleTypes: "1,2,3" },
+  classic_shirts: { Category: "3", AssetTypes: "11" },
+  classic_pants: { Category: "3", AssetTypes: "12" },
+  tshirts: { Category: "3", AssetTypes: "2" },
+  layered_clothing: { Category: "3", AssetTypes: "64,65,66,67,68,69,70,71,72" },
   clothing: { Category: "3" },
   collectibles: { SalesTypeFilter: "2" },
+};
+
+const SNIPER_CATEGORY_LABELS = {
+  all: "All",
+  accessories: "Accessories",
+  hats: "Hats",
+  hair: "Hair",
+  face_accessories: "Face accessories",
+  neck_accessories: "Neck accessories",
+  shoulder_accessories: "Shoulder accessories",
+  front_accessories: "Front accessories",
+  back_accessories: "Back accessories",
+  waist_accessories: "Waist accessories",
+  faces: "Faces",
+  heads: "Heads",
+  bundles: "Bundles",
+  classic_shirts: "Classic shirts",
+  classic_pants: "Classic pants",
+  tshirts: "T-shirts",
+  layered_clothing: "Layered clothing",
+  clothing: "Clothing",
+  collectibles: "Collectibles",
 };
 
 const SNIPER_WINDOW_PARAMS = {
@@ -4532,7 +4584,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice }) {
   const filters = [
     `Window: ${window}`,
-    `Category: ${category}`,
+    `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
     keyword ? `Keyword: ${keyword}` : null,
     Number.isFinite(minPrice) ? `Min price: ${minPrice} Robux` : null,
     Number.isFinite(maxPrice) ? `Max price: ${maxPrice} Robux` : null,
@@ -4554,14 +4606,19 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     return [
       `**${index + 1}. ${name}**`,
       `Score: **${candidate.score}/100** | Creator: **${creator}**`,
-      signals,
+      [
+        candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
+        candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : null,
+        price,
+        ageText,
+      ].filter(Boolean).join(" | "),
       `https://www.roblox.com/catalog/${candidate.id}`,
     ].join("\n");
   }).join("\n\n");
 
   return [
     "# 🎯 Market Sniper Report",
-    "This report uses public catalog signals to highlight items worth reviewing. It is not a guarantee of profit.",
+    "Source: public Roblox catalog search plus public asset signals. This is a review radar, not a profit guarantee.",
     "",
     `## Access`,
     `Plan: **${quote.planLabel}**`,
