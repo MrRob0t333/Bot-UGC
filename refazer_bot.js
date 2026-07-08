@@ -4570,6 +4570,12 @@ function sniperCategoryMatches(category, item, details = {}) {
   return assetTypeId !== null && allowedTypes.includes(assetTypeId);
 }
 
+function sniperCategoryCanBeVerified(category, item, details = {}) {
+  if (!category || category === "all" || category === "collectibles") return true;
+  if (category === "bundles") return Boolean(catalogItemKind(item, details));
+  return catalogAssetTypeId(item, details) !== null;
+}
+
 function catalogItemPrice(item, details = {}) {
   const candidates = [
     item.price,
@@ -4672,6 +4678,29 @@ async function fetchCatalogDetailsSafe(itemId) {
   }
 }
 
+function buildSniperCandidate(item, details = {}, category = "all", categoryVerified = false) {
+  const id = catalogItemId(item);
+  const breakdown = sniperScoreBreakdown(item, details);
+  return {
+    item,
+    details,
+    id,
+    name: item.name || details.Name || `Item ${id}`,
+    creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
+    assetTypeId: catalogAssetTypeId(item, details),
+    price: catalogItemPrice(item, details),
+    favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
+    sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
+    createdAt: item.created || item.createdAt || details.Created || null,
+    score: breakdown.score,
+    reasons: [
+      ...breakdown.reasons,
+      categoryVerified ? "category verified" : category !== "all" ? "category inferred from search" : null,
+    ].filter(Boolean),
+    categoryVerified,
+  };
+}
+
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice }) {
   const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
@@ -4718,25 +4747,18 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   const enriched = [];
+  const inferred = [];
   for (const item of unique) {
     const id = catalogItemId(item);
     const details = {};
-    if (!sniperCategoryMatches(category, item, details)) continue;
-    const breakdown = sniperScoreBreakdown(item, details);
-    enriched.push({
-      item,
-      details,
-      id,
-      name: item.name || details.Name || `Item ${id}`,
-      creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
-      assetTypeId: catalogAssetTypeId(item, details),
-      price: catalogItemPrice(item, details),
-      favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
-      sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
-      createdAt: item.created || item.createdAt || details.Created || null,
-      score: breakdown.score,
-      reasons: breakdown.reasons,
-    });
+    const canVerify = sniperCategoryCanBeVerified(category, item, details);
+    const matches = sniperCategoryMatches(category, item, details);
+
+    if (canVerify && !matches) continue;
+
+    const candidate = buildSniperCandidate(item, details, category, canVerify && matches);
+    if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
+    else inferred.push(candidate);
   }
 
   if (!enriched.length && category !== "all" && category !== "collectibles") {
@@ -4744,25 +4766,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const id = catalogItemId(item);
       const details = await fetchCatalogDetailsSafe(id);
       if (!sniperCategoryMatches(category, item, details)) continue;
-      const breakdown = sniperScoreBreakdown(item, details);
-      enriched.push({
-        item,
-        details,
-        id,
-        name: item.name || details.Name || `Item ${id}`,
-        creator: item.creatorName || item.creator?.name || details.Creator?.Name || "Unknown",
-        assetTypeId: catalogAssetTypeId(item, details),
-        price: catalogItemPrice(item, details),
-        favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
-        sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
-        createdAt: item.created || item.createdAt || details.Created || null,
-        score: breakdown.score,
-        reasons: breakdown.reasons,
-      });
+      enriched.push(buildSniperCandidate(item, details, category, true));
     }
   }
 
-  const candidates = enriched.sort((a, b) => b.score - a.score).slice(0, 15);
+  const finalPool = enriched.length ? enriched : inferred;
+  const candidates = finalPool.sort((a, b) => b.score - a.score).slice(0, 15);
   sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
   return candidates;
 }
