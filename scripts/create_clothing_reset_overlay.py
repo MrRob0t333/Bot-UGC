@@ -25,6 +25,30 @@ def draw_label(draw, box, text, fill):
     draw.text((x1 + 7, y1 + 6), text, fill=fill, font=font)
 
 
+def template_overlay_layer(template_path, size):
+    template = Image.open(template_path).convert("RGBA").resize(size, Image.LANCZOS)
+    pixels = template.load()
+    width, height = template.size
+
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a == 0 or (r > 245 and g > 245 and b > 245):
+                pixels[x, y] = (r, g, b, 0)
+                continue
+
+            brightness = (r + g + b) / 3
+            if brightness < 35:
+                alpha = 72
+            elif brightness < 160:
+                alpha = 145
+            else:
+                alpha = 95
+            pixels[x, y] = (r, g, b, min(a, alpha))
+
+    return template
+
+
 def main():
     if len(sys.argv) < 3:
         raise SystemExit("usage: create_clothing_reset_overlay.py input output")
@@ -33,9 +57,17 @@ def main():
     output_path = Path(sys.argv[2])
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    template_path = Path(sys.argv[3]) if len(sys.argv) >= 4 else None
     image = Image.open(input_path).convert("RGBA")
     width, height = image.size
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+
+    if template_path and template_path.exists():
+        overlay = Image.alpha_composite(overlay, template_overlay_layer(template_path, image.size))
+        result = Image.alpha_composite(image, overlay).convert("RGBA")
+        result.save(output_path)
+        return
+
     draw = ImageDraw.Draw(overlay, "RGBA")
 
     # Roblox classic clothing templates are commonly 585x559. These boxes are

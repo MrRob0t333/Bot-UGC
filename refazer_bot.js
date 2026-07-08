@@ -61,6 +61,7 @@ const BLENDER_PATH =
   cleanEnv(process.env.BLENDER_PATH) ||
   "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe";
 const PYTHON_PATH = cleanEnv(process.env.PYTHON_PATH || process.env.REFAZER_PYTHON_PATH, "python");
+const CLOTHING_RESET_TEMPLATE_PATH = path.join(__dirname, "assets", "clothing_reset_template.png");
 
 const NANO_BANANA_PRO_ENDPOINT = cleanEnv(process.env.NANO_BANANA_PRO_ENDPOINT);
 const NANO_BANANA_PRO_API_KEY = cleanEnv(process.env.NANO_BANANA_PRO_API_KEY);
@@ -5645,8 +5646,28 @@ async function createResetTemplateImage(action) {
   fs.mkdirSync(outputDir, { recursive: true });
   const outputPath = path.join(outputDir, `${action.catalogId}_reset_template_${Date.now()}.png`);
   const scriptPath = path.join(__dirname, "scripts", "create_clothing_reset_overlay.py");
-  await execFileAsync(PYTHON_PATH, [scriptPath, action.filePath, outputPath], { timeout: 30000 });
-  return outputPath;
+  const args = [scriptPath, action.filePath, outputPath];
+  if (fs.existsSync(CLOTHING_RESET_TEMPLATE_PATH)) args.push(CLOTHING_RESET_TEMPLATE_PATH);
+
+  const candidates = [
+    PYTHON_PATH,
+    "python3",
+    "python",
+    "py",
+  ].filter((item, index, list) => item && list.indexOf(item) === index);
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync(candidate, args, { timeout: 30000 });
+      return outputPath;
+    } catch (err) {
+      lastError = err;
+      if (err.code !== "ENOENT") break;
+    }
+  }
+
+  throw lastError || new Error("Could not run Python image processor.");
 }
 
 function formatGenerationProgress({ status, progress }) {
