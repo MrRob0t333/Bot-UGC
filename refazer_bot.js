@@ -133,6 +133,7 @@ const DEFAULT_TEXTURE_ADJUSTMENTS = {
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
 const inviteUses = new Map();
+const WALLET_TOKENS_PER_BRL = 1000 / 30;
 
 const PRICE_CONFIG = {
   baseFree: 30,
@@ -292,7 +293,6 @@ const IMAGE_RESOLUTIONS = {
 const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"]);
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Velvet Coins";
-const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const WALLET_MIN_PURCHASE = 1000;
 const IMAGE_GENERATION_PRICE = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE || 100);
 const PROMPT_MODEL_PRICE = Number(process.env.REFAZER_PROMPT_MODEL_PRICE || 1100);
