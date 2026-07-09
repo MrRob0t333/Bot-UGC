@@ -97,6 +97,7 @@ const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
 const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
 const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
 const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
+const DISCORD_MAX_ATTACHMENT_BYTES = Number(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB || 24) * 1024 * 1024;
 
 const DEFAULT_RENDER_SETTINGS = {
   lighting: "studio",
@@ -7114,7 +7115,26 @@ function attachmentsFromPaths(paths) {
     .map(file => new AttachmentBuilder(file));
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(2)} KB`;
+  return `${value} B`;
+}
+
 function publicModelAttachment(file, name = "velvet_model.glb") {
+  if (!file || !fs.existsSync(file)) {
+    throw new Error("Final model file was not found.");
+  }
+
+  const size = fs.statSync(file).size;
+  if (size > DISCORD_MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Final model is too large for Discord delivery (${formatBytes(size)}). ` +
+      `Current delivery limit is ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}.`
+    );
+  }
+
   return new AttachmentBuilder(file, { name });
 }
 
@@ -9651,6 +9671,47 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
+      if (balanceBeforeDelivery < quote.walletAmount) {
+        await interaction.followUp({
+          content:
+            `## Insufficient Balance\n` +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            `**Your balance:** ${formatTokenAmount(balanceBeforeDelivery)}\n\n` +
+            "Use `/buy` to add Service Credits.",
+          flags: 64,
+        });
+        return;
+      }
+
+      let finalMessage;
+      try {
+        finalMessage = await interaction.followUp({
+          content:
+            `## ✅ Final Model Generated\n` +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            `**Remaining balance:** updating...`,
+          files: [publicModelAttachment(model.modelPath)],
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.followUp(
+          "## Model delivery failed\n" +
+          "No charge was deducted because the final model could not be delivered.\n\n" +
+          "The team can review this manually and compress or resend the file."
+        ).catch(() => {});
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+        return;
+      }
+
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
@@ -9669,13 +9730,12 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      await interaction.followUp({
+      await finalMessage.edit({
         content:
-          `## ✅ Modelo Final Gerado\n` +
-          `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-          `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-        files: [publicModelAttachment(model.modelPath)],
-      });
+          `## ✅ Final Model Generated\n` +
+          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+      }).catch(() => {});
       return;
     }
 
