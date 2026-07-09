@@ -341,7 +341,7 @@ const SUBSCRIPTION_PLANS = {
   },
 };
 const PREPAID_SUBSCRIPTION_DAYS = Number(process.env.REFAZER_PREPAID_SUBSCRIPTION_DAYS || 30);
-const DEFAULT_CURRENCY = "BRL";
+const DEFAULT_CURRENCY = "USD";
 const DEFAULT_LANGUAGE = "en";
 const CURRENCIES = {
   BRL: { symbol: "R$", brlRate: 1 },
@@ -424,7 +424,6 @@ const commands = [
         .addChoices(
           { name: "Auto", value: "auto" },
           { name: "English", value: "en" },
-          { name: "Português", value: "pt-BR" }
         )
     )
     .addStringOption(o =>
@@ -433,10 +432,10 @@ const commands = [
         .setDescription("Payment currency")
         .setRequired(false)
         .addChoices(
-          { name: "BRL - Real", value: "BRL" },
           { name: "USD - Dollar", value: "USD" },
           { name: "EUR - Euro", value: "EUR" },
-          { name: "GBP - Pound", value: "GBP" }
+          { name: "GBP - Pound", value: "GBP" },
+          { name: "BRL - Real (Mercado Pago)", value: "BRL" }
         )
     )
     .addStringOption(o =>
@@ -508,10 +507,10 @@ const commands = [
         .setDescription("Moeda de pagamento")
         .setRequired(false)
         .addChoices(
-          { name: "BRL - Real", value: "BRL" },
           { name: "USD - Dollar", value: "USD" },
           { name: "EUR - Euro", value: "EUR" },
-          { name: "GBP - Pound", value: "GBP" }
+          { name: "GBP - Pound", value: "GBP" },
+          { name: "BRL - Real (Mercado Pago)", value: "BRL" }
         )
     )
     .addStringOption(o =>
@@ -613,9 +612,9 @@ const commands = [
         .setDescription("Subscription plan")
         .setRequired(true)
         .addChoices(
-          { name: "Basic - R$ 99/month", value: "basic" },
-          { name: "Premium - R$ 199/month", value: "premium" },
-          { name: "Elite - R$ 349/month", value: "elite" }
+          { name: "Basic - $18.00/month", value: "basic" },
+          { name: "Premium - $36.18/month", value: "premium" },
+          { name: "Elite - $63.45/month", value: "elite" }
         )
     )
     .addStringOption(o =>
@@ -1414,7 +1413,6 @@ const commands = [
         .setDescription("Guide language")
         .setRequired(true)
         .addChoices(
-          { name: "Portuguese", value: "pt-BR" },
           { name: "English", value: "en" },
           { name: "Both", value: "both" }
         )
@@ -1430,7 +1428,6 @@ const commands = [
         .setDescription("Terms language")
         .setRequired(true)
         .addChoices(
-          { name: "Portuguese", value: "pt-BR" },
           { name: "English", value: "en" },
           { name: "Both", value: "both" }
         )
@@ -2640,8 +2637,6 @@ function updateWalletPreferences(userId, updates) {
 }
 
 function languageFor(interaction) {
-  const prefs = walletPreferences(interaction.user.id);
-  if (prefs.language !== "auto") return prefs.language;
   return "en";
 }
 
@@ -2822,6 +2817,16 @@ function formatCurrencyFromBrl(brl, currencyCode = DEFAULT_CURRENCY) {
   return `${currency.symbol} ${value.toFixed(2)} ${currencyCode}`;
 }
 
+function stripeCurrencyFor(currencyCode) {
+  return CURRENCIES[currencyCode] ? String(currencyCode).toLowerCase() : DEFAULT_CURRENCY.toLowerCase();
+}
+
+function stripeUnitAmountFromBrl(brl, currencyCode = DEFAULT_CURRENCY) {
+  const currency = CURRENCIES[currencyCode] || CURRENCIES[DEFAULT_CURRENCY];
+  const value = brl / currency.brlRate;
+  return Math.max(50, Math.round(value * 100));
+}
+
 async function mercadoPagoRequest(endpoint, body) {
   if (!MERCADO_PAGO_ACCESS_TOKEN) {
     throw new Error("MERCADO_PAGO_ACCESS_TOKEN nao configurado.");
@@ -2946,8 +2951,8 @@ async function createStripeCheckoutSession(request) {
     line_items: [
       {
         price_data: {
-          currency: "brl",
-          unit_amount: Math.round(request.brl * 100),
+          currency: stripeCurrencyFor(request.currency),
+          unit_amount: stripeUnitAmountFromBrl(request.brl, request.currency),
           product_data: {
             name: `${request.amount} Service Credits`,
             description: "Non-transferable credits redeemable only for Velvet digital services.",
@@ -2959,7 +2964,7 @@ async function createStripeCheckoutSession(request) {
   });
 }
 
-async function createStripeSubscriptionSession({ userId, planKey, email }) {
+async function createStripeSubscriptionSession({ userId, planKey, email, currency = DEFAULT_CURRENCY }) {
   const plan = SUBSCRIPTION_PLANS[planKey];
   if (!plan) throw new Error("Plano invalido.");
 
@@ -2986,8 +2991,8 @@ async function createStripeSubscriptionSession({ userId, planKey, email }) {
     line_items: [
       {
         price_data: {
-          currency: "brl",
-          unit_amount: Math.round(plan.brl * 100),
+          currency: stripeCurrencyFor(currency),
+          unit_amount: stripeUnitAmountFromBrl(plan.brl, currency),
           recurring: { interval: "month" },
           product_data: { name: `Velvet ${plan.label}` },
         },
@@ -3907,7 +3912,7 @@ function formatBalanceMessage({ balance, serviceCredits = "" }) {
     "# Service Credits",
     "Your available Service Credits are ready to use on Velvet services.",
     SERVICE_CREDITS_NOTE,
-    "Package reference: 1,000 Service Credits is sold as a R$30 service package.",
+    "Package reference: 1,000 Service Credits is sold as a $5.45 USD service package.",
     "",
     uiLine("Available credits", formatTokenAmount(balance)),
     serviceCredits ? `\n## Service Credits\n${serviceCredits}` : "",
@@ -3921,7 +3926,7 @@ function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLi
     "# Service Credits Checkout",
     "Your order was created successfully.",
     SERVICE_CREDITS_NOTE,
-    "Pricing reference: 1,000 Service Credits is a R$30 service package. This is not a cash exchange rate.",
+    "Pricing reference: 1,000 Service Credits is a $5.45 USD service package. This is not a cash exchange rate.",
     "",
     uiLine("Order ID", `\`${request.id}\``),
     uiLine("Package", `${formatTokenAmount(request.amount)} Service Credits`),
@@ -3954,15 +3959,18 @@ function formatAffiliateMessage(profile) {
   ].join("\n");
 }
 
-function formatSubscriptionMessage({ plan, provider, email, link, orderId = null }) {
+function formatSubscriptionMessage({ plan, provider, email, link, orderId = null, priceLabel = null }) {
   const isPrepaid = provider === "Mercado Pago Pix";
+  const displayedPrice = priceLabel || (isPrepaid
+    ? formatCurrencyFromBrl(plan.brl, "BRL")
+    : formatCurrencyFromBrl(plan.brl, DEFAULT_CURRENCY));
   return [
     `# ⭐ Velvet ${plan.label}`,
     isPrepaid
       ? `Your prepaid ${PREPAID_SUBSCRIPTION_DAYS}-day subscription checkout is ready.`
       : "Your subscription checkout is ready.",
     "",
-    uiLine("Price", isPrepaid ? `R$ ${plan.brl.toFixed(2)} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `R$ ${plan.brl.toFixed(2)}/month`),
+    uiLine("Price", isPrepaid ? `${displayedPrice} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `${displayedPrice}/month`),
     uiLine("Provider", provider),
     orderId ? uiLine("Order ID", `\`${orderId}\``) : null,
     uiLine("Email", email),
@@ -7190,9 +7198,11 @@ client.on("interactionCreate", async interaction => {
       const lang = interaction.commandName === "buy" ? "en" : languageFor(interaction);
       const amount = interaction.options.getInteger("quantidade") || interaction.options.getInteger("amount");
       const selectedCurrency = interaction.options.getString("moeda") || interaction.options.getString("currency");
-      const currency = currencyFor(interaction, selectedCurrency);
       const selectedProvider = interaction.options.getString("gateway") || interaction.options.getString("provider");
       const requestedProvider = paymentProviderFor(selectedProvider);
+      const currency = requestedProvider.startsWith("mercadopago")
+        ? "BRL"
+        : currencyFor(interaction, selectedCurrency);
       if (amount < WALLET_MIN_PURCHASE) {
         await interaction.reply({
           content: lang === "pt-BR"
@@ -7375,6 +7385,8 @@ client.on("interactionCreate", async interaction => {
       const email = interaction.options.getString("email").trim();
       const requestedProvider = paymentProviderFor(interaction.options.getString("provider"));
       const plan = SUBSCRIPTION_PLANS[planKey];
+      const subscriptionCurrency = requestedProvider.startsWith("mercadopago") ? "BRL" : DEFAULT_CURRENCY;
+      const subscriptionPriceLabel = formatCurrencyFromBrl(plan?.brl || 0, subscriptionCurrency);
 
       if (!plan) {
         await interaction.reply({ content: "## ⚠️ Invalid plan", flags: 64 });
@@ -7386,7 +7398,7 @@ client.on("interactionCreate", async interaction => {
           content:
             `## ⚠️ Stripe checkout is not configured\n` +
             `Plan: **${plan.label}**\n` +
-            `Price: **R$ ${plan.brl.toFixed(2)}/month**`,
+            `Price: **${subscriptionPriceLabel}/month**`,
           flags: 64,
         });
         return;
@@ -7397,7 +7409,7 @@ client.on("interactionCreate", async interaction => {
           content:
             `## ⚠️ Subscription checkout is not configured\n` +
             `Plan: **${plan.label}**\n` +
-            `Price: **R$ ${plan.brl.toFixed(2)}/month**\n\n` +
+            `Price: **${subscriptionPriceLabel}/month**\n\n` +
             "The team can activate it manually for now.",
           flags: 64,
         });
@@ -7440,27 +7452,16 @@ client.on("interactionCreate", async interaction => {
             userId: interaction.user.id,
             planKey,
             email,
+            currency: subscriptionCurrency,
           });
           link = session.url || null;
         }
 
         await interaction.reply({
-          content: formatSubscriptionMessage({ plan, provider, email, link, orderId }),
+          content: formatSubscriptionMessage({ plan, provider, email, link, orderId, priceLabel: subscriptionPriceLabel }),
           flags: 64,
         });
         return;
-
-        await interaction.reply({
-          content:
-            `# ⭐ Velvet ${plan.label}\n` +
-            `**Price:** R$ ${plan.brl.toFixed(2)}/month\n` +
-            `**Provider:** ${provider}\n` +
-            `**Email:** ${email}\n\n` +
-            (link
-              ? `Complete your subscription here:\n${link}`
-              : "Subscription created, but Mercado Pago did not return a checkout link."),
-          flags: 64,
-        });
       } catch (err) {
         console.error(err);
         await interaction.reply({
@@ -7560,7 +7561,7 @@ client.on("interactionCreate", async interaction => {
       const balance = addWalletBalance({ userId: target.id, amount, actorId: interaction.user.id, reason });
 
       await interaction.reply({
-        content: `## ➕ Saldo Adicionado\n**Usuário:** ${target}\n**Valor:** +${formatTokenAmount(amount)}\n**Novo saldo:** ${formatTokenAmount(balance)}`,
+        content: `## Balance Added\n**User:** ${target}\n**Amount:** +${formatTokenAmount(amount)}\n**New balance:** ${formatTokenAmount(balance)}`,
         flags: 64,
       });
       return;
@@ -7571,14 +7572,16 @@ client.on("interactionCreate", async interaction => {
       const amount = interaction.options.getInteger("amount");
       const priceBrl = interaction.options.getNumber("price_brl");
       const requestedProvider = paymentProviderFor(interaction.options.getString("provider"));
+      const checkoutCurrency = requestedProvider.startsWith("mercadopago") ? "BRL" : DEFAULT_CURRENCY;
       const request = createPurchaseRequest({
         userId: target.id,
         amount,
-        currency: "BRL",
+        currency: checkoutCurrency,
         brlOverride: priceBrl,
         source: "admin_buy",
         channelId: interaction.channelId,
       });
+      const adminPriceLabel = formatCurrencyFromBrl(priceBrl, checkoutCurrency);
 
       let paymentLink = null;
       let paymentProvider = paymentProviderLabel(requestedProvider);
@@ -7607,7 +7610,7 @@ client.on("interactionCreate", async interaction => {
           `**User:** ${target}\n` +
           `**Order ID:** \`${request.id}\`\n` +
           `**Credits:** ${formatTokenAmount(amount)}\n` +
-          `**Price:** R$ ${priceBrl.toFixed(2)}\n\n` +
+          `**Price:** ${adminPriceLabel}\n\n` +
           (paymentLink
             ? `${paymentProvider} checkout:\n${paymentLink}`
             : `${paymentProvider} checkout could not be created. Check PM2 logs.`),
@@ -7716,14 +7719,14 @@ client.on("interactionCreate", async interaction => {
 
       if (!debit.ok) {
         await interaction.reply({
-          content: `Saldo insuficiente no usuario. Saldo atual: ${formatTokenAmount(debit.balance)}`,
+          content: `The user does not have enough Service Credits. Current balance: ${formatTokenAmount(debit.balance)}`,
           flags: 64,
         });
         return;
       }
 
       await interaction.reply({
-        content: `## ➖ Saldo Removido\n**Usuário:** ${target}\n**Valor:** -${formatTokenAmount(amount)}\n**Novo saldo:** ${formatTokenAmount(debit.balance)}`,
+        content: `## Balance Removed\n**User:** ${target}\n**Amount:** -${formatTokenAmount(amount)}\n**New balance:** ${formatTokenAmount(debit.balance)}`,
         flags: 64,
       });
       return;
@@ -7736,12 +7739,12 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({
         content: pending.length
           ? [
-            "## 🧾 Compras Pendentes",
+            "## Pending Purchases",
             ...pending.map(item =>
-              `\`${item.id}\` | <@${item.userId}> | **${formatTokenAmount(item.amount)}** | R$ ${item.brl.toFixed(2)}`
+              `\`${item.id}\` | <@${item.userId}> | **${formatTokenAmount(item.amount)}** | ${formatCurrencyFromBrl(item.brl, item.currency || DEFAULT_CURRENCY)}`
             ),
           ].join("\n")
-          : "## ✅ Compras Pendentes\nNão há compras pendentes.",
+          : "## Pending Purchases\nThere are no pending purchases.",
         flags: 64,
       });
       return;
@@ -7760,10 +7763,10 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply({
         content:
-          `## ${action === "aprovar" ? "✅ Compra Aprovada" : "❌ Compra Rejeitada"}\n` +
+          `## ${action === "aprovar" ? "Purchase Approved" : "Purchase Rejected"}\n` +
           `**ID:** \`${requestId}\`\n` +
-          `**Usuário:** <@${resolved.request.userId}>\n` +
-          `**Quantidade:** ${formatTokenAmount(resolved.request.amount)}`,
+          `**User:** <@${resolved.request.userId}>\n` +
+          `**Amount:** ${formatTokenAmount(resolved.request.amount)}`,
         flags: 64,
       });
       return;
@@ -9377,6 +9380,10 @@ registerCommands()
   .catch(err => {
     console.error("Erro ao iniciar bot laboratorio:", err);
   });
+
+
+
+
 
 
 
