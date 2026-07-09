@@ -326,17 +326,17 @@ const AFFILIATE_WITHDRAW_MIN = 1000;
 const SUBSCRIPTION_PLANS = {
   basic: {
     label: "Basic",
-    brl: 99,
+    brl: 104.5,
     roleId: NORMAL_ROLE,
   },
   premium: {
     label: "Premium",
-    brl: 199,
+    brl: 214.5,
     roleId: PREMIUM_ROLE,
   },
   elite: {
     label: "Elite",
-    brl: 349,
+    brl: 379.5,
     roleId: ELITE_ROLE,
   },
 };
@@ -612,9 +612,9 @@ const commands = [
         .setDescription("Subscription plan")
         .setRequired(true)
         .addChoices(
-          { name: "Basic - $18.00/month", value: "basic" },
-          { name: "Premium - $36.18/month", value: "premium" },
-          { name: "Elite - $63.45/month", value: "elite" }
+          { name: "Basic - $19/month", value: "basic" },
+          { name: "Premium - $39/month", value: "premium" },
+          { name: "Elite - $69/month", value: "elite" }
         )
     )
     .addStringOption(o =>
@@ -2352,7 +2352,7 @@ function clothingTemplateActionList(db) {
   return db.clothingTemplateActions;
 }
 
-function createClothingTemplateAction({ userId, result }) {
+function createClothingTemplateAction({ userId, result, source = "single" }) {
   const db = readWalletDb();
   const actions = clothingTemplateActionList(db);
   const actionId = crypto.randomBytes(8).toString("hex");
@@ -2367,6 +2367,7 @@ function createClothingTemplateAction({ userId, result }) {
     name: result.name,
     creator: result.creator,
     filePath: result.filePath,
+    source,
     used: false,
     createdAt: new Date().toISOString(),
   };
@@ -2397,6 +2398,23 @@ function clothingResetButton(actionId) {
       .setLabel("Reset Template")
       .setStyle(ButtonStyle.Secondary)
   );
+}
+
+function clothingResetButtonRows(actions, offset = 0) {
+  const buttons = actions
+    .slice(0, 15)
+    .map((action, index) =>
+      new ButtonBuilder()
+        .setCustomId(`clothing_reset:${action.id}`)
+        .setLabel(`Reset ${offset + index + 1}`)
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
 }
 
 function normalizeServiceScopes(input) {
@@ -6976,7 +6994,9 @@ client.on("interactionCreate", async interaction => {
     try {
       const resetPath = await createResetTemplateImage(action);
       markClothingTemplateActionUsed(action.id);
-      await interaction.message.delete().catch(() => {});
+      if (action.source !== "bulk") {
+        await interaction.message.delete().catch(() => {});
+      }
       await interaction.channel.send({
         content:
           `## Clothing Template Reset\n` +
@@ -8152,9 +8172,12 @@ client.on("interactionCreate", async interaction => {
         freeRemaining: finalQuote.dailyLimit === null ? null : Math.max(finalQuote.dailyLimit - usage.count, 0),
       };
       const files = results.map(item => publicImageAttachment(item.filePath, `${item.catalogId}_template.png`));
+      const resetActions = results.map(result =>
+        createClothingTemplateAction({ userId: interaction.user.id, result, source: "bulk" })
+      );
       const summary = results
         .slice(0, 12)
-        .map(item => `\`${item.catalogId}\` - ${item.typeLabel}`)
+        .map((item, index) => `**${index + 1}.** \`${item.catalogId}\` - ${item.typeLabel}`)
         .join("\n");
 
       await interaction.editReply({
@@ -8165,14 +8188,17 @@ client.on("interactionCreate", async interaction => {
           `${formatBulkClothingAllowance(displayQuote)}\n` +
           `**Price:** ${formatTokenAmount(finalQuote.walletAmount)}\n` +
           `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-          `${summary}`,
+          `${summary}\n\n` +
+          "Use the matching **Reset** button to receive that template with the visible guide on top.",
         files: files.slice(0, 10),
+        components: clothingResetButtonRows(resetActions.slice(0, 10), 0),
       });
 
       for (let index = 10; index < files.length; index += 10) {
         await interaction.followUp({
           content: `More clothing templates (${index + 1}-${Math.min(index + 10, files.length)}):`,
           files: files.slice(index, index + 10),
+          components: clothingResetButtonRows(resetActions.slice(index, index + 10), index),
         }).catch(() => {});
       }
 
