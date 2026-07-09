@@ -292,8 +292,18 @@ const IMAGE_RESOLUTIONS = {
 
 const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"]);
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
-const WALLET_TOKEN_NAME = "Velvet Coins";
+const WALLET_TOKEN_NAME = "Service Credits";
 const WALLET_MIN_PURCHASE = 1000;
+const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
+const DISABLED_STORED_VALUE_COMMANDS = new Set([
+  "affiliate_withdraw",
+  "velvet_transferir",
+  "velvet_sacar",
+  "velvet_admin_saques",
+  "velvet_admin_saque",
+  "admin_withdrawals",
+  "admin_withdrawal",
+]);
 const IMAGE_GENERATION_PRICE = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE || 100);
 const PROMPT_MODEL_PRICE = Number(process.env.REFAZER_PROMPT_MODEL_PRICE || 1100);
 const SERVICE_CREDIT_SCOPES = {
@@ -474,21 +484,21 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("velvet_saldo")
-    .setDescription("Mostra seu saldo de Velvet Coins")
+    .setDescription("Mostra seu saldo de Service Credits")
     .toJSON(),
 
   new SlashCommandBuilder()
     .setName("balance")
-    .setDescription("Shows your Velvet Coins balance")
+    .setDescription("Shows your Service Credits balance")
     .toJSON(),
 
   new SlashCommandBuilder()
     .setName("velvet_comprar")
-    .setDescription("Cria um pedido de compra de Velvet Coins")
+    .setDescription("Cria um pedido de compra de Service Credits")
     .addIntegerOption(o =>
       o
         .setName("quantidade")
-        .setDescription("Quantidade de Velvet Coins")
+        .setDescription("Quantidade de Service Credits")
         .setRequired(true)
         .setMinValue(WALLET_MIN_PURCHASE)
     )
@@ -520,11 +530,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("buy")
-    .setDescription("Creates a Velvet Coins purchase request")
+    .setDescription("Creates a Service Credits purchase request")
     .addIntegerOption(o =>
       o
         .setName("amount")
-        .setDescription("Velvet Coins amount")
+        .setDescription("Service Credits amount")
         .setRequired(true)
         .setMinValue(WALLET_MIN_PURCHASE)
     )
@@ -577,9 +587,9 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("affiliate_redeem")
-    .setDescription("Moves affiliate commission into your Velvet Coins balance")
+    .setDescription("Moves affiliate commission into your Service Credits balance")
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(1)
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(1)
     )
     .toJSON(),
 
@@ -587,7 +597,7 @@ const commands = [
     .setName("affiliate_withdraw")
     .setDescription("Creates an affiliate commission withdrawal request")
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(AFFILIATE_WITHDRAW_MIN)
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(AFFILIATE_WITHDRAW_MIN)
     )
     .addStringOption(o =>
       o.setName("payment_info").setDescription("Where/how the team should pay you").setRequired(true)
@@ -627,14 +637,14 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("velvet_transferir")
-    .setDescription("Transfere Velvet Coins para outro usuário")
+    .setDescription("Transfere Service Credits para outro usuário")
     .addUserOption(o =>
       o.setName("usuario").setDescription("Usuário que vai receber").setRequired(true)
     )
     .addIntegerOption(o =>
       o
         .setName("quantidade")
-        .setDescription("Quantidade de Velvet Coins")
+        .setDescription("Quantidade de Service Credits")
         .setRequired(true)
         .setMinValue(1)
     )
@@ -646,7 +656,7 @@ const commands = [
     .addIntegerOption(o =>
       o
         .setName("quantidade")
-        .setDescription("Quantidade de Velvet Coins")
+        .setDescription("Quantidade de Service Credits")
         .setRequired(true)
         .setMinValue(100)
     )
@@ -663,14 +673,14 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("velvet_admin_add")
-    .setDescription("Admin: adiciona Velvet Coins para um usuário")
+    .setDescription("Admin: adiciona Service Credits para um usuário")
     .addUserOption(o =>
       o.setName("usuario").setDescription("Usuário que vai receber").setRequired(true)
     )
     .addIntegerOption(o =>
       o
         .setName("quantidade")
-        .setDescription("Quantidade de Velvet Coins")
+        .setDescription("Quantidade de Service Credits")
         .setRequired(true)
         .setMinValue(1)
     )
@@ -681,14 +691,14 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("velvet_admin_remover")
-    .setDescription("Admin: remove Velvet Coins de um usuário")
+    .setDescription("Admin: remove Service Credits de um usuário")
     .addUserOption(o =>
       o.setName("usuario").setDescription("Usuário que vai perder saldo").setRequired(true)
     )
     .addIntegerOption(o =>
       o
         .setName("quantidade")
-        .setDescription("Quantidade de Velvet Coins")
+        .setDescription("Quantidade de Service Credits")
         .setRequired(true)
         .setMinValue(1)
     )
@@ -1247,12 +1257,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("admin_add")
-    .setDescription("Admin: adds Velvet Coins to a user")
+    .setDescription("Admin: adds Service Credits to a user")
     .addUserOption(o =>
       o.setName("user").setDescription("User").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(1)
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(1)
     )
     .addStringOption(o =>
       o.setName("reason").setDescription("Adjustment reason").setRequired(false)
@@ -1261,12 +1271,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("admin_buy")
-    .setDescription("Admin: creates a discounted Velvet Coins checkout for a user")
+    .setDescription("Admin: creates a discounted Service Credits checkout for a user")
     .addUserOption(o =>
       o.setName("user").setDescription("User that will receive the credits").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(1)
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(1)
     )
     .addNumberOption(o =>
       o.setName("price_brl").setDescription("Custom checkout price in BRL").setRequired(true).setMinValue(1)
@@ -1287,7 +1297,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("code_redeem")
-    .setDescription("Redeems a Velvet Coins promo code")
+    .setDescription("Redeems a Service Credits promo code")
     .addStringOption(o =>
       o.setName("code").setDescription("Promo code").setRequired(true)
     )
@@ -1295,12 +1305,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("admin_code_create")
-    .setDescription("Admin: creates a limited Velvet Coins promo code")
+    .setDescription("Admin: creates a limited Service Credits promo code")
     .addStringOption(o =>
       o.setName("code").setDescription("Code name, for example VELVET100").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins given per redeem").setRequired(true).setMinValue(1)
+      o.setName("amount").setDescription("Service Credits given per redeem").setRequired(true).setMinValue(1)
     )
     .addIntegerOption(o =>
       o.setName("uses").setDescription("Maximum number of users that can redeem it").setRequired(true).setMinValue(1)
@@ -1331,12 +1341,12 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("admin_remove")
-    .setDescription("Admin: removes Velvet Coins from a user")
+    .setDescription("Admin: removes Service Credits from a user")
     .addUserOption(o =>
       o.setName("user").setDescription("User").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("amount").setDescription("Velvet Coins amount").setRequired(true).setMinValue(1)
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(1)
     )
     .addStringOption(o =>
       o.setName("reason").setDescription("Adjustment reason").setRequired(false)
@@ -1743,6 +1753,9 @@ async function registerCommands() {
     "refazer_mock",
     "modelo_ultimo",
     "refazer_debug",
+    "affiliate_withdraw",
+    "admin_withdrawals",
+    "admin_withdrawal",
   ]);
   const registeredCommands = commands.filter(command => !hiddenPortugueseCommands.has(command.name));
 
@@ -2413,7 +2426,7 @@ function normalizeServiceScopes(input) {
 
 function formatServiceScopes(scopes) {
   const normalized = normalizeServiceScopes(scopes);
-  if (!normalized.length) return "Wallet balance";
+  if (!normalized.length) return "Service credit balance";
   if (normalized.includes("all")) return SERVICE_CREDIT_SCOPES.all;
   return normalized.map(scope => SERVICE_CREDIT_SCOPES[scope] || scope).join(", ");
 }
@@ -2925,7 +2938,7 @@ async function createStripeCheckoutSession(request) {
     cancel_url: STRIPE_CANCEL_URL,
     client_reference_id: request.id,
     metadata: {
-      type: "velvet_coins",
+      type: "service_credits",
       user_id: request.userId,
       amount: request.amount,
       request_id: request.id,
@@ -2936,8 +2949,8 @@ async function createStripeCheckoutSession(request) {
           currency: "brl",
           unit_amount: Math.round(request.brl * 100),
           product_data: {
-            name: `${request.amount} Velvet Coins`,
-            description: "Velvet Coins wallet top-up",
+            name: `${request.amount} Service Credits`,
+            description: "Non-transferable credits redeemable only for Velvet digital services.",
           },
         },
         quantity: 1,
@@ -3016,8 +3029,8 @@ async function createMercadoPagoPreference(request, options = {}) {
     items: [
       {
         id: request.id,
-        title: `${request.amount} Velvet Coins`,
-        description: "Velvet Coins wallet top-up",
+        title: `${request.amount} Service Credits`,
+        description: "Non-transferable credits redeemable only for Velvet digital services.",
         quantity: 1,
         currency_id: "BRL",
         unit_price: request.brl,
@@ -3025,7 +3038,7 @@ async function createMercadoPagoPreference(request, options = {}) {
     ],
     external_reference: request.id,
     metadata: {
-      type: "velvet_coins",
+      type: "service_credits",
       user_id: request.userId,
       amount: request.amount,
       request_id: request.id,
@@ -3463,8 +3476,8 @@ async function notifyPurchaseApproved(request) {
     "## Purchase Approved\n" +
     `**Order ID:** ${request.id}\n` +
     `**Amount:** ${formatTokenAmount(request.amount)}\n` +
-    `**Wallet balance:** ${formatTokenAmount(balance)}\n\n` +
-    "Your Velvet Coins are available now.";
+    `**Service credit balance:** ${formatTokenAmount(balance)}\n\n` +
+    "Your Service Credits are available now.";
 
   if (request.channelId) {
     try {
@@ -3475,7 +3488,7 @@ async function notifyPurchaseApproved(request) {
             "## Purchase Approved\n" +
             `**User:** <@${request.userId}>\n` +
             `**Amount:** ${formatTokenAmount(request.amount)}\n` +
-            `**Wallet balance:** ${formatTokenAmount(balance)}`,
+            `**Service credit balance:** ${formatTokenAmount(balance)}`,
         });
       }
     } catch (err) {
@@ -3709,7 +3722,7 @@ async function handleMercadoPagoSubscription(preapprovalId) {
 async function handleStripeCheckoutSession(session) {
   const metadata = session.metadata || {};
 
-  if (metadata.type === "velvet_coins" && session.payment_status === "paid") {
+  if ((metadata.type === "service_credits" || metadata.type === "velvet_coins") && session.payment_status === "paid") {
     const requestId = metadata.request_id || session.client_reference_id;
     const resolved = resolvePurchase({
       requestId,
@@ -3891,49 +3904,53 @@ function uiMoney(value) {
 
 function formatBalanceMessage({ balance, serviceCredits = "" }) {
   return [
-    "# 💎 Velvet Wallet",
-    "Your available balance is ready to use on copies, remakes and services.",
+    "# Service Credits",
+    "Your available Service Credits are ready to use on Velvet services.",
+    SERVICE_CREDITS_NOTE,
+    "Package reference: 1,000 Service Credits is sold as a R$30 service package.",
     "",
-    uiLine("Balance", formatTokenAmount(balance)),
+    uiLine("Available credits", formatTokenAmount(balance)),
     serviceCredits ? `\n## Service Credits\n${serviceCredits}` : "",
     "",
-    "🛒 Need more? Use `/buy` to add Velvet Coins.",
+    "Need more? Use `/buy` to purchase a service credit package.",
   ].filter(Boolean).join("\n");
 }
 
 function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
   return [
-    "# 🛒 Velvet Coins Checkout",
+    "# Service Credits Checkout",
     "Your order was created successfully.",
+    SERVICE_CREDITS_NOTE,
+    "Pricing reference: 1,000 Service Credits is a R$30 service package. This is not a cash exchange rate.",
     "",
     uiLine("Order ID", `\`${request.id}\``),
-    uiLine("Package", `💎 ${formatTokenAmount(request.amount)}`),
+    uiLine("Package", `${formatTokenAmount(request.amount)} Service Credits`),
     uiLine("Price", uiMoney(priceLabel)),
     uiLine("Status", "Awaiting payment"),
     "",
     "## Next Step",
     paymentLink
-      ? `Pay securely with **${paymentProvider}**:\n${paymentLink}\n\nYour Velvet Coins will be released automatically after confirmation.`
-      : "Send the payment in the channel indicated by the team. Your Velvet Coins will be released after manual confirmation.",
+      ? `Pay securely with **${paymentProvider}**:\n${paymentLink}\n\nYour Service Credits will be released automatically after confirmation.`
+      : "Send the payment in the channel indicated by the team. Your Service Credits will be released after manual confirmation.",
   ].join("\n");
 }
 
 function formatAffiliateMessage(profile) {
   return [
-    "# 🤝 Velvet Affiliate",
-    "Share your invite, bring new customers and earn commission automatically.",
+    "# Velvet Affiliate",
+    "Share your invite, bring new customers and earn commission for Velvet services.",
     "",
     uiLine("Code", `\`${profile.code}\``),
     uiLine("Invite", profile.inviteUrl || "Not registered yet"),
-    uiLine("Velvet Coins purchases", `${(AFFILIATE_WALLET_PURCHASE_RATE * 100).toFixed(0)}%`),
+    uiLine("Service package purchases", `${(AFFILIATE_WALLET_PURCHASE_RATE * 100).toFixed(0)}%`),
     uiLine("AI remake services", `${(AFFILIATE_SERVICE_RATE * 100).toFixed(0)}%`),
     uiLine("Subscriptions", `${(AFFILIATE_SUBSCRIPTION_RATE * 100).toFixed(0)}% base, ${(AFFILIATE_SUBSCRIPTION_BOOST_RATE * 100).toFixed(0)}% after ${AFFILIATE_SUBSCRIPTION_BOOST_CLIENTS} new subscribers/month`),
     uiLine("Pending commission", formatTokenAmount(profile.affiliateBalance)),
     "",
     "## Actions",
-    "🔗 Register your invite with `/affiliate_register`.",
-    "💎 Move commission to your wallet with `/affiliate_redeem`.",
-    "🏦 Request payout with `/affiliate_withdraw`.",
+    "Register your invite with `/affiliate_register`.",
+    "Convert commission into Service Credits with `/affiliate_redeem`.",
+    "Service Credits are only usable for Velvet services and cannot be withdrawn or transferred.",
   ].join("\n");
 }
 
@@ -3959,13 +3976,13 @@ function formatSubscriptionMessage({ plan, provider, email, link, orderId = null
 function formatInsufficientBalanceMessage({ service, price, balance }) {
   return [
     "# ⚠️ Insufficient Balance",
-    "You need more Velvet Coins to continue.",
+    "You need more Service Credits to continue.",
     "",
     uiLine("Service", service),
     uiLine("Price", formatTokenAmount(price)),
     uiLine("Your balance", formatTokenAmount(balance)),
     "",
-    "Use `/buy` to add Velvet Coins.",
+    "Use `/buy` to add Service Credits.",
   ].join("\n");
 }
 
@@ -3977,10 +3994,10 @@ function formatOfficialGuide(language) {
       "",
       "## 1. Configure sua conta",
       "Use `/settings` para escolher idioma e moeda de preferência.",
-      "Use `/balance` para consultar seu saldo de Velvet Coins.",
+      "Use `/balance` para consultar seu saldo de Service Credits.",
       "",
-      "## 2. Compre Velvet Coins",
-      "Use `/buy` e escolha a quantidade de Velvet Coins.",
+      "## 2. Compre Service Credits",
+      "Use `/buy` e escolha a quantidade de Service Credits.",
       "O bot cria um checkout seguro. Assim que o pagamento for confirmado, o saldo é liberado automaticamente.",
       "",
       "## 3. Copiar um UGC original",
@@ -4019,10 +4036,10 @@ function formatOfficialGuide(language) {
     "",
     "## 1. Set up your account",
     "Use `/settings` to choose your language and preferred currency.",
-    "Use `/balance` to check your Velvet Coins balance.",
+    "Use `/balance` to check your Service Credits balance.",
     "",
-    "## 2. Buy Velvet Coins",
-    "Use `/buy` and choose how many Velvet Coins you want.",
+    "## 2. Buy Service Credits",
+    "Use `/buy` and choose how many Service Credits you want.",
     "The bot creates a secure checkout. Once payment is confirmed, your balance is released automatically.",
     "",
     "## 3. Copy an original UGC",
@@ -4058,44 +4075,51 @@ function formatOfficialGuide(language) {
 function formatOfficialTerms(language) {
   if (language === "pt-BR") {
     return [
-      "# 📜 Termos de Compra e Serviço",
-      "Ao comprar Velvet Coins, assinar um plano ou solicitar um serviço, você concorda com estes termos.",
+      "# Termos de Compra e Servico",
+      "Ao comprar um pacote, assinar um plano ou solicitar um servico, voce concorda com estes termos.",
       "",
-      "## Pagamentos e Velvet Coins",
-      "Velvet Coins são créditos internos usados para pagar serviços dentro da Velvet UGC.",
-      "O saldo é liberado após confirmação do pagamento. Pagamentos em análise, pendentes ou contestados não liberam saldo até confirmação final.",
+      "## Pagamentos e Service Credits",
+      "Service Credits sao creditos internos usados apenas para pagar servicos digitais dentro da Velvet UGC.",
+      "Eles nao sao dinheiro, Robux, moeda virtual ou saldo transferivel.",
+      "Service Credits nao podem ser sacados, transferidos entre usuarios ou trocados por dinheiro/Robux.",
+      "A compra mostra o preco do pacote de servicos, nao uma taxa de cambio ou valor de resgate.",
+      "O saldo e liberado apos confirmacao do pagamento. Pagamentos em analise, pendentes ou contestados nao liberam saldo ate confirmacao final.",
       "",
-      "## Entrega dos serviços",
-      "Cópias de UGC entregam arquivos originais disponíveis para o item informado.",
-      "Modelos refeitos com IA dependem da qualidade das referências, do ID enviado e das opções escolhidas pelo cliente.",
-      "Resultados de IA podem variar. A equipe pode orientar ajustes quando necessário.",
+      "## Entrega dos servicos",
+      "Copias de UGC entregam arquivos originais disponiveis para o item informado.",
+      "Modelos refeitos com IA dependem da qualidade das referencias, do ID enviado e das opcoes escolhidas pelo cliente.",
+      "Resultados de IA podem variar. A equipe pode orientar ajustes quando necessario.",
       "",
       "## Responsabilidade do cliente",
-      "Confira IDs, imagens, vistas multiview e opções antes de confirmar.",
+      "Confira IDs, imagens, vistas multiview e opcoes antes de confirmar.",
       "Em multiview, envie apenas frente, direita, costas e esquerda, com nomes corretos e boa qualidade.",
       "",
       "## Reembolsos",
-      "Pedidos já processados, arquivos já entregues ou créditos já utilizados normalmente não são reembolsáveis.",
-      "Casos de erro técnico podem ser revisados manualmente pela equipe.",
+      "Pedidos ja processados, arquivos ja entregues ou creditos ja utilizados normalmente nao sao reembolsaveis.",
+      "Casos de erro tecnico podem ser revisados manualmente pela equipe.",
       "",
       "## Assinaturas",
-      "Planos são cobrados mensalmente. Caso o pagamento falhe ou a assinatura seja cancelada, os benefícios e cargos podem ser removidos.",
+      "Planos sao cobrados mensalmente. Caso o pagamento falhe ou a assinatura seja cancelada, os beneficios e cargos podem ser removidos.",
       "",
       "## Afiliados",
-      "Comissões são registradas conforme as regras do programa. Saques passam por revisão manual e podem exigir confirmação de dados.",
+      "Comissoes sao registradas conforme as regras do programa e podem ser convertidas em Service Credits para uso nos servicos Velvet.",
+      "Saques, transferencias ou resgates nao sao oferecidos pelo bot.",
       "",
       "## Uso adequado",
-      "Não use o bot para fraude, spam, abuso de pagamentos, chargeback indevido ou violação das regras do Discord, Roblox ou da comunidade.",
+      "Nao use o bot para fraude, spam, abuso de pagamentos, chargeback indevido ou violacao das regras do Discord, Roblox ou da comunidade.",
       "A equipe pode limitar, pausar ou bloquear acesso em caso de abuso.",
     ].join("\n");
   }
 
   return [
-    "# 📜 Purchase and Service Terms",
-    "By buying Velvet Coins, subscribing to a plan or ordering a service, you agree to these terms.",
+    "# Purchase and Service Terms",
+    "By buying a package, subscribing to a plan or ordering a service, you agree to these terms.",
     "",
-    "## Payments and Velvet Coins",
-    "Velvet Coins are internal credits used to pay for services inside Velvet UGC.",
+    "## Payments and Service Credits",
+    "Service Credits are internal credits used only to pay for Velvet UGC digital services.",
+    "They are not money, Robux, virtual currency or transferable stored value.",
+    "Service Credits cannot be withdrawn, transferred between users or exchanged for cash/Robux.",
+    "The checkout shows the service package price, not an exchange rate or redemption value.",
     "Balance is released after payment confirmation. Pending, under-review or disputed payments do not release balance until final confirmation.",
     "",
     "## Service delivery",
@@ -4115,7 +4139,8 @@ function formatOfficialTerms(language) {
     "Plans are billed monthly. If payment fails or the subscription is canceled, benefits and roles may be removed.",
     "",
     "## Affiliates",
-    "Commissions are tracked according to the affiliate program rules. Payouts are manually reviewed and may require data confirmation.",
+    "Commissions are tracked according to the affiliate program rules and may be converted into Service Credits for Velvet services.",
+    "Withdrawals, transfers or redemptions are not offered by the bot.",
     "",
     "## Fair use",
     "Do not use the bot for fraud, spam, payment abuse, wrongful chargebacks or violations of Discord, Roblox or community rules.",
@@ -6661,10 +6686,7 @@ function formatCommandsHelp(interaction) {
     "⭐ `/subscribe` - creates a Basic/Premium subscription link",
     "🤝 `/affiliate` - shows your affiliate link and commission",
     "🔗 `/affiliate_apply` - applies an affiliate code",
-    "💎 `/affiliate_redeem` - turns commission into Velvet Coins",
-    "🏦 `/affiliate_withdraw` - requests affiliate payout",
-    "🤝 `/velvet_transferir` - envia Velvet Coins para outro usuário",
-    "🏦 `/velvet_sacar` - cria um pedido de saque",
+    "💎 `/affiliate_redeem` - turns commission into Service Credits",
     "🧾 `/refazer_preco` - calcula o valor do modelo",
     "📎 `/copiar` - envia o modelo original e textura",
     "📎 `/steal` - copies original asset files",
@@ -6687,8 +6709,6 @@ function formatCommandsHelp(interaction) {
       "➖ `/velvet_admin_remover` - remove saldo",
       "🧾 `/velvet_admin_compras` - lista compras pendentes",
       "✅ `/velvet_admin_compra` - aprova ou rejeita compra",
-      "🏦 `/velvet_admin_saques` - lista saques pendentes",
-      "☑️ `/velvet_admin_saque` - aprova ou rejeita saque",
       "🛒 `/admin_buy` - creates a discounted checkout"
     );
   }
@@ -6699,11 +6719,11 @@ function formatCommandsHelp(interaction) {
 formatCommandsHelp = function formatCommandsHelpClean(interaction) {
   const lines = [
     "# ✨ Velvet UGC",
-    "Choose a service below. Payments and balances use Velvet Coins.",
+    "Choose a service below. Payments use Service Credits for Velvet services only.",
     "",
-    "## Wallet",
-    "💎 `/balance` - view your Velvet Coins",
-    "🛒 `/buy` - buy Velvet Coins",
+    "## Service Credits",
+    "💎 `/balance` - view your Service Credits",
+    "🛒 `/buy` - purchase a service credit package",
     "⭐ `/subscribe` - subscribe to Basic, Premium or Elite",
     "",
     "## Services",
@@ -6720,8 +6740,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "🤝 `/affiliate` - view your affiliate dashboard",
     "🔗 `/affiliate_register` - register your Discord invite",
     "✅ `/affiliate_apply` - apply an affiliate code or invite",
-    "💎 `/affiliate_redeem` - convert commission to Velvet Coins",
-    "🏦 `/affiliate_withdraw` - request a payout",
+    "💎 `/affiliate_redeem` - convert commission to Service Credits",
   ];
 
   if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
@@ -6737,13 +6756,11 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     lines.push(
       "",
       "## Admin",
-      "➕ `/admin_add` - add Velvet Coins",
-      "➖ `/admin_remove` - remove Velvet Coins",
+      "➕ `/admin_add` - add Service Credits",
+      "➖ `/admin_remove` - remove Service Credits",
       "🛒 `/admin_buy` - create a discounted checkout",
       "🧾 `/admin_purchases` - review purchases",
       "✅ `/admin_purchase` - approve or reject purchases",
-      "🏦 `/admin_withdrawals` - review withdrawals",
-      "☑️ `/admin_withdrawal` - approve or reject withdrawals",
       "📌 `/admin_post_guide` - post the official usage guide",
       "📜 `/admin_post_terms` - post the official purchase terms"
     );
@@ -7041,6 +7058,18 @@ client.on("interactionCreate", async interaction => {
     "refazer_multiview",
   ].includes(interaction.commandName)) return;
   try {
+    if (DISABLED_STORED_VALUE_COMMANDS.has(interaction.commandName)) {
+      await interaction.reply({
+        content: [
+          "# Feature unavailable",
+          SERVICE_CREDITS_NOTE,
+          "Use `/buy` for service packages or `/affiliate_redeem` to convert affiliate commission into Service Credits.",
+        ].join("\n"),
+        flags: 64,
+      });
+      return;
+    }
+
     if (!await checkCooldown(interaction)) return;
 
     if (!userIsAllowed(interaction)) {
@@ -7221,8 +7250,8 @@ client.on("interactionCreate", async interaction => {
           `> **Status:** ⏳ aguardando pagamento\n\n` +
           `📌 **Próximo passo**\n` +
           (paymentLink
-            ? `Pague pelo ${paymentProvider}:\n${paymentLink}\n\nAssim que for confirmado, seus **Velvet Coins** serão liberados automaticamente.`
-            : `Envie o pagamento no canal indicado pela equipe. Assim que for confirmado, seus **Velvet Coins** caem na carteira automaticamente.`)
+            ? `Pague pelo ${paymentProvider}:\n${paymentLink}\n\nAssim que for confirmado, seus **Service Credits** serão liberados automaticamente.`
+            : `Envie o pagamento no canal indicado pela equipe. Assim que for confirmado, seus **Service Credits** caem na carteira automaticamente.`)
           :
           `# 🛒 Purchase Request\n` +
           `✅ **Your request was created successfully.**\n\n` +
@@ -7232,8 +7261,8 @@ client.on("interactionCreate", async interaction => {
           `> **Status:** ⏳ awaiting payment\n\n` +
           `📌 **Next step**\n` +
           (paymentLink
-            ? `Pay with ${paymentProvider}:\n${paymentLink}\n\nOnce confirmed, your **Velvet Coins** will be released automatically.`
-            : `Send the payment in the channel indicated by the team. Once confirmed, your **Velvet Coins** will be added to your wallet automatically.`),
+            ? `Pay with ${paymentProvider}:\n${paymentLink}\n\nOnce confirmed, your **Service Credits** will be released automatically.`
+            : `Send the payment in the channel indicated by the team. Once confirmed, your **Service Credits** will be added to your wallet automatically.`),
         flags: 64,
       });
       return;
@@ -7266,7 +7295,6 @@ client.on("interactionCreate", async interaction => {
           `**Your link:** ${link}\n` +
           `**Commission:** ${(AFFILIATE_COMMISSION_RATE * 100).toFixed(0)}%\n` +
           `**Pending commission:** ${formatTokenAmount(profile.affiliateBalance)}\n\n` +
-          `Use \`/affiliate_redeem\` to turn commission into Velvet Coins, or \`/affiliate_withdraw\` after ${formatTokenAmount(AFFILIATE_WITHDRAW_MIN)}.`,
         flags: 64,
       });
       return;
@@ -7317,7 +7345,7 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply({
         content: redeemed.ok
-          ? `## ✅ Commission Redeemed\n**Added to wallet:** ${formatTokenAmount(amount)}\n**Wallet balance:** ${formatTokenAmount(redeemed.balance)}\n**Affiliate balance:** ${formatTokenAmount(redeemed.affiliateBalance)}`
+          ? `## ✅ Commission Redeemed\n**Converted to Service Credits:** ${formatTokenAmount(amount)}\n**Service credit balance:** ${formatTokenAmount(redeemed.balance)}\n**Affiliate balance:** ${formatTokenAmount(redeemed.affiliateBalance)}`
           : `## ⚠️ Insufficient Affiliate Balance\n**Current balance:** ${formatTokenAmount(redeemed.balance)}`,
         flags: 64,
       });
@@ -7835,7 +7863,7 @@ client.on("interactionCreate", async interaction => {
             `${allowanceText}\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to add Velvet Coins.",
+            "Use `/buy` to add Service Credits.",
           flags: 64,
         });
         return;
@@ -8053,7 +8081,7 @@ client.on("interactionCreate", async interaction => {
           `${formatBulkClothingAllowance(maxQuote)}\n` +
           `**Maximum price:** ${formatTokenAmount(maxQuote.walletAmount)}\n` +
           `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-          "Use `/buy` to add Velvet Coins."
+          "Use `/buy` to add Service Credits."
         );
         return;
       }
@@ -8270,7 +8298,7 @@ client.on("interactionCreate", async interaction => {
             `**Bulk amount:** ${ids.length}/${bulkLimit}\n` +
             `**Maximum price:** ${formatTokenAmount(totalWalletAmount)}\n` +
             `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to add Velvet Coins.",
+            "Use `/buy` to add Service Credits.",
           flags: 64,
         });
         return;
@@ -8994,7 +9022,7 @@ client.on("interactionCreate", async interaction => {
             `## Insufficient Balance\n` +
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to add Velvet Coins.",
+            "Use `/buy` to add Service Credits.",
           flags: 64,
         });
         return;
@@ -9349,3 +9377,6 @@ registerCommands()
   .catch(err => {
     console.error("Erro ao iniciar bot laboratorio:", err);
   });
+
+
+
