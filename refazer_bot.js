@@ -299,7 +299,7 @@ const WALLET_MIN_PURCHASE = 1000;
 const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
 const VELVET_EMOJIS = {
   shield: "<:escudo:1524645193817788516>",
-  coin: "💎",
+  coin: "<:token:1524645150788157440>",
   cart: "<:carrinho:1524645099773100073>",
   alert: "<:alerta:1524644993673990194>",
   bot: "<:bot:1524645071654355054>",
