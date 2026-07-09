@@ -52,6 +52,8 @@ const ROBLOX_COOKIES = [
 
 const PREMIUM_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_ROLE, "1521989120745013459");
 const ELITE_ROLE = cleanEnv(process.env.REFAZER_ELITE_ROLE, "1523463473328292013");
+const PREMIUM_LIFETIME_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_LIFETIME_ROLE, "1524638659679092766");
+const ELITE_LIFETIME_ROLE = cleanEnv(process.env.REFAZER_ELITE_LIFETIME_ROLE, "1524638763899420753");
 const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "1521959526394237089");
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
@@ -339,6 +341,18 @@ const SUBSCRIPTION_PLANS = {
     brl: 379.5,
     roleId: ELITE_ROLE,
   },
+  premium_lifetime: {
+    label: "Premium Lifetime",
+    brl: 1644.5,
+    roleId: PREMIUM_LIFETIME_ROLE,
+    lifetime: true,
+  },
+  elite_lifetime: {
+    label: "Elite Lifetime",
+    brl: 3294.5,
+    roleId: ELITE_LIFETIME_ROLE,
+    lifetime: true,
+  },
 };
 const PREPAID_SUBSCRIPTION_DAYS = Number(process.env.REFAZER_PREPAID_SUBSCRIPTION_DAYS || 30);
 const DEFAULT_CURRENCY = "USD";
@@ -614,7 +628,9 @@ const commands = [
         .addChoices(
           { name: "Basic - $19/month", value: "basic" },
           { name: "Premium - $39/month", value: "premium" },
-          { name: "Elite - $69/month", value: "elite" }
+          { name: "Elite - $69/month", value: "elite" },
+          { name: "Premium Lifetime - $299 once", value: "premium_lifetime" },
+          { name: "Elite Lifetime - $599 once", value: "elite_lifetime" }
         )
     )
     .addStringOption(o =>
@@ -3020,6 +3036,40 @@ async function createStripeSubscriptionSession({ userId, planKey, email, currenc
   });
 }
 
+async function createStripeLifetimeSubscriptionSession({ request, email, currency = DEFAULT_CURRENCY }) {
+  const planKey = request.meta?.planKey;
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan || !plan.lifetime) throw new Error("Invalid lifetime plan.");
+
+  return stripeRequest("/v1/checkout/sessions", {
+    mode: "payment",
+    success_url: STRIPE_SUCCESS_URL,
+    cancel_url: STRIPE_CANCEL_URL,
+    customer_email: email,
+    client_reference_id: request.id,
+    metadata: {
+      type: "velvet_subscription_lifetime",
+      user_id: request.userId,
+      plan: planKey,
+      role_id: plan.roleId,
+      request_id: request.id,
+    },
+    line_items: [
+      {
+        price_data: {
+          currency: stripeCurrencyFor(currency),
+          unit_amount: stripeUnitAmountFromBrl(plan.brl, currency),
+          product_data: {
+            name: `Velvet ${plan.label}`,
+            description: "One-time lifetime access to Velvet digital service benefits.",
+          },
+        },
+        quantity: 1,
+      },
+    ],
+  });
+}
+
 function verifyStripeWebhook(rawBody, signature) {
   if (!STRIPE_WEBHOOK_SECRET) return JSON.parse(rawBody || "{}");
 
@@ -3151,6 +3201,43 @@ async function createMercadoPagoPrepaidSubscriptionPreference(request) {
   };
 
   if (MERCADO_PAGO_WEBHOOK_URL) payload.notification_url = MERCADO_PAGO_WEBHOOK_URL;
+
+  return mercadoPagoRequest("/checkout/preferences", payload);
+}
+
+async function createMercadoPagoLifetimeSubscriptionPreference(request) {
+  const planKey = request.meta?.planKey;
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan || !plan.lifetime) throw new Error("Invalid lifetime plan.");
+
+  const payload = {
+    items: [
+      {
+        id: request.id,
+        title: `Velvet ${plan.label}`,
+        description: "One-time lifetime access to Velvet digital service benefits.",
+        quantity: 1,
+        currency_id: "BRL",
+        unit_price: request.brl,
+      },
+    ],
+    external_reference: request.id,
+    metadata: {
+      type: "velvet_subscription_lifetime",
+      user_id: request.userId,
+      plan: planKey,
+      role_id: plan.roleId,
+      request_id: request.id,
+      email: request.meta?.email,
+    },
+    back_urls: {
+      success: MERCADO_PAGO_SUCCESS_URL,
+      pending: MERCADO_PAGO_CANCEL_URL,
+      failure: MERCADO_PAGO_CANCEL_URL,
+    },
+    notification_url: MERCADO_PAGO_WEBHOOK_URL || undefined,
+    auto_return: "approved",
+  };
 
   return mercadoPagoRequest("/checkout/preferences", payload);
 }
@@ -3636,6 +3723,56 @@ async function notifyPrepaidSubscriptionApproved(request, plan, expiresAt) {
   }
 }
 
+async function activateLifetimeSubscription({ request, provider, paymentId }) {
+  const planKey = request.meta?.planKey;
+  const plan = SUBSCRIPTION_PLANS[planKey];
+  if (!plan || !plan.lifetime) return { ok: false, reason: "Invalid lifetime plan." };
+
+  const db = readWalletDb();
+  const storedRequest = db.purchaseRequests.find(item => item.id === request.id);
+  if (!storedRequest) return { ok: false, reason: "Order not found." };
+  if (storedRequest.status !== "pending") return { ok: false, reason: "Order already resolved." };
+
+  storedRequest.status = "approved";
+  storedRequest.approvedAt = new Date().toISOString();
+  storedRequest.approvedBy = provider;
+  storedRequest.paymentId = paymentId;
+  walletTransaction(db, {
+    userId: request.userId,
+    type: "subscription_lifetime",
+    amount: 0,
+    actorId: provider,
+    reason: `Velvet ${plan.label} lifetime access`,
+    meta: { requestId: request.id, plan: planKey, brl: request.brl, paymentId },
+  });
+  creditAffiliateCommission(db, {
+    buyerId: request.userId,
+    brl: request.brl,
+    source: "subscription_lifetime",
+    actorId: provider,
+    meta: { plan: planKey, requestId: request.id, paymentId },
+  });
+  writeWalletDb(db);
+
+  await syncSubscriptionRole({ userId: request.userId, roleId: plan.roleId, active: true });
+  return { ok: true, plan };
+}
+
+async function notifyLifetimeSubscriptionApproved(request, plan) {
+  const message =
+    `## Lifetime Access Activated\n` +
+    `**Plan:** ${plan.label}\n` +
+    `**Order ID:** \`${request.id}\`\n\n` +
+    "Your lifetime role is active now.";
+
+  if (request.channelId) {
+    const channel = await client.channels.fetch(request.channelId).catch(() => null);
+    if (channel) await channel.send({ content: `<@${request.userId}>\n${message}` }).catch(() => {});
+  }
+  const user = await client.users.fetch(request.userId).catch(() => null);
+  if (user) await user.send(message).catch(() => {});
+}
+
 async function expirePrepaidSubscriptions() {
   const db = readWalletDb();
   const now = Date.now();
@@ -3701,6 +3838,22 @@ async function handleMercadoPagoPayment(paymentId) {
       await notifyPrepaidSubscriptionApproved(request, activated.plan, activated.expiresAt);
     } else {
       console.log(`Assinatura Pix nao aprovada automaticamente: ${requestId} - ${activated.reason}`);
+    }
+    return;
+  }
+
+  if (request.source === "subscription_lifetime") {
+    const activated = await activateLifetimeSubscription({
+      request,
+      provider: "mercado_pago",
+      paymentId,
+    });
+
+    if (activated.ok) {
+      console.log(`Lifetime Mercado Pago aprovado automaticamente: ${requestId}`);
+      await notifyLifetimeSubscriptionApproved(request, activated.plan);
+    } else {
+      console.log(`Lifetime Mercado Pago nao aprovado automaticamente: ${requestId} - ${activated.reason}`);
     }
     return;
   }
@@ -3782,6 +3935,28 @@ async function handleStripeCheckoutSession(session) {
       writeWalletDb(db);
     }
     console.log(`Assinatura Stripe ativada: ${session.id}`);
+  }
+
+  if (metadata.type === "velvet_subscription_lifetime" && session.payment_status === "paid") {
+    const requestId = metadata.request_id || session.client_reference_id;
+    const request = findPurchaseRequest(requestId);
+    if (!request) {
+      console.warn("Lifetime Stripe sem pedido:", requestId);
+      return;
+    }
+
+    const activated = await activateLifetimeSubscription({
+      request,
+      provider: "stripe",
+      paymentId: session.id,
+    });
+
+    if (activated.ok) {
+      console.log(`Lifetime Stripe aprovado automaticamente: ${requestId}`);
+      await notifyLifetimeSubscriptionApproved(request, activated.plan);
+    } else {
+      console.log(`Lifetime Stripe nao aprovado automaticamente: ${requestId} - ${activated.reason}`);
+    }
   }
 }
 
@@ -3984,11 +4159,13 @@ function formatSubscriptionMessage({ plan, provider, email, link, orderId = null
     : formatCurrencyFromBrl(plan.brl, DEFAULT_CURRENCY));
   return [
     `# ⭐ Velvet ${plan.label}`,
-    isPrepaid
+    plan.lifetime
+      ? "Your lifetime access checkout is ready."
+      : isPrepaid
       ? `Your prepaid ${PREPAID_SUBSCRIPTION_DAYS}-day subscription checkout is ready.`
       : "Your subscription checkout is ready.",
     "",
-    uiLine("Price", isPrepaid ? `${displayedPrice} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `${displayedPrice}/month`),
+    uiLine("Price", plan.lifetime ? `${displayedPrice} one-time` : isPrepaid ? `${displayedPrice} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `${displayedPrice}/month`),
     uiLine("Provider", provider),
     orderId ? uiLine("Order ID", `\`${orderId}\``) : null,
     uiLine("Email", email),
@@ -4264,11 +4441,11 @@ function hasRole(interaction, roleId) {
 }
 
 function userIsPremium(interaction) {
-  return hasRole(interaction, PREMIUM_ROLE);
+  return hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE);
 }
 
 function userIsElite(interaction) {
-  return hasRole(interaction, ELITE_ROLE);
+  return hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE);
 }
 
 function userHasPremiumAccess(interaction) {
@@ -4284,7 +4461,7 @@ function userIsAffiliate(interaction) {
 }
 
 function userIsAllowed(interaction) {
-  return userIsAdmin(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
+  return userIsAdmin(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
 async function checkCooldown(interaction) {
@@ -7441,7 +7618,36 @@ client.on("interactionCreate", async interaction => {
         let provider = paymentProviderLabel(requestedProvider);
         let orderId = null;
 
-        if (requestedProvider === "mercadopago_pix") {
+        if (plan.lifetime) {
+          const request = createPurchaseRequest({
+            userId: interaction.user.id,
+            amount: 0,
+            currency: subscriptionCurrency,
+            brlOverride: plan.brl,
+            source: "subscription_lifetime",
+            channelId: interaction.channelId,
+            meta: {
+              planKey,
+              roleId: plan.roleId,
+              lifetime: true,
+              email,
+            },
+          });
+          orderId = request.id;
+
+          if (requestedProvider.startsWith("mercadopago")) {
+            const preference = await createMercadoPagoLifetimeSubscriptionPreference(request);
+            link = preference.init_point || preference.sandbox_init_point || null;
+            provider = requestedProvider === "mercadopago_pix" ? "Mercado Pago Pix" : paymentProviderLabel(requestedProvider);
+          } else {
+            const session = await createStripeLifetimeSubscriptionSession({
+              request,
+              email,
+              currency: subscriptionCurrency,
+            });
+            link = session.url || null;
+          }
+        } else if (requestedProvider === "mercadopago_pix") {
           const request = createPurchaseRequest({
             userId: interaction.user.id,
             amount: 0,
