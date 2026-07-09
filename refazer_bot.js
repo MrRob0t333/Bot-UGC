@@ -297,6 +297,14 @@ const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLE
 const WALLET_TOKEN_NAME = "Service Credits";
 const WALLET_MIN_PURCHASE = 1000;
 const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
+const VELVET_EMOJIS = {
+  shield: "<:escudo:1524645193817788516>",
+  coin: "<:moeda:1524645150788157440>",
+  cart: "<:carrinho:1524645099773100073>",
+  alert: "<:alerta:1524644993673990194>",
+  bot: "<:bot:1524645071654355054>",
+  star: "<:estrela:1524645031049302116>",
+};
 const DISABLED_STORED_VALUE_COMMANDS = new Set([
   "affiliate_withdraw",
   "velvet_transferir",
@@ -1447,6 +1455,34 @@ const commands = [
           { name: "English", value: "en" },
           { name: "Both", value: "both" }
         )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_post_info")
+    .setDescription("Admin: posts a polished official information message as the bot")
+    .addStringOption(o =>
+      o
+        .setName("type")
+        .setDescription("Message to publish")
+        .setRequired(true)
+        .addChoices(
+          { name: "Rules", value: "rules" },
+          { name: "Terms of Service", value: "terms" },
+          { name: "Subscriptions", value: "subscriptions" },
+          { name: "How to Buy", value: "how_to_buy" },
+          { name: "How Service Credits Work", value: "credits" },
+          { name: "Bot Instructions", value: "bot_instructions" },
+          { name: "Announcements", value: "announcements" },
+          { name: "Update Log", value: "update_log" },
+          { name: "Our Results", value: "results" }
+        )
+    )
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("Channel where the bot should post")
+        .setRequired(true)
     )
     .toJSON(),
 
@@ -4357,6 +4393,261 @@ function officialMessagesFor(kind, language) {
   return [formatter(language)];
 }
 
+function formatOfficialInfoMessage(kind) {
+  const e = VELVET_EMOJIS;
+  const messages = {
+    rules: [
+      `# ${e.shield} Rules`,
+      "Welcome to **Velvet Tech**.",
+      "",
+      "To keep the server safe, organized and professional, all members must follow the rules below.",
+      "",
+      `## ${e.shield} 1. Respect`,
+      "Treat members, clients and staff with respect. Harassment, threats, hate speech, racism, discrimination or personal attacks are not allowed.",
+      "",
+      `## ${e.alert} 2. No Spam`,
+      "Do not flood channels, mass ping, advertise without permission or send unrelated links.",
+      "",
+      `## ${e.alert} 3. No Scam Activity`,
+      "Scamming, impersonation, fake payment proof, chargeback abuse or attempting to exploit the bot will result in a permanent ban.",
+      "",
+      `## ${e.bot} 4. Use The Correct Channels`,
+      "Support, purchases, bot usage and questions must stay in the correct channels.",
+      "",
+      `## ${e.coin} 5. Digital Service Policy`,
+      "Velvet provides digital services and file delivery. Results may vary depending on the item, reference quality and selected options.",
+      "",
+      `## ${e.star} 6. Staff Decisions`,
+      "The team may limit, pause or remove access if a user abuses the service, violates rules or creates risk for the community.",
+      "",
+      "By using this server and our bot, you agree to follow these rules.",
+    ],
+    terms: [
+      `# ${e.shield} Terms Of Service`,
+      "By purchasing or using any Velvet service, you agree to these terms.",
+      "",
+      `## ${e.coin} Service Credits`,
+      "**Service Credits** are internal credits used only for Velvet digital services.",
+      "",
+      "They are not money, Robux, virtual currency or stored value.",
+      "",
+      "Service Credits cannot be withdrawn, transferred, exchanged for cash, exchanged for Robux, or resold as balance.",
+      "",
+      "The checkout price represents a **digital service package**, not a cash exchange rate.",
+      "",
+      `## ${e.cart} Orders`,
+      "Customers are responsible for checking IDs, files, references and selected options before confirming an order.",
+      "",
+      "Once a service has been processed or files have been delivered, the order is normally not refundable.",
+      "",
+      `## ${e.bot} Digital Results`,
+      "Some services may involve automated processing. Results can vary depending on input quality, reference images, asset complexity and selected settings.",
+      "",
+      "The team may review issues manually when needed.",
+      "",
+      `## ${e.star} Subscriptions`,
+      "Subscriptions give access to plan benefits while the plan is active. If payment fails, is canceled or is disputed, benefits and roles may be removed.",
+      "",
+      "Lifetime plans are one-time purchases for lifetime access to the selected plan benefits, unless the user violates server rules or payment terms.",
+      "",
+      `## ${e.alert} Abuse`,
+      "Fraud, chargeback abuse, bot exploitation or attempts to bypass pricing may result in account restriction or permanent removal.",
+    ],
+    subscriptions: [
+      `# ${e.star} Velvet Subscriptions`,
+      "Unlock better pricing, higher limits and private workflow options with a Velvet plan.",
+      "",
+      `## ${e.coin} Basic - $19/month`,
+      "Best for casual users who want better daily limits and lower service costs.",
+      "",
+      "**Includes:**",
+      "- Higher free copy limits",
+      "- Lower copy prices after free limits",
+      "- Access to member pricing",
+      "- Better support priority than free users",
+      "",
+      `## ${e.star} Premium - $39/month`,
+      "Best for active users and creators who order frequently.",
+      "",
+      "**Includes:**",
+      "- Unlimited UGC copies with cooldown",
+      "- Unlimited clothing copies with cooldown",
+      "- Bulk copy features",
+      "- Lower remake prices",
+      "- Private generation channel access",
+      "- Better support priority",
+      "",
+      `## ${e.shield} Elite - $69/month`,
+      "Best for serious users, resellers and high-volume clients.",
+      "",
+      "**Includes:**",
+      "- Best pricing",
+      "- Premium bulk access",
+      "- Highest priority support",
+      "- Private generation channel access",
+      "- Strongest remake discounts",
+      "- Advanced workflow options where available",
+      "",
+      `## ${e.cart} Lifetime Plans`,
+      "For users who want long-term access without monthly renewal.",
+      "",
+      "**Premium Lifetime:** $299 one-time",
+      "**Elite Lifetime:** $599 one-time",
+      "",
+      "Use `/subscribe` to generate your checkout.",
+    ],
+    how_to_buy: [
+      `# ${e.cart} How To Buy`,
+      "Buying from Velvet is simple.",
+      "",
+      `## ${e.bot} 1. Choose What You Need`,
+      "Use the bot command for the service you want:",
+      "",
+      "- `/buy` purchase Service Credits",
+      "- `/subscribe` buy a plan",
+      "- `/steal` copy original UGC files",
+      "- `/steal_clothing` copy clothing templates",
+      "- `/bulk_steal` bulk copy UGC files",
+      "- `/bulk_steal_clothing` bulk copy clothing templates",
+      "- `/remake` remake a model",
+      "- `/multiview` generate from multiple views",
+      "",
+      `## ${e.coin} 2. Pay Securely`,
+      "The bot will generate a checkout link.",
+      "",
+      "Depending on your region and selected gateway, payment may be available through Stripe, Mercado Pago or Pix when available.",
+      "",
+      `## ${e.star} 3. Receive Your Service`,
+      "After payment confirmation, your Service Credits, role or delivery will be processed automatically when supported.",
+      "",
+      "If something fails, open a support ticket with:",
+      "- Order ID",
+      "- Discord username",
+      "- Screenshot",
+      "- Command used",
+    ],
+    credits: [
+      `# ${e.coin} How Service Credits Work`,
+      "**Service Credits** are Velvet's internal unit for using digital services.",
+      "",
+      "They help you pay for services inside the bot without creating a new checkout every time.",
+      "",
+      `## ${e.alert} Important`,
+      "Service Credits are not money, Robux or virtual currency.",
+      "",
+      "They cannot be withdrawn, transferred, exchanged for cash, exchanged for Robux, or sold to another user.",
+      "",
+      `## ${e.cart} Reference Value`,
+      "A package of **1,000 Service Credits** is sold as a **$5.45 USD service package**.",
+      "",
+      "This is only a service package reference, not a cash exchange rate.",
+      "",
+      `## ${e.bot} What You Can Use Them For`,
+      "- UGC copy services",
+      "- Clothing template copy",
+      "- Bulk copy",
+      "- Model remake",
+      "- Multiview generation",
+      "- Image/reference cleanup",
+      "- Selected bot tools",
+      "",
+      "Use `/balance` to check your available Service Credits.",
+    ],
+    bot_instructions: [
+      `# ${e.bot} Bot Instructions`,
+      "Use these commands to start.",
+      "",
+      `## ${e.shield} Account`,
+      "`/settings` - choose your payment currency.",
+      "`/balance` - check your Service Credits.",
+      "`/buy` - purchase a service credit package.",
+      "`/subscribe` - buy Basic, Premium, Elite or Lifetime access.",
+      "",
+      `## ${e.cart} Copy Services`,
+      "`/steal` - copy original UGC files.",
+      "`/steal_clothing` - copy classic clothing templates.",
+      "`/bulk_steal` - bulk copy UGC files.",
+      "`/bulk_steal_clothing` - bulk copy clothing templates.",
+      "",
+      `## ${e.star} Model Services`,
+      "`/price` - preview remake pricing.",
+      "`/remake` - generate a model from an item ID.",
+      "`/multiview` - generate a model from front, right, back and left references.",
+      "`/enhance_images` - clean reference images before using them.",
+      "",
+      `## ${e.alert} Support`,
+      "If a command fails, send the error screenshot and order ID to the team.",
+    ],
+    announcements: [
+      `# ${e.alert} Velvet Tech Update`,
+      "**Velvet Tech is upgrading the full service system.**",
+      "",
+      "We improved the bot, pricing structure, subscriptions and Service Credits flow to make orders faster, safer and easier to understand.",
+      "",
+      `## ${e.star} What Changed`,
+      "- New Service Credits system",
+      "- USD pricing by default",
+      "- Stripe checkout support",
+      "- Mercado Pago / Pix support where available",
+      "- Premium and Elite Lifetime plans",
+      "- Bulk clothing copy improvements",
+      "- Reset Template buttons for copied clothing",
+      "- Improved private workflow for paid users",
+      "- Better delivery and balance messages",
+      "",
+      "Use `/commands` to view the available tools.",
+      "",
+      "More updates are coming soon.",
+    ],
+    update_log: [
+      `# ${e.bot} Velvet Bot Update Log`,
+      "We released a new service update focused on payments, subscriptions and clothing workflows.",
+      "",
+      `## ${e.star} Added`,
+      "- Premium Lifetime plan",
+      "- Elite Lifetime plan",
+      "- Service Credits package language",
+      "- USD pricing by default",
+      "- Mercado Pago BRL handling",
+      "- Reset buttons for bulk clothing templates",
+      "",
+      `## ${e.shield} Improved`,
+      "- Subscription checkout flow",
+      "- Service Credits messaging",
+      "- Stripe compliance wording",
+      "- Bulk clothing delivery",
+      "- Admin purchase review text",
+      "",
+      `## ${e.alert} Fixed`,
+      "- Bulk clothing templates now support Reset Template buttons",
+      "- Lifetime roles now count as Premium/Elite benefits",
+      "- Bot responses are now primarily English",
+      "",
+      "Use `/commands` to see all available commands.",
+    ],
+    results: [
+      `# ${e.star} Our Results`,
+      "Welcome to **Velvet Results**.",
+      "",
+      "This channel showcases examples of completed deliveries, previews and successful outputs created through Velvet services.",
+      "",
+      `## ${e.bot} What You May See Here`,
+      "- Copied asset files",
+      "- Clothing templates",
+      "- Remade models",
+      "- Reference previews",
+      "- Customer-ready deliveries",
+      "- Service quality examples",
+      "",
+      "Results may vary depending on the original item, selected options and reference quality.",
+      "",
+      "For private orders, use the proper purchase or support channels.",
+    ],
+  };
+
+  return (messages[kind] || messages.bot_instructions).join("\n");
+}
+
 function imageEnhancementIsReady(enhancement) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   return enhancementConfig.model === null || Boolean(GEMINI_API_KEY || NANO_BANANA_PRO_ENDPOINT);
@@ -6965,7 +7256,8 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
       "🧾 `/admin_purchases` - review purchases",
       "✅ `/admin_purchase` - approve or reject purchases",
       "📌 `/admin_post_guide` - post the official usage guide",
-      "📜 `/admin_post_terms` - post the official purchase terms"
+      "📜 `/admin_post_terms` - post the official purchase terms",
+      "📣 `/admin_post_info` - post polished official channel messages"
     );
   }
 
@@ -7239,6 +7531,7 @@ client.on("interactionCreate", async interaction => {
     "admin_withdrawal",
     "admin_post_guide",
     "admin_post_terms",
+    "admin_post_info",
     "admin_bulk_views",
     "copiar",
     "steal",
@@ -7362,6 +7655,7 @@ client.on("interactionCreate", async interaction => {
       "admin_withdrawal",
       "admin_post_guide",
       "admin_post_terms",
+      "admin_post_info",
       "admin_bulk_views",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
@@ -8053,6 +8347,30 @@ client.on("interactionCreate", async interaction => {
           `**Type:** ${kind === "terms" ? "Purchase terms" : "Usage guide"}\n` +
           `**Language:** ${language}\n` +
           `**Channel:** ${interaction.channel}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_post_info") {
+      const type = interaction.options.getString("type");
+      const channel = interaction.options.getChannel("channel");
+
+      if (!channel?.isTextBased?.()) {
+        await interaction.reply({
+          content: "## Channel Not Supported\nChoose a text channel where the bot can send messages.",
+          flags: 64,
+        });
+        return;
+      }
+
+      const message = formatOfficialInfoMessage(type);
+      await channel.send({ content: message });
+      await interaction.reply({
+        content:
+          `## Official Message Published\n` +
+          `**Type:** ${type.replace(/_/g, " ")}\n` +
+          `**Channel:** ${channel}`,
         flags: 64,
       });
       return;
