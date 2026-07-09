@@ -5980,7 +5980,7 @@ function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEF
   };
 }
 
-function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
+function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS, maxTextureSize = ROBLOX_MAX_TEXTURE_SIZE) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
   }
@@ -5998,7 +5998,7 @@ function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, tex
         "--",
         modelPath,
         tempOutputPath,
-        String(ROBLOX_MAX_TEXTURE_SIZE),
+        String(maxTextureSize),
         normalizeTextureTone(textureTone),
         JSON.stringify(textureToneConfig(textureTone, textureAdjustments)),
       ],
@@ -6011,6 +6011,26 @@ function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, tex
     }
   } catch (err) {
     console.warn("Nao consegui otimizar texturas para Roblox:", err.message);
+  }
+
+  return modelPath;
+}
+
+function ensureModelFitsDiscord(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
+  if (!modelPath || !fs.existsSync(modelPath)) return modelPath;
+
+  let size = fs.statSync(modelPath).size;
+  if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return modelPath;
+
+  for (const maxTextureSize of [1024, 512]) {
+    console.warn(
+      `Final model is ${formatBytes(size)}, above Discord limit ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}. ` +
+      `Retrying Roblox optimization with ${maxTextureSize}px textures.`
+    );
+
+    optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, maxTextureSize);
+    size = fs.statSync(modelPath).size;
+    if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return modelPath;
   }
 
   return modelPath;
@@ -6755,6 +6775,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
+  ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
     skipped: false,
@@ -6816,6 +6837,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
+  ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
     skipped: false,
@@ -6862,6 +6884,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
   optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
+  ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
     taskId,
@@ -7100,6 +7123,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   const jsonPath = path.join(tripoDir, "tripo_result.json");
   const savedPath = await writeResponseAsset(res, modelPath, jsonPath);
   optimizeGlbForRoblox(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE, options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS);
+  ensureModelFitsDiscord(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE, options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS);
 
   return {
     skipped: false,
