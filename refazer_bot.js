@@ -9895,6 +9895,21 @@ client.on("interactionCreate", async interaction => {
       const referenceMode = tripo.autoMultiview
         ? "Auto multiview"
         : `Single view (${tripo.sourceImage || "auto"})`;
+      const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "remake");
+      if (balanceBeforeDelivery < quote.walletAmount) {
+        throw new Error("Insufficient Service Credits before final delivery.");
+      }
+
+      const finalMessage = await interaction.followUp({
+        content:
+          `## ✅ Final Model Generated\n` +
+          `**UGC:** \`${id}\`\n` +
+          `**Reference mode:** ${referenceMode}\n` +
+          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Remaining balance:** updating...`,
+        files: [publicModelAttachment(tripo.modelPath)],
+      });
+
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
@@ -9913,15 +9928,14 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      await interaction.followUp({
+      await finalMessage.edit({
         content:
           `## ✅ Final Model Generated\n` +
           `**UGC:** \`${id}\`\n` +
           `**Reference mode:** ${referenceMode}\n` +
           `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
           `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-        files: [publicModelAttachment(tripo.modelPath)],
-      });
+      }).catch(() => {});
     } else {
       await interaction.followUp({
         content:
