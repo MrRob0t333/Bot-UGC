@@ -98,6 +98,7 @@ const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
 const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
 const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
 const DISCORD_MAX_ATTACHMENT_BYTES = Number(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB || 24) * 1024 * 1024;
+const ROBLOX_SAFE_TRIANGLE_LIMIT = Number(process.env.REFAZER_DEFAULT_TRIANGLES || 3900);
 
 const DEFAULT_RENDER_SETTINGS = {
   lighting: "studio",
@@ -4657,13 +4658,14 @@ function imageEnhancementIsReady(enhancement) {
 function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
   const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
   const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
+  const effectiveTriangles = triangles || ROBLOX_SAFE_TRIANGLE_LIMIT;
 
   return [
     "## 💎 Orçamento do Refazer",
     `**Modo:** ${mode === "multiview" ? "Multiview" : "Imagem única"}`,
     `**Texture:** ${textureLabel}`,
     `**Enhancement:** ${enhancementLabel}`,
-    `**Triangles:** ${triangles || "No special limit"}`,
+    `**Triangles:** ${effectiveTriangles} (Roblox safe default)`,
     "",
     ...quote.lines,
     "",
@@ -4674,6 +4676,7 @@ function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
 formatPriceQuote = function formatPriceQuoteClean({ mode, texture, triangles, enhancement, quote }) {
   const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
   const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
+  const effectiveTriangles = triangles || ROBLOX_SAFE_TRIANGLE_LIMIT;
 
   return [
     "## Remake Quote",
@@ -4681,7 +4684,7 @@ formatPriceQuote = function formatPriceQuoteClean({ mode, texture, triangles, en
     `**Mode:** ${mode === "multiview" ? "Multiview" : "Single image"}`,
     `**Texture:** ${textureLabel}`,
     `**Enhancement:** ${enhancementLabel}`,
-    `**Triangles:** ${triangles || "No special limit"}`,
+    `**Triangles:** ${effectiveTriangles} (Roblox safe default)`,
     "",
     ...quote.lines,
     "",
@@ -5980,7 +5983,14 @@ function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEF
   };
 }
 
-function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS, maxTextureSize = ROBLOX_MAX_TEXTURE_SIZE) {
+function optimizeGlbForRoblox(
+  modelPath,
+  textureTone = DEFAULT_TEXTURE_TONE,
+  textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS,
+  maxTextureSize = ROBLOX_MAX_TEXTURE_SIZE,
+  exportImageFormat = "AUTO",
+  jpegQuality = 75
+) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
   }
@@ -6001,6 +6011,8 @@ function optimizeGlbForRoblox(modelPath, textureTone = DEFAULT_TEXTURE_TONE, tex
         String(maxTextureSize),
         normalizeTextureTone(textureTone),
         JSON.stringify(textureToneConfig(textureTone, textureAdjustments)),
+        exportImageFormat,
+        String(jpegQuality),
       ],
       { stdio: "inherit" }
     );
@@ -6022,13 +6034,28 @@ function ensureModelFitsDiscord(modelPath, textureTone = DEFAULT_TEXTURE_TONE, t
   let size = fs.statSync(modelPath).size;
   if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return modelPath;
 
-  for (const maxTextureSize of [1024, 512]) {
+  const attempts = [
+    { maxTextureSize: 1024, exportImageFormat: "AUTO", jpegQuality: 75 },
+    { maxTextureSize: 512, exportImageFormat: "AUTO", jpegQuality: 75 },
+    { maxTextureSize: 1024, exportImageFormat: "JPEG", jpegQuality: 78 },
+    { maxTextureSize: 768, exportImageFormat: "JPEG", jpegQuality: 72 },
+    { maxTextureSize: 512, exportImageFormat: "JPEG", jpegQuality: 68 },
+  ];
+
+  for (const attempt of attempts) {
     console.warn(
       `Final model is ${formatBytes(size)}, above Discord limit ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}. ` +
-      `Retrying Roblox optimization with ${maxTextureSize}px textures.`
+      `Retrying Roblox optimization with ${attempt.maxTextureSize}px textures and ${attempt.exportImageFormat} images.`
     );
 
-    optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, maxTextureSize);
+    optimizeGlbForRoblox(
+      modelPath,
+      textureTone,
+      textureAdjustments,
+      attempt.maxTextureSize,
+      attempt.exportImageFormat,
+      attempt.jpegQuality
+    );
     size = fs.statSync(modelPath).size;
     if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return modelPath;
   }
@@ -8479,7 +8506,7 @@ client.on("interactionCreate", async interaction => {
       const mode = interaction.options.getString("modo");
       const texture = interaction.options.getString("textura") || interaction.options.getString("texture");
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement");
-      const triangles = interaction.options.getInteger("triangles");
+      const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const quote = calculatePrice(interaction, {
         mode: mode || interaction.options.getString("mode"),
         texture,
@@ -9195,7 +9222,7 @@ client.on("interactionCreate", async interaction => {
 
       const texture = interaction.options.getString("texture") || "standard";
       const enhancement = interaction.options.getString("enhancement") || "none";
-      const triangles = interaction.options.getInteger("triangles");
+      const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const singleQuote = calculatePrice(interaction, {
         mode: "single",
         texture,
@@ -9481,7 +9508,7 @@ client.on("interactionCreate", async interaction => {
 
       const prompt = interaction.options.getString("prompt").trim();
       const texture = interaction.options.getString("texture") || "standard";
-      const triangles = interaction.options.getInteger("triangles");
+      const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = textureToneForInteraction(interaction);
       const textureAdjustments = textureAdjustmentsForInteraction(interaction);
       const quote = calculatePromptModelPrice(interaction, { texture, triangles });
@@ -9679,6 +9706,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       let model;
+      let progressMessage = null;
 
       try {
         model = await generateMultiviewWithOfficialTripo({
@@ -9689,7 +9717,14 @@ client.on("interactionCreate", async interaction => {
           textureTone,
           textureAdjustments,
           onProgress: async ({ status, progress }) => {
-            await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
+            const content = formatGenerationProgress({ status, progress });
+            if (progressMessage) {
+              await progressMessage.edit(content).catch(async () => {
+                progressMessage = await interaction.followUp(content).catch(() => null);
+              });
+            } else {
+              progressMessage = await interaction.followUp(content).catch(() => null);
+            }
           },
         });
       } catch (err) {
@@ -9830,7 +9865,7 @@ client.on("interactionCreate", async interaction => {
   const difference = interaction.options.getInteger("diferenca") || interaction.options.getInteger("difference");
   const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
   const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
-  const triangles = interaction.options.getInteger("triangles");
+  const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
   const preferredView = interaction.options.getString("vista") || interaction.options.getString("view");
   const textureTone = textureToneForInteraction(interaction);
   const textureAdjustments = textureAdjustmentsForInteraction(interaction);
@@ -9948,6 +9983,7 @@ client.on("interactionCreate", async interaction => {
 
     await interaction.followUp("⏳ **Step 3/3:** generating the final model...");
 
+    let progressMessage = null;
     const tripo = await generateModelWithTripo(
       enhanced.imagePaths,
       difference,
@@ -9962,7 +9998,14 @@ client.on("interactionCreate", async interaction => {
         textureTone,
         textureAdjustments,
         onProgress: async ({ status, progress }) => {
-          await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
+          const content = formatGenerationProgress({ status, progress });
+          if (progressMessage) {
+            await progressMessage.edit(content).catch(async () => {
+              progressMessage = await interaction.followUp(content).catch(() => null);
+            });
+          } else {
+            progressMessage = await interaction.followUp(content).catch(() => null);
+          }
         },
       }
     );

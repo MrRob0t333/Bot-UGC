@@ -15,6 +15,8 @@ input_path = args[0]
 output_path = args[1]
 max_size = int(args[2])
 texture_tone = args[3] if len(args) > 3 else "normal"
+export_image_format = args[5] if len(args) > 5 else "AUTO"
+jpeg_quality = int(args[6]) if len(args) > 6 else 75
 
 try:
     tone_config = json.loads(args[4]) if len(args) > 4 else {}
@@ -156,11 +158,16 @@ for image in list(bpy.data.images):
 
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-bpy.ops.export_scene.gltf(
-    filepath=output_path,
-    export_format="GLB",
-    export_image_format="AUTO",
-)
+export_kwargs = {
+    "filepath": output_path,
+    "export_format": "GLB",
+    "export_image_format": export_image_format,
+}
+
+try:
+    bpy.ops.export_scene.gltf(**export_kwargs, export_jpeg_quality=jpeg_quality)
+except TypeError:
+    bpy.ops.export_scene.gltf(**export_kwargs)
 
 if resized:
     print("Roblox texture resize applied:")
@@ -175,3 +182,7 @@ if tone_adjusted:
         print(f"- {item}")
 else:
     print("Roblox texture tone not changed.")
+
+print(f"GLB image export format: {export_image_format}")
+if export_image_format == "JPEG":
+    print(f"GLB JPEG quality: {jpeg_quality}")
