@@ -299,7 +299,7 @@ const WALLET_MIN_PURCHASE = 1000;
 const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
 const VELVET_EMOJIS = {
   shield: "<:escudo:1524645193817788516>",
-  coin: "<:token:1524645150788157440>",
+  coin: "<a:token:1524645150788157440>",
   cart: "<:carrinho:1524645099773100073>",
   alert: "<:alerta:1524644993673990194>",
   bot: "<:bot:1524645071654355054>",
@@ -6688,6 +6688,25 @@ function selectImageForTripo(imagePaths, preferredView) {
     imagePaths[0];
 }
 
+function viewPathsFromRenderedImages(imagePaths) {
+  const viewPaths = {};
+
+  for (const view of MULTIVIEW_VIEW_ORDER) {
+    const file = imagePaths.find(item => {
+      const base = path.basename(item).toLowerCase();
+      return base === `${view}.png` ||
+        base === `${view}.jpg` ||
+        base === `${view}.jpeg` ||
+        base.startsWith(`${view}_`) ||
+        base.startsWith(`${view}-`);
+    });
+
+    if (file) viewPaths[view] = file;
+  }
+
+  return MULTIVIEW_VIEW_ORDER.every(view => viewPaths[view]) ? viewPaths : null;
+}
+
 async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, textureAdjustments, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
@@ -6798,8 +6817,11 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
 
   return {
+    skipped: false,
+    official: true,
     taskId,
     consumedCredit: task.consumed_credit,
+    sourceViews: viewOrder.map(view => path.basename(viewPaths[view])),
     outputDir: tripoDir,
     modelPath,
   };
@@ -7007,6 +7029,27 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   }
 
   if (TRIPO_API_KEY) {
+    const autoMultiviewPaths = !options.preferredView
+      ? viewPathsFromRenderedImages(imagePaths)
+      : null;
+
+    if (autoMultiviewPaths) {
+      const generated = await generateMultiviewWithOfficialTripo({
+        viewPaths: autoMultiviewPaths,
+        texture: options.texture || "standard",
+        triangles: options.triangles || null,
+        tempDir,
+        textureTone: options.textureTone || DEFAULT_TEXTURE_TONE,
+        textureAdjustments: options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS,
+        onProgress: options.onProgress,
+      });
+
+      return {
+        ...generated,
+        autoMultiview: true,
+      };
+    }
+
     return generateModelWithOfficialTripo({
       imagePaths,
       texture: options.texture || "standard",
@@ -7212,54 +7255,49 @@ function formatCommandsHelp(interaction) {
 
 formatCommandsHelp = function formatCommandsHelpClean(interaction) {
   const lines = [
-    "# ✨ Velvet UGC",
-    "Choose a service below. Payments use Service Credits for Velvet services only.",
+    "# ✨ Velvet UGC Commands",
     "",
-    "## Service Credits",
-    "💎 `/balance` - view your Service Credits",
-    "🛒 `/buy` - purchase a service credit package",
-    "⭐ `/subscribe` - subscribe to Basic, Premium or Elite",
+    "Choose a service below.",
+    "Payments use **Service Credits** for Velvet digital services only.",
     "",
-    "## Services",
-    "📎 `/steal` - copy original asset files",
-    "👕 `/steal_clothing` - copy classic clothing templates",
-    "👚 `/bulk_steal_clothing` - copy clothing templates in bulk",
-    "🎨 `/remake` - remake a UGC with AI",
-    "🖼️ `/multiview` - remake from front/right/back/left images",
-    "🎯 `/sniper` - limited market radar for high-potential items",
-    "🧾 `/price` - preview the price before ordering",
-    "✨ `/enhance_images` - clean references before multiview",
+    "## 💎 Account & Payments",
+    "`/balance` - View your Service Credits",
+    "`/buy` - Purchase a service credit package",
+    "`/subscribe` - Subscribe to Basic, Premium, Elite or Lifetime plans",
+    "`/settings` - Choose your payment currency and preferences",
     "",
-    "## Affiliate",
-    "🤝 `/affiliate` - view your affiliate dashboard",
-    "🔗 `/affiliate_register` - register your Discord invite",
-    "✅ `/affiliate_apply` - apply an affiliate code or invite",
-    "💎 `/affiliate_redeem` - convert commission to Service Credits",
+    "## 📦 Copy Services",
+    "`/steal` - Copy original UGC asset files",
+    "`/steal_clothing` - Copy classic clothing templates",
+    "`/bulk_steal_clothing` - Copy multiple clothing templates in bulk",
+    "",
+    "## 🎨 Model Services",
+    "`/price` - Preview the price before ordering",
+    "`/remake` - Remake a UGC from an item ID",
+    "`/multiview` - Remake from front, right, back and left images",
+    "`/enhance_images` - Clean reference images before multiview",
   ];
 
   if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
     lines.push(
       "",
-      "## Premium / Elite",
-      "📦 `/bulk_steal` - copy original assets in bulk",
-      "🧾 `/bulk_remake` - quote up to 10 remakes"
+      "## ⭐ Premium / Elite Tools",
+      "`/bulk_steal` - Copy multiple UGC assets in bulk",
+      "`/bulk_remake` - Request up to 10 remakes at once"
     );
   }
 
-  if (userIsAdmin(interaction)) {
-    lines.push(
-      "",
-      "## Admin",
-      "➕ `/admin_add` - add Service Credits",
-      "➖ `/admin_remove` - remove Service Credits",
-      "🛒 `/admin_buy` - create a discounted checkout",
-      "🧾 `/admin_purchases` - review purchases",
-      "✅ `/admin_purchase` - approve or reject purchases",
-      "📌 `/admin_post_guide` - post the official usage guide",
-      "📜 `/admin_post_terms` - post the official purchase terms",
-      "📣 `/admin_post_info` - post polished official channel messages"
-    );
-  }
+  lines.push(
+    "",
+    "## 🎯 Market Tools",
+    "`/sniper` - Limited market radar for high-potential items",
+    "",
+    "## 🤝 Affiliate",
+    "`/affiliate` - View your affiliate dashboard",
+    "`/affiliate_register` - Register your Discord invite",
+    "`/affiliate_apply` - Apply an affiliate code or invite",
+    "`/affiliate_redeem` - Convert commission into Service Credits"
+  );
 
   return lines.join("\n");
 };
@@ -9759,18 +9797,18 @@ client.on("interactionCreate", async interaction => {
   }
 
   await interaction.editReply(
-    `## 🎨 Refazer UGC\n` +
+    `## 🎨 UGC Remake\n` +
     `**UGC:** \`${id}\`\n` +
-    `**Diferença:** ${difference}/10\n` +
-    `**Textura:** ${texture === "none" ? "sem textura" : texture === "hd" ? "HD" : "padrão"}\n` +
-    `**Melhoria:** ${(IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label}\n` +
-    `**Tom da textura:** ${textureToneSummary(textureTone)}\n` +
-    `**Controles da textura:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
-    `**Triangles:** ${triangles || "sem limite especial"}\n` +
-    `**Vista de referência:** ${preferredView || "auto"}\n` +
-    `**Preço estimado:** ${formatTokenAmount(quote.walletAmount)}\n` +
-    `**Modo teste:** ${mockIa ? "sim" : "não"}\n\n` +
-    "⏳ **Etapa 1/3:** preparando o UGC e gerando fotos base..."
+    `**Difference:** ${difference}/10\n` +
+    `**Texture:** ${texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard"}\n` +
+    `**Enhancement:** ${(IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label}\n` +
+    `**Texture tone:** ${textureToneSummary(textureTone)}\n` +
+    `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
+    `**Triangles:** ${triangles || "No special limit"}\n` +
+    `**Reference mode:** ${preferredView ? `Single view (${preferredView})` : "Auto multiview from rendered views"}\n` +
+    `**Estimated price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+    `**Test mode:** ${mockIa ? "yes" : "no"}\n\n` +
+    "⏳ **Step 1/3:** preparing the UGC and rendering reference views..."
   );
 
   let result;
@@ -9779,18 +9817,18 @@ client.on("interactionCreate", async interaction => {
     result = await processUGC(id);
 
     await interaction.editReply(
-      `## 🎨 Refazer UGC\n` +
+      `## 🎨 UGC Remake\n` +
       `**UGC:** \`${id}\`\n` +
       `**MeshId:** \`${result.meshId}\`\n` +
-      `**TextureId:** \`${result.textureId || "não encontrado"}\`\n\n` +
-      "⏳ **Etapa 2/3:** preparando imagens de referência..."
+      `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
+      "⏳ **Step 2/3:** preparing reference images..."
     );
 
     const enhanced = await enhanceImagesWithNanoBanana(result.renderDir, difference, result.tempDir, mockIa, enhancement);
 
     if (enhanced.skipped) {
       await interaction.followUp(
-        "🖼️ Usando as fotos renderizadas originais como referência."
+        "🖼️ Using the original rendered views as references."
       );
     } else if (enhanced.mocked) {
       await interaction.followUp({
@@ -9809,7 +9847,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    await interaction.followUp("⏳ **Etapa 3/3:** gerando o modelo final...");
+    await interaction.followUp("⏳ **Step 3/3:** generating the final model...");
 
     const tripo = await generateModelWithTripo(
       enhanced.imagePaths,
@@ -9854,11 +9892,14 @@ client.on("interactionCreate", async interaction => {
         files: attachmentsFromPaths(files).slice(0, 10),
       });
     } else if (tripo.official) {
+      const referenceMode = tripo.autoMultiview
+        ? "Auto multiview"
+        : `Single view (${tripo.sourceImage || "auto"})`;
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
         actorId: client.user.id,
-        reason: "Modelo por imagem unica gerado",
+        reason: tripo.autoMultiview ? "Modelo por multiview automatico gerado" : "Modelo por imagem unica gerado",
         meta: { command: "refazer", serviceKey: "remake", ugcId: id, priceBrl: quote.price },
       });
       if (debit.ok && debit.paidWithWallet > 0) {
@@ -9866,19 +9907,19 @@ client.on("interactionCreate", async interaction => {
           buyerId: interaction.user.id,
           walletAmount: debit.paidWithWallet,
           priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
-          source: "remake_single",
+          source: tripo.autoMultiview ? "remake_auto_multiview" : "remake_single",
           actorId: client.user.id,
-          meta: { ugcId: id, mode: "single" },
+          meta: { ugcId: id, mode: tripo.autoMultiview ? "auto_multiview" : "single" },
         });
       }
 
       await interaction.followUp({
         content:
-          `## ✅ Modelo Final Gerado\n` +
+          `## ✅ Final Model Generated\n` +
           `**UGC:** \`${id}\`\n` +
-          `**Imagem usada:** ${tripo.sourceImage || "não informado"}\n` +
-          `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-          `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+          `**Reference mode:** ${referenceMode}\n` +
+          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
         files: [publicModelAttachment(tripo.modelPath)],
       });
     } else {
