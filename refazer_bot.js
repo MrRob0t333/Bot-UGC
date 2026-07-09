@@ -7192,9 +7192,25 @@ function multiviewReviewAttachments(viewPaths) {
       if (!file || !fs.existsSync(file)) return null;
       const ext = path.extname(file) || ".png";
       const label = String(index + 1).padStart(2, "0");
-      return new AttachmentBuilder(file, { name: `${label}-${view}${ext}` });
+      return new AttachmentBuilder(file, { name: `${label}-${publicViewName(view).toLowerCase()}${ext}` });
     })
     .filter(Boolean);
+}
+
+function publicViewName(view) {
+  return {
+    frente: "Front",
+    direita: "Right",
+    costas: "Back",
+    esquerda: "Left",
+    isometrica: "Isometric",
+  }[view] || view;
+}
+
+function publicViewFileLabel(view, file) {
+  const ext = path.extname(file) || ".png";
+  const cleanSuffix = path.basename(file).toLowerCase().includes("_clean") ? "_clean" : "";
+  return `${publicViewName(view).toLowerCase()}${cleanSuffix}${ext}`;
 }
 
 function ugcViewAttachments(renderDir) {
@@ -7203,7 +7219,6 @@ function ugcViewAttachments(renderDir) {
     ["direita", "right"],
     ["costas", "back"],
     ["esquerda", "left"],
-    ["isometrica", "isometric"],
   ];
 
   return views
@@ -9106,7 +9121,7 @@ client.on("interactionCreate", async interaction => {
           "## Rendering UGC Views\n" +
           `**UGC:** \`${id}\`\n\n` +
           `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-          "Preparing front, right, back, left and isometric reference images..."
+          "Preparing front, right, back and left reference images..."
         );
 
         const result = await processUGC(id, {
@@ -9125,7 +9140,7 @@ client.on("interactionCreate", async interaction => {
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
             `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
             (result.cached ? "**Source:** cached render\n\n" : "") +
-            "Use these images to check the item from multiple angles or as references for `/multiview`.",
+            "Use these four images as references for `/multiview`.",
           files,
         });
       } catch (err) {
@@ -9598,10 +9613,10 @@ client.on("interactionCreate", async interaction => {
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
           "\n\n### Reference Check\n" +
-          (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.join(", ")}\n` : "") +
+          (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.map(publicViewName).join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
             .filter(view => viewPaths[view])
-            .map((view, index) => `**${index + 1}. ${view}:** \`${path.basename(viewPaths[view])}\``)
+            .map((view, index) => `**${index + 1}. ${publicViewName(view)}:** \`${publicViewFileLabel(view, viewPaths[view])}\``)
             .join("\n") +
           (shouldGenerateNow
             ? "\n\n**Confirmed.** Starting final model generation..."
