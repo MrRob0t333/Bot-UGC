@@ -5414,10 +5414,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
   ].filter((item, index, list) => item && list.indexOf(item) === index);
   const queryVariants = [
-    { keyword, minPrice, maxPrice, reason: "requested filters" },
     !keyword && SNIPER_CATEGORY_DEFAULT_KEYWORD[category]
       ? { keyword: SNIPER_CATEGORY_DEFAULT_KEYWORD[category], minPrice, maxPrice, reason: "category keyword" }
       : null,
+    { keyword, minPrice, maxPrice, reason: "requested filters" },
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
   ].filter(Boolean);
   let data = [];
