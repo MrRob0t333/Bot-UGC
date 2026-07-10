@@ -5503,11 +5503,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
   lastSniperDebug.uniqueRows = unique.length;
 
+  const shouldFetchDetailsForCategory = category && !["all", "collectibles"].includes(category);
   const enriched = [];
   const inferred = [];
   for (const item of unique) {
     const id = catalogItemId(item);
-    const details = {};
+    const details = shouldFetchDetailsForCategory ? await fetchCatalogDetailsSafe(id) : {};
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
 
@@ -5534,7 +5535,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   if (!enriched.length && category !== "all" && category !== "collectibles") {
-    for (const item of unique.slice(0, 3)) {
+    for (const item of unique.slice(0, 15)) {
       const id = catalogItemId(item);
       const details = await fetchCatalogDetailsSafe(id);
       if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
