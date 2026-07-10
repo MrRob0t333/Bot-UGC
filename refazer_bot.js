@@ -4958,7 +4958,7 @@ const SNIPER_CATEGORY_PARAMS = {
   all: {},
   accessories: { Category: "11" },
   hats: { Category: "11", AssetTypes: "8" },
-  hair: { taxonomy: "d6a7M7r9MMrpf7z7VxW9ZS" },
+  hair: { Category: "11", AssetTypes: "41" },
   face_accessories: { Category: "11", AssetTypes: "42" },
   neck_accessories: { Category: "11", AssetTypes: "43" },
   shoulder_accessories: { Category: "11", AssetTypes: "44" },
@@ -5025,7 +5025,7 @@ const SNIPER_CATEGORY_ASSET_TYPES = {
 
 const SNIPER_CATEGORY_FALLBACKS = {
   hats: ["accessories", "all"],
-  hair: ["accessories", "all"],
+  hair: ["all"],
   face_accessories: ["accessories", "all"],
   neck_accessories: ["accessories", "all"],
   shoulder_accessories: ["accessories", "all"],
@@ -5209,10 +5209,6 @@ function sniperLooksForbiddenForSpecificCategory(category, item, details = {}) {
 }
 
 function sniperCategoryMatches(category, item, details = {}) {
-  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) {
-    return !sniperLooksForbiddenForSpecificCategory(category, item, details) &&
-      (sniperNameSuggestsCategory(category, item, details) || catalogAssetTypeId(item, details) === null);
-  }
   if (!category || category === "all" || category === "collectibles") return true;
 
   if (category === "bundles") {
@@ -5227,9 +5223,6 @@ function sniperCategoryMatches(category, item, details = {}) {
 }
 
 function sniperCategoryCanBeVerified(category, item, details = {}) {
-  if (SNIPER_TAXONOMY_CATEGORIES.has(category)) {
-    return sniperNameSuggestsCategory(category, item, details) || catalogAssetTypeId(item, details) !== null || sniperLooksForbiddenForSpecificCategory(category, item, details);
-  }
   if (!category || category === "all" || category === "collectibles") return true;
   if (category === "bundles") return Boolean(catalogItemKind(item, details));
   return catalogAssetTypeId(item, details) !== null;
