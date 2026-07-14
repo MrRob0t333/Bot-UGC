@@ -967,6 +967,39 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("admin_views_full")
+    .setDescription("Admin: renders a full 10-angle reference set for one UGC")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Original UGC ID").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("lighting")
+        .setDescription("Lighting preset for this render")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Studio balanced", value: "studio" },
+          { name: "Soft bright", value: "soft" },
+          { name: "Dramatic", value: "dramatic" },
+          { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("roughness").setDescription("Material roughness. 0.00 shiny, 1.00 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("bulk_remake")
     .setDescription("Premium: creates a quote/request for up to 10 remakes")
     .addStringOption(o =>
@@ -7376,6 +7409,30 @@ function ugcViewAttachments(renderDir) {
     .filter(Boolean);
 }
 
+function fullUgcViewAttachments(renderDir) {
+  const views = [
+    ["front_left", "front-left"],
+    ["frente", "front"],
+    ["front_right", "front-right"],
+    ["esquerda", "left"],
+    ["up", "up"],
+    ["direita", "right"],
+    ["back_left", "back-left"],
+    ["costas", "back"],
+    ["back_right", "back-right"],
+    ["down", "down"],
+  ];
+
+  return views
+    .map(([fileName, publicName], index) => {
+      const file = path.join(renderDir, `${fileName}.png`);
+      if (!fs.existsSync(file)) return null;
+      const label = String(index + 1).padStart(2, "0");
+      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+    })
+    .filter(Boolean);
+}
+
 function parseBulkIds(raw) {
   return [...new Set(String(raw || "")
     .split(/[\s,;]+/)
@@ -7750,6 +7807,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_terms",
     "admin_post_info",
     "admin_bulk_views",
+    "admin_views_full",
     "copiar",
     "steal",
     "sniper",
@@ -7873,6 +7931,7 @@ client.on("interactionCreate", async interaction => {
       "admin_post_terms",
       "admin_post_info",
       "admin_bulk_views",
+      "admin_views_full",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Esse comando e reservado para a equipe.",
@@ -9115,6 +9174,47 @@ client.on("interactionCreate", async interaction => {
         `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
         `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
       ).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName === "admin_views_full") {
+      const id = interaction.options.getString("id").trim();
+      const renderSettings = renderSettingsForInteraction(interaction);
+      await interaction.deferReply({ flags: 64 });
+
+      try {
+        await interaction.editReply(
+          "## Admin Full View Render\n" +
+          `**UGC:** \`${id}\`\n\n` +
+          `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
+          "Rendering 10 reference angles..."
+        );
+
+        const result = await processUGC(id, {
+          exportGlb: false,
+          render: true,
+          cacheViews: false,
+          renderSettings,
+        });
+        const files = fullUgcViewAttachments(result.renderDir);
+
+        await interaction.editReply({
+          content:
+            "## Admin Full Views Ready\n" +
+            `**UGC:** \`${id}\`\n` +
+            `**MeshId:** \`${result.meshId}\`\n` +
+            `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
+            "**Angles:** Front Left, Front, Front Right, Left, Up, Right, Back Left, Back, Back Right, Down\n\n" +
+            `**Render settings:**\n${renderSettingsSummary(renderSettings)}`,
+          files,
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply(
+          "## Full View Rendering Failed\n" +
+          "I could not render this full angle set. Check the ID or server logs."
+        );
+      }
       return;
     }
 

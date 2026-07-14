@@ -237,6 +237,12 @@ views = {
     "costas.png": (0, 1, 0),
     "esquerda.png": (-1, 0, 0),
     "isometrica.png": (1, -1, 0.65),
+    "front_left.png": (-1, -1, 0),
+    "front_right.png": (1, -1, 0),
+    "back_left.png": (-1, 1, 0),
+    "back_right.png": (1, 1, 0),
+    "up.png": (0, 0, 1),
+    "down.png": (0, 0, -1),
 }
 
 for filename, direction in views.items():
