@@ -794,17 +794,9 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("steal")
-    .setDescription("Copies the original asset files without recreating")
+    .setDescription("Copies original asset files or classic clothing templates")
     .addStringOption(o =>
-      o.setName("id").setDescription("Original UGC ID").setRequired(true)
-    )
-    .toJSON(),
-
-  new SlashCommandBuilder()
-    .setName("steal_clothing")
-    .setDescription("Copies a classic clothing template")
-    .addStringOption(o =>
-      o.setName("id").setDescription("Clothing catalog ID or URL").setRequired(true)
+      o.setName("id").setDescription("UGC, classic clothing ID, or Roblox catalog URL").setRequired(true)
     )
     .toJSON(),
 
@@ -4243,7 +4235,7 @@ function formatOfficialGuide(language) {
       "",
       "## 3. Copiar um UGC original",
       "Use `/steal id:ID_DO_UGC` para receber os arquivos originais do item.",
-      "Use `/steal_clothing id:ID_OU_LINK` para receber templates de roupas clássicas.",
+      "Use `/steal id:ID_OU_LINK` para copiar UGCs ou templates de roupas clássicas automaticamente.",
       "Use `/bulk_steal_clothing ids:IDS` para copiar várias roupas clássicas de uma vez.",
       "Usuários sem assinatura têm limite grátis diário. Basic tem limite maior. Premium tem cópias ilimitadas com cooldown.",
       "",
@@ -4285,7 +4277,7 @@ function formatOfficialGuide(language) {
     "",
     "## 3. Copy an original UGC",
     "Use `/steal id:UGC_ID` to receive the original files.",
-    "Use `/steal_clothing id:ID_OR_LINK` to receive classic clothing templates.",
+    "Use `/steal id:ID_OR_LINK` to copy UGC assets or classic clothing templates automatically.",
     "Use `/bulk_steal_clothing ids:IDS` to copy several classic clothing templates at once.",
     "Free users have a daily free limit. Basic gets a higher limit. Premium gets unlimited copies with cooldown.",
     "",
@@ -4508,7 +4500,7 @@ function formatOfficialInfoMessage(kind) {
       "- `/buy` purchase Service Credits",
       "- `/subscribe` buy a plan",
       "- `/steal` copy original UGC files",
-      "- `/steal_clothing` copy clothing templates",
+      "- `/steal` auto-detects UGC assets and classic clothing templates",
       "- `/bulk_steal` bulk copy UGC files",
       "- `/bulk_steal_clothing` bulk copy clothing templates",
       "- `/remake` remake a model",
@@ -4567,7 +4559,7 @@ function formatOfficialInfoMessage(kind) {
       "",
       `## ${e.cart} Copy Services`,
       "`/steal` - copy original UGC files.",
-      "`/steal_clothing` - copy classic clothing templates.",
+      "`/steal` - copy UGC assets or classic clothing templates.",
       "`/bulk_steal` - bulk copy UGC files.",
       "`/bulk_steal_clothing` - bulk copy clothing templates.",
       "",
@@ -5767,6 +5759,29 @@ function clothingTypeLabel(assetTypeId) {
   return "Classic clothing";
 }
 
+function isClassicClothingAssetType(assetTypeId) {
+  return [2, 11, 12].includes(Number(assetTypeId));
+}
+
+async function classifyStealTarget(rawId) {
+  const catalogId = parseRobloxNumericId(rawId);
+  if (!catalogId) return { kind: "asset", catalogId: null, details: null };
+
+  try {
+    const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
+    const assetTypeId = Number(details.AssetTypeId || 0);
+    return {
+      kind: isClassicClothingAssetType(assetTypeId) ? "clothing" : "asset",
+      catalogId,
+      details,
+      assetTypeId,
+    };
+  } catch (err) {
+    console.warn(`Could not classify /steal target ${catalogId}:`, err.message);
+    return { kind: "asset", catalogId, details: null };
+  }
+}
+
 function isLikelyImageBuffer(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
 
@@ -5845,6 +5860,91 @@ async function downloadClassicClothingTemplate(rawId) {
     typeLabel: clothingTypeLabel(assetTypeId),
     filePath,
   };
+}
+
+async function handleClassicClothingSteal(interaction, idInput, sourceCommand = "steal") {
+  const quote = calculateClothingCopyPrice(interaction);
+  const allowanceText = formatClothingAllowance(quote);
+  const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
+
+  if (balanceBefore < quote.walletAmount) {
+    await interaction.reply({
+      content:
+        `## Insufficient Balance\n` +
+        `**Service:** Copy clothing template\n` +
+        `${allowanceText}\n` +
+        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+        `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+        "Use `/buy` to add Service Credits.",
+      flags: 64,
+    });
+    return;
+  }
+
+  await interaction.reply(
+    `## Copy Clothing\n` +
+    `**Input:** \`${idInput}\`\n` +
+    `${allowanceText}\n` +
+    `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+    "Preparing the original clothing template..."
+  );
+
+  try {
+    const result = await downloadClassicClothingTemplate(idInput);
+    const debit = removeWalletBalance({
+      userId: interaction.user.id,
+      amount: quote.walletAmount,
+      actorId: client.user.id,
+      reason: "Classic clothing template copied",
+      meta: {
+        command: sourceCommand,
+        serviceKey: "clothing",
+        catalogId: result.catalogId,
+        templateId: result.templateId,
+        assetTypeId: result.assetTypeId,
+        priceTokens: quote.walletAmount,
+      },
+    });
+    const usage = addClothingUsage(interaction.user.id, 1);
+    const finalQuote = calculateClothingCopyPrice(interaction, usage.count);
+    const resetAction = createClothingTemplateAction({ userId: interaction.user.id, result });
+
+    await interaction.editReply({
+      content:
+        `## Clothing Template Copied\n` +
+        `**Item:** ${result.name}\n` +
+        `**Catalog ID:** \`${result.catalogId}\`\n` +
+        `**Template ID:** \`${result.templateId}\`\n` +
+        `**Type:** ${result.typeLabel}\n` +
+        `**Creator:** ${result.creator}\n` +
+        `${formatClothingAllowance(finalQuote)}\n` +
+        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+        `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+        "Original template file is attached below.\n\n" +
+        "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
+      files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
+      components: [clothingResetButton(resetAction.id)],
+    });
+  } catch (err) {
+    console.error(err);
+    const message = String(err.message || err);
+    const isRateLimited = message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
+
+    await interaction.editReply(
+      isRateLimited
+        ? "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal` again. No charge was deducted."
+        : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
+    );
+
+    if (userIsAdmin(interaction)) {
+      await interaction.followUp({
+        content:
+          "## Admin diagnostic\n" +
+          `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+        flags: 64,
+      }).catch(() => {});
+    }
+  }
 }
 
 function extractAssetId(text, names) {
@@ -7307,7 +7407,7 @@ function formatCommandsHelp(interaction) {
     "🧾 `/refazer_preco` - calcula o valor do modelo",
     "📎 `/copiar` - envia o modelo original e textura",
     "📎 `/steal` - copies original asset files",
-    "👕 `/steal_clothing` - copies classic clothing templates",
+    "👕 `/steal` - auto-detects UGC assets or classic clothing templates",
     "👚 `/bulk_steal_clothing` - copies clothing templates in bulk",
     "📦 `/bulk_steal` - copies original assets in bulk",
     "🧾 `/bulk_remake` - premium quote/request for up to 10 remakes",
@@ -7347,8 +7447,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "`/settings` - Choose your payment currency and preferences",
     "",
     "## 📦 Copy Services",
-    "`/steal` - Copy original UGC asset files",
-    "`/steal_clothing` - Copy classic clothing templates",
+    "`/steal` - Copy UGC asset files or classic clothing templates automatically",
     "`/bulk_steal_clothing` - Copy multiple clothing templates in bulk",
     "",
     "## 🎨 Model Services",
@@ -7568,7 +7667,7 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (action.userId !== interaction.user.id && !userIsAdmin(interaction)) {
+    if (action.userId !== interaction.user.id) {
       await interaction.reply({
         content: "Only the user who copied this clothing can reset this template.",
         flags: 64,
@@ -7653,7 +7752,6 @@ client.on("interactionCreate", async interaction => {
     "admin_bulk_views",
     "copiar",
     "steal",
-    "steal_clothing",
     "sniper",
     "bulk_steal_clothing",
     "bulk_steal",
@@ -8514,93 +8612,6 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (interaction.commandName === "steal_clothing") {
-      const idInput = interaction.options.getString("id").trim();
-      const quote = calculateClothingCopyPrice(interaction);
-      const allowanceText = formatClothingAllowance(quote);
-      const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
-
-      if (balanceBefore < quote.walletAmount) {
-        await interaction.reply({
-          content:
-            `## Insufficient Balance\n` +
-            `**Service:** Copy clothing template\n` +
-            `${allowanceText}\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to add Service Credits.",
-          flags: 64,
-        });
-        return;
-      }
-
-      await interaction.reply(
-        `## Copy Clothing\n` +
-        `**Input:** \`${idInput}\`\n` +
-        `${allowanceText}\n` +
-        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
-        "Preparing the original clothing template..."
-      );
-
-      try {
-        const result = await downloadClassicClothingTemplate(idInput);
-        const debit = removeWalletBalance({
-          userId: interaction.user.id,
-          amount: quote.walletAmount,
-          actorId: client.user.id,
-          reason: "Classic clothing template copied",
-          meta: {
-            command: "steal_clothing",
-            serviceKey: "clothing",
-            catalogId: result.catalogId,
-            templateId: result.templateId,
-            assetTypeId: result.assetTypeId,
-            priceTokens: quote.walletAmount,
-          },
-        });
-        const usage = addClothingUsage(interaction.user.id, 1);
-        const finalQuote = calculateClothingCopyPrice(interaction, usage.count);
-        const resetAction = createClothingTemplateAction({ userId: interaction.user.id, result });
-
-        await interaction.editReply({
-          content:
-            `## Clothing Template Copied\n` +
-            `**Item:** ${result.name}\n` +
-            `**Catalog ID:** \`${result.catalogId}\`\n` +
-            `**Template ID:** \`${result.templateId}\`\n` +
-            `**Type:** ${result.typeLabel}\n` +
-            `**Creator:** ${result.creator}\n` +
-            `${formatClothingAllowance(finalQuote)}\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-            "Original template file is attached below.\n\n" +
-            "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
-          files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
-          components: [clothingResetButton(resetAction.id)],
-        });
-      } catch (err) {
-        console.error(err);
-        const message = String(err.message || err);
-        const isRateLimited = message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
-
-        await interaction.editReply(
-          isRateLimited
-            ? "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal_clothing` again. No charge was deducted."
-            : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
-        );
-
-        if (userIsAdmin(interaction)) {
-          await interaction.followUp({
-            content:
-              "## Admin diagnostic\n" +
-              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
-            flags: 64,
-          }).catch(() => {});
-        }
-      }
-      return;
-    }
-
     if (interaction.commandName === "sniper") {
       await interaction.deferReply({ flags: 64 });
 
@@ -8859,6 +8870,13 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "copiar" || interaction.commandName === "steal") {
       const lang = interaction.commandName === "steal" ? "en" : languageFor(interaction);
       const id = interaction.options.getString("id").trim();
+      const target = await classifyStealTarget(id);
+
+      if (target.kind === "clothing") {
+        await handleClassicClothingSteal(interaction, id, interaction.commandName);
+        return;
+      }
+
       const quote = calculateCopyPrice(interaction);
       const allowanceText = formatCopyAllowance(quote);
       const balanceBefore = walletAvailableBalance(interaction.user.id, "copy");
