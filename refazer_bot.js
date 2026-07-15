@@ -138,6 +138,10 @@ const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
 const inviteUses = new Map();
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
+const AI_MODEL_LAUNCH_PROMO_ENABLED = cleanEnv(process.env.REFAZER_AI_MODEL_PROMO_ENABLED, "true") !== "false";
+const AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_LIMIT || 3);
+const AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_PRICE_BRL || 15);
+const AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_REGULAR_PRICE_BRL || 20);
 
 const PRICE_CONFIG = {
   baseFree: 30,
@@ -1929,6 +1933,59 @@ function promptModelBaseBrlForPlan(plan) {
   return PROMPT_MODEL_PRICE / WALLET_TOKENS_PER_BRL;
 }
 
+function aiModelPromoUsage(userId) {
+  const db = readWalletDb();
+  const serviceKeys = new Set(["remake", "multiview", "prompt_model"]);
+  return db.transactions.filter(transaction =>
+    transaction.userId === userId &&
+    transaction.type === "debit" &&
+    serviceKeys.has(transaction.meta?.serviceKey)
+  ).length;
+}
+
+function aiModelLaunchPromoFor(interaction) {
+  if (!AI_MODEL_LAUNCH_PROMO_ENABLED) return null;
+
+  const used = aiModelPromoUsage(interaction.user.id);
+  const remainingFirstSlots = Math.max(AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT - used, 0);
+  const priceBrl = remainingFirstSlots > 0
+    ? AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL
+    : AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL;
+
+  return {
+    used,
+    remainingFirstSlots,
+    firstLimit: AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT,
+    priceBrl,
+    walletAmount: brlToWalletTokens(priceBrl),
+    label: remainingFirstSlots > 0
+      ? `Launch promo (${used + 1}/${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT})`
+      : "Launch promo",
+  };
+}
+
+function applyAiModelLaunchPromo(interaction, quote) {
+  const promo = aiModelLaunchPromoFor(interaction);
+  if (!promo) return quote;
+
+  return {
+    ...quote,
+    promo,
+    originalPrice: quote.price ?? quote.priceBrl,
+    originalWalletAmount: quote.walletAmount,
+    price: promo.priceBrl,
+    priceBrl: promo.priceBrl,
+    walletAmount: promo.walletAmount,
+    estimatedProfitBrl: promo.priceBrl - (quote.estimatedApiCostBrl || 0),
+    lines: [
+      `${promo.label}: ${formatWalletAmount(promo.priceBrl)}`,
+      promo.remainingFirstSlots > 0
+        ? `First ${promo.firstLimit} AI models: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL)} each`
+        : `Promo price after first ${promo.firstLimit}: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each`,
+    ],
+  };
+}
+
 function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   let cost = API_COST_ESTIMATE_BRL.modelStandard;
@@ -1986,7 +2043,7 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     lines.push(`Protected minimum margin: +${formatWalletAmount(safetyExtra)}`);
   }
 
-  return {
+  return applyAiModelLaunchPromo(interaction, {
     premium: plan === "premium",
     plan,
     planLabel: remakePlanLabel(plan),
@@ -1996,7 +2053,7 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     apiCredits: apiCreditsFor({ mode, texture, lowPoly }),
     estimatedApiCostBrl: estimatedCost,
     estimatedProfitBrl: price - estimatedCost,
-  };
+  });
 }
 
 function calculateImageGenerationPrice(interaction, { quality, resolution }) {
@@ -2066,7 +2123,7 @@ function calculatePromptModelPrice(interaction, { texture, triangles }) {
     lines.push(`Protected minimum margin: +${formatWalletAmount(safetyExtra)}`);
   }
 
-  return {
+  return applyAiModelLaunchPromo(interaction, {
     plan,
     planLabel: remakePlanLabel(plan),
     priceBrl,
@@ -2074,7 +2131,7 @@ function calculatePromptModelPrice(interaction, { texture, triangles }) {
     lines,
     estimatedApiCostBrl: estimatedCost,
     estimatedProfitBrl: priceBrl - estimatedCost,
-  };
+  });
 }
 
 function getSaoPauloDayKey() {
