@@ -133,11 +133,61 @@ def adjust_texture_tone(image):
     return changed
 
 
+def socket_by_names(node, names):
+    for name in names:
+        socket = node.inputs.get(name)
+        if socket:
+            return socket
+    return None
+
+
+def set_socket_default(socket, value):
+    if socket and hasattr(socket, "default_value"):
+        try:
+            socket.default_value = value
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def move_emission_texture_to_base_color():
+    fixed = []
+
+    for material in bpy.data.materials:
+        if not material.use_nodes or not material.node_tree:
+            continue
+
+        links = material.node_tree.links
+        for node in material.node_tree.nodes:
+            if node.type != "BSDF_PRINCIPLED":
+                continue
+
+            base_socket = socket_by_names(node, ["Base Color"])
+            emission_socket = socket_by_names(node, ["Emission Color", "Emission"])
+            emission_strength_socket = socket_by_names(node, ["Emission Strength", "Emission Weight"])
+
+            if base_socket and emission_socket and emission_socket.is_linked:
+                emission_link = emission_socket.links[0]
+                base_has_texture = bool(base_socket.is_linked)
+                emission_image = image_from_socket(emission_socket)
+
+                if emission_image and not base_has_texture:
+                    links.new(emission_link.from_socket, base_socket)
+                    fixed.append(f"{material.name}: emission texture -> base color")
+
+            set_socket_default(emission_socket, (0.0, 0.0, 0.0, 1.0))
+            set_socket_default(emission_strength_socket, 0.0)
+
+    return fixed
+
+
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
 bpy.ops.import_scene.gltf(filepath=input_path)
 
+emission_fixed = move_emission_texture_to_base_color()
 resized = []
 tone_adjusted = []
 color_images = base_color_images()
@@ -182,6 +232,13 @@ if tone_adjusted:
         print(f"- {item}")
 else:
     print("Roblox texture tone not changed.")
+
+if emission_fixed:
+    print("Roblox emission cleanup applied:")
+    for item in emission_fixed:
+        print(f"- {item}")
+else:
+    print("Roblox emission cleanup not needed.")
 
 print(f"GLB image export format: {export_image_format}")
 if export_image_format == "JPEG":
