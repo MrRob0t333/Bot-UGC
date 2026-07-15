@@ -78,6 +78,15 @@ const TRIPO_MODEL_VERSION = cleanEnv(process.env.TRIPO_MODEL_VERSION, "v3.1-2026
 const TRIPO_GEOMETRY_QUALITY = cleanEnv(process.env.TRIPO_GEOMETRY_QUALITY, "detailed");
 const TRIPO_SMART_LOW_POLY = cleanEnv(process.env.TRIPO_SMART_LOW_POLY, "false") === "true";
 const TRIPO_QUAD = cleanEnv(process.env.TRIPO_QUAD, "false") === "true";
+const HYPER3D_API_KEY = cleanEnv(process.env.HYPER3D_API_KEY || process.env.RODIN_API_KEY);
+const HYPER3D_API_BASE = cleanEnv(process.env.HYPER3D_API_BASE, "https://api.hyper3d.com/api/v2").replace(/\/+$/, "");
+const HYPER3D_TIER = cleanEnv(process.env.HYPER3D_TIER, "Gen-2");
+const HYPER3D_QUALITY = cleanEnv(process.env.HYPER3D_QUALITY, "medium");
+const HYPER3D_MESH_MODE = cleanEnv(process.env.HYPER3D_MESH_MODE, "Quad");
+const HYPER3D_MATERIAL = cleanEnv(process.env.HYPER3D_MATERIAL, "PBR");
+const HYPER3D_HIGH_PACK = cleanEnv(process.env.HYPER3D_HIGH_PACK, "false") === "true";
+const HYPER3D_PREVIEW_RENDER = cleanEnv(process.env.HYPER3D_PREVIEW_RENDER, "false") === "true";
+const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") === "true";
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -6939,6 +6948,10 @@ function viewPathsFromRenderedImages(imagePaths) {
   return MULTIVIEW_VIEW_ORDER.every(view => viewPaths[view]) ? viewPaths : null;
 }
 
+function modelGenerationIsConfigured() {
+  return Boolean(HYPER3D_API_KEY || TRIPO_API_KEY || TRIPO_AI_ENDPOINT);
+}
+
 async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, textureAdjustments, onProgress }) {
   const tripoDir = path.join(tempDir, "tripo_ai");
   fs.mkdirSync(tripoDir, { recursive: true });
@@ -7105,6 +7118,201 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   };
 }
 
+async function hyper3dRequest(endpoint, options = {}) {
+  if (!HYPER3D_API_KEY) {
+    throw new Error("HYPER3D_API_KEY nao configurado no .env");
+  }
+
+  const res = await fetch(`${HYPER3D_API_BASE}${endpoint}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${HYPER3D_API_KEY}`,
+      ...(options.headers || {}),
+    },
+  });
+
+  const text = await res.text();
+  let json = null;
+
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Hyper3D API failed (${res.status}): ${text || res.statusText}`);
+  }
+
+  if (json?.error && json.error !== "OK") {
+    throw new Error(`Hyper3D API error ${json.error}: ${json.message || text}`);
+  }
+
+  return json;
+}
+
+function hyper3dTriangleTarget(triangles) {
+  const requested = Number(triangles) || ROBLOX_SAFE_TRIANGLE_LIMIT;
+  return Math.max(1000, Math.min(3950, requested));
+}
+
+function appendHyper3dOptions(form, { prompt, texture, triangles }) {
+  form.append("tier", HYPER3D_TIER);
+  form.append("geometry_file_format", "glb");
+  form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
+  form.append("quality", HYPER3D_QUALITY);
+  form.append("mesh_mode", HYPER3D_MESH_MODE);
+  form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
+  form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
+  form.append("hd_texture", String(texture === "hd" || HYPER3D_HD_TEXTURE));
+
+  if (prompt) form.append("prompt", prompt);
+  if (HYPER3D_HIGH_PACK) form.append("addons", "HighPack");
+}
+
+async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "standard", triangles = null, outputDir }) {
+  const form = new FormData();
+
+  for (const imagePath of imagePaths.slice(0, 5)) {
+    const imageBuffer = fs.readFileSync(imagePath);
+    const imageBlob = new Blob([imageBuffer], { type: getImageContentType(imagePath) });
+    form.append("images", imageBlob, path.basename(imagePath));
+  }
+
+  appendHyper3dOptions(form, { prompt, texture, triangles });
+
+  const json = await hyper3dRequest("/rodin", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!json?.uuid || !json?.jobs?.subscription_key) {
+    throw new Error("Hyper3D did not return uuid/subscription_key.");
+  }
+
+  fs.writeFileSync(path.join(outputDir, "hyper3d_task.json"), JSON.stringify({
+    uuid: json.uuid,
+    subscription_key: json.jobs.subscription_key,
+    image_count: imagePaths.length,
+    image_order: imagePaths.map(file => path.basename(file)),
+    prompt: prompt || null,
+    texture,
+    triangles: hyper3dTriangleTarget(triangles),
+    tier: HYPER3D_TIER,
+    quality: HYPER3D_QUALITY,
+    mesh_mode: HYPER3D_MESH_MODE,
+    material: texture === "none" ? "None" : HYPER3D_MATERIAL,
+    addons: HYPER3D_HIGH_PACK ? ["HighPack"] : [],
+  }, null, 2));
+
+  return {
+    taskId: json.uuid,
+    subscriptionKey: json.jobs.subscription_key,
+  };
+}
+
+async function pollHyper3dTask(subscriptionKey, onProgress) {
+  let lastStatusKey = "";
+
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const json = await hyper3dRequest("/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscription_key: subscriptionKey }),
+    });
+
+    const jobs = Array.isArray(json?.jobs) ? json.jobs : [];
+    const statuses = jobs.map(job => job.status || "Waiting");
+    const allDone = statuses.length > 0 && statuses.every(status => status === "Done");
+    const anyFailed = statuses.some(status => status === "Failed");
+    const statusKey = statuses.join(",");
+
+    if (onProgress && statusKey !== lastStatusKey) {
+      lastStatusKey = statusKey;
+      const status = allDone ? "success" : anyFailed ? "failed" : statuses.includes("Generating") ? "running" : "waiting";
+      const progress = allDone ? 100 : anyFailed ? 100 : statuses.includes("Generating") ? Math.min(95, 10 + attempt) : Math.min(10, attempt);
+      await onProgress({ status, progress });
+    }
+
+    if (allDone) return json;
+    if (anyFailed) throw new Error("Hyper3D generation failed.");
+
+    await wait(5000);
+  }
+
+  throw new Error("Timeout waiting for Hyper3D task.");
+}
+
+function selectHyper3dModelItem(items) {
+  return items.find(item => /\.glb(?:$|\?)/i.test(item.name || item.url || "")) ||
+    items.find(item => /\.(zip|fbx|obj)(?:$|\?)/i.test(item.name || item.url || "")) ||
+    items.find(item => !/preview\.webp/i.test(item.name || ""));
+}
+
+async function downloadHyper3dResults({ taskId, outputDir }) {
+  const json = await hyper3dRequest("/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task_uuid: taskId }),
+  });
+
+  const items = Array.isArray(json?.list) ? json.list : [];
+  fs.writeFileSync(path.join(outputDir, "hyper3d_download.json"), JSON.stringify(json, null, 2));
+
+  const selected = selectHyper3dModelItem(items);
+  if (!selected?.url) {
+    throw new Error("Hyper3D finished without a downloadable model file.");
+  }
+
+  const safeName = path.basename(selected.name || "velvet_model.glb").replace(/[^\w.-]+/g, "_");
+  const extension = path.extname(safeName) || ".glb";
+  const modelPath = path.join(outputDir, extension.toLowerCase() === ".glb" ? "velvet_model.glb" : safeName);
+  fs.writeFileSync(modelPath, await downloadPublicUrl(selected.url));
+
+  return {
+    modelPath,
+    items,
+    selected,
+  };
+}
+
+async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", texture, triangles, tempDir, textureTone, textureAdjustments, onProgress, mode = "image" }) {
+  const outputDir = path.join(tempDir, "hyper3d_ai");
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const task = await createHyper3dTask({
+    imagePaths,
+    prompt,
+    texture,
+    triangles,
+    outputDir,
+  });
+
+  await pollHyper3dTask(task.subscriptionKey, onProgress);
+  const downloaded = await downloadHyper3dResults({ taskId: task.taskId, outputDir });
+
+  if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
+
+  if (path.extname(downloaded.modelPath).toLowerCase() === ".glb") {
+    optimizeGlbForRoblox(downloaded.modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
+    ensureModelFitsDiscord(downloaded.modelPath, textureTone, textureAdjustments);
+  }
+
+  return {
+    skipped: false,
+    official: true,
+    provider: "hyper3d",
+    taskId: task.taskId,
+    subscriptionKey: task.subscriptionKey,
+    consumedCredit: HYPER3D_HIGH_PACK ? 1.5 : 0.5,
+    sourceImage: imagePaths[0] ? path.basename(imagePaths[0]) : null,
+    sourceViews: imagePaths.map(file => path.basename(file)),
+    outputDir,
+    modelPath: downloaded.modelPath,
+    mode,
+  };
+}
+
 async function enhanceImagePaths(inputPaths, difference, tempDir, mockIa, enhancement = "none") {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   const enhancedDir = path.join(tempDir, "nano_banana_pro");
@@ -7261,6 +7469,44 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
       outputDir: tripoDir,
       modelPath,
     };
+  }
+
+  if (HYPER3D_API_KEY) {
+    const autoMultiviewPaths = !options.preferredView
+      ? viewPathsFromRenderedImages(imagePaths)
+      : null;
+
+    if (autoMultiviewPaths) {
+      const generated = await generateWithOfficialHyper3d({
+        imagePaths: MULTIVIEW_VIEW_ORDER.map(view => autoMultiviewPaths[view]).filter(Boolean),
+        prompt: variationPrompt(difference),
+        texture: options.texture || "standard",
+        triangles: options.triangles || null,
+        tempDir,
+        textureTone: options.textureTone || DEFAULT_TEXTURE_TONE,
+        textureAdjustments: options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS,
+        onProgress: options.onProgress,
+        mode: "multiview",
+      });
+
+      return {
+        ...generated,
+        autoMultiview: true,
+      };
+    }
+
+    const imagePath = selectImageForTripo(imagePaths, options.preferredView || null);
+    return generateWithOfficialHyper3d({
+      imagePaths: imagePath ? [imagePath] : imagePaths.slice(0, 1),
+      prompt: variationPrompt(difference),
+      texture: options.texture || "standard",
+      triangles: options.triangles || null,
+      tempDir,
+      textureTone: options.textureTone || DEFAULT_TEXTURE_TONE,
+      textureAdjustments: options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS,
+      onProgress: options.onProgress,
+      mode: "image",
+    });
   }
 
   if (TRIPO_API_KEY) {
@@ -9683,7 +9929,7 @@ client.on("interactionCreate", async interaction => {
       const quote = calculatePromptModelPrice(interaction, { texture, triangles });
       const price = quote.walletAmount;
 
-      if (!TRIPO_API_KEY) {
+      if (!modelGenerationIsConfigured()) {
         await interaction.editReply("## Model generation unavailable\nThis service is not configured yet.");
         return;
       }
@@ -9704,17 +9950,31 @@ client.on("interactionCreate", async interaction => {
       try {
         await interaction.editReply("## Generating Model\nYour prompt is being converted into a 3D model...");
 
-        const model = await generatePromptModelWithOfficialTripo({
-          prompt,
-          texture,
-          triangles,
-          tempDir,
-          textureTone,
-          textureAdjustments,
-          onProgress: async ({ status, progress }) => {
-            await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
-          },
-        });
+        const onProgress = async ({ status, progress }) => {
+          await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
+        };
+
+        const model = HYPER3D_API_KEY
+          ? await generateWithOfficialHyper3d({
+            imagePaths: [],
+            prompt,
+            texture,
+            triangles,
+            tempDir,
+            textureTone,
+            textureAdjustments,
+            onProgress,
+            mode: "prompt",
+          })
+          : await generatePromptModelWithOfficialTripo({
+            prompt,
+            texture,
+            triangles,
+            tempDir,
+            textureTone,
+            textureAdjustments,
+            onProgress,
+          });
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
@@ -9848,7 +10108,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (!TRIPO_API_KEY) {
+      if (!modelGenerationIsConfigured()) {
         await interaction.followUp("Real model generation is not configured yet. Contact support.");
         return;
       }
@@ -9878,24 +10138,40 @@ client.on("interactionCreate", async interaction => {
       let progressMessage = null;
 
       try {
-        model = await generateMultiviewWithOfficialTripo({
-          viewPaths,
-          texture,
-          triangles,
-          tempDir,
-          textureTone,
-          textureAdjustments,
-          onProgress: async ({ status, progress }) => {
-            const content = formatGenerationProgress({ status, progress });
-            if (progressMessage) {
-              await progressMessage.edit(content).catch(async () => {
-                progressMessage = await interaction.followUp(content).catch(() => null);
-              });
-            } else {
+        const onProgress = async ({ status, progress }) => {
+          const content = formatGenerationProgress({ status, progress });
+          if (progressMessage) {
+            await progressMessage.edit(content).catch(async () => {
               progressMessage = await interaction.followUp(content).catch(() => null);
-            }
-          },
-        });
+            });
+          } else {
+            progressMessage = await interaction.followUp(content).catch(() => null);
+          }
+        };
+
+        if (HYPER3D_API_KEY) {
+          model = await generateWithOfficialHyper3d({
+            imagePaths: MULTIVIEW_VIEW_ORDER.map(view => viewPaths[view]).filter(Boolean),
+            prompt: "Generate a Roblox-ready 3D accessory from these ordered multiview references.",
+            texture,
+            triangles,
+            tempDir,
+            textureTone,
+            textureAdjustments,
+            onProgress,
+            mode: "multiview",
+          });
+        } else {
+          model = await generateMultiviewWithOfficialTripo({
+            viewPaths,
+            texture,
+            triangles,
+            tempDir,
+            textureTone,
+            textureAdjustments,
+            onProgress,
+          });
+        }
       } catch (err) {
         console.error(err);
         await interaction.followUp(
@@ -10062,7 +10338,7 @@ client.on("interactionCreate", async interaction => {
     return;
   }
 
-  if (!mockIa && TRIPO_API_KEY) {
+  if (!mockIa && modelGenerationIsConfigured()) {
     const balanceBefore = walletAvailableBalance(interaction.user.id, "remake");
     if (balanceBefore < quote.walletAmount) {
       await interaction.editReply(
@@ -10084,7 +10360,7 @@ client.on("interactionCreate", async interaction => {
     return;
   }
 
-  if (!mockIa && TRIPO_API_KEY) {
+  if (!mockIa && modelGenerationIsConfigured()) {
     const balanceBefore = walletAvailableBalance(interaction.user.id, "remake");
     if (balanceBefore < quote.walletAmount) {
       await interaction.reply({
