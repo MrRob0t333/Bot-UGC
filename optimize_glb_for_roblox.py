@@ -17,6 +17,7 @@ max_size = int(args[2])
 texture_tone = args[3] if len(args) > 3 else "normal"
 export_image_format = args[5] if len(args) > 5 else "AUTO"
 jpeg_quality = int(args[6]) if len(args) > 6 else 75
+material_mode = args[7] if len(args) > 7 else "PRESERVE"
 
 try:
     tone_config = json.loads(args[4]) if len(args) > 4 else {}
@@ -182,12 +183,59 @@ def move_emission_texture_to_base_color():
     return fixed
 
 
+def strip_pbr_to_base_color():
+    stripped = []
+    if material_mode.upper() != "BASIC":
+        return stripped
+
+    linked_socket_names = {
+        "Metallic",
+        "Roughness",
+        "Normal",
+        "Alpha",
+        "Specular IOR Level",
+        "Specular",
+        "Coat Weight",
+        "Coat Roughness",
+        "Clearcoat",
+        "Clearcoat Roughness",
+    }
+
+    for material in bpy.data.materials:
+        if not material.use_nodes or not material.node_tree:
+            continue
+
+        links = material.node_tree.links
+        material_changed = False
+
+        for node in material.node_tree.nodes:
+            if node.type != "BSDF_PRINCIPLED":
+                continue
+
+            for socket_name in linked_socket_names:
+                socket = socket_by_names(node, [socket_name])
+                if socket and socket.is_linked:
+                    for link in list(socket.links):
+                        links.remove(link)
+                    material_changed = True
+
+            set_socket_default(socket_by_names(node, ["Metallic"]), 0.0)
+            set_socket_default(socket_by_names(node, ["Roughness"]), 0.65)
+            set_socket_default(socket_by_names(node, ["Alpha"]), 1.0)
+
+        if material_changed:
+            stripped.append(material.name)
+
+    return stripped
+
+
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
 bpy.ops.import_scene.gltf(filepath=input_path)
 
 emission_fixed = move_emission_texture_to_base_color()
+pbr_stripped = strip_pbr_to_base_color()
 resized = []
 tone_adjusted = []
 color_images = base_color_images()
@@ -239,6 +287,13 @@ if emission_fixed:
         print(f"- {item}")
 else:
     print("Roblox emission cleanup not needed.")
+
+if pbr_stripped:
+    print("Roblox basic material copy applied:")
+    for item in pbr_stripped:
+        print(f"- {item}")
+else:
+    print("Roblox basic material copy not needed.")
 
 print(f"GLB image export format: {export_image_format}")
 if export_image_format == "JPEG":

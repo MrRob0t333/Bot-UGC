@@ -393,6 +393,16 @@ const CURRENCIES = {
 };
 const MULTIVIEW_VIEW_ORDER = ["frente", "direita", "costas", "esquerda"];
 const MULTIVIEW_API_ORDER = ["frente", "esquerda", "costas", "direita"];
+const MULTIVIEW_VIEW_ALIASES = {
+  front: "frente",
+  frente: "frente",
+  right: "direita",
+  direita: "direita",
+  back: "costas",
+  costas: "costas",
+  left: "esquerda",
+  esquerda: "esquerda",
+};
 const MULTIVIEW_UPLOAD_ORDER = parseMultiviewUploadOrder(process.env.REFAZER_MULTIVIEW_UPLOAD_ORDER);
 const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 
@@ -434,7 +444,7 @@ function parseMultiviewUploadOrder(raw) {
   const valid = new Set(MULTIVIEW_VIEW_ORDER);
   const order = String(raw || "")
     .split(/[,\s;]+/)
-    .map(item => item.trim().toLowerCase())
+    .map(item => MULTIVIEW_VIEW_ALIASES[item.trim().toLowerCase()] || item.trim().toLowerCase())
     .filter(Boolean);
 
   if (order.length === 4 && order.every(item => valid.has(item)) && new Set(order).size === 4) {
@@ -6155,7 +6165,8 @@ function optimizeGlbForRoblox(
   textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS,
   maxTextureSize = ROBLOX_MAX_TEXTURE_SIZE,
   exportImageFormat = "AUTO",
-  jpegQuality = 75
+  jpegQuality = 75,
+  materialMode = "PRESERVE"
 ) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
@@ -6179,6 +6190,7 @@ function optimizeGlbForRoblox(
         JSON.stringify(textureToneConfig(textureTone, textureAdjustments)),
         exportImageFormat,
         String(jpegQuality),
+        materialMode,
       ],
       { stdio: "inherit" }
     );
@@ -6192,6 +6204,32 @@ function optimizeGlbForRoblox(
   }
 
   return modelPath;
+}
+
+function createRobloxBasicModelCopy(
+  modelPath,
+  textureTone = DEFAULT_TEXTURE_TONE,
+  textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS
+) {
+  if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
+    return null;
+  }
+
+  const outputPath = modelPath.replace(/(?:_pbr)?\.glb$/i, "_roblox.glb");
+  if (outputPath === modelPath) return null;
+
+  fs.copyFileSync(modelPath, outputPath);
+  optimizeGlbForRoblox(
+    outputPath,
+    textureTone,
+    textureAdjustments,
+    ROBLOX_MAX_TEXTURE_SIZE,
+    "AUTO",
+    75,
+    "BASIC"
+  );
+  ensureModelFitsDiscord(outputPath, textureTone, textureAdjustments);
+  return outputPath;
 }
 
 function ensureModelFitsDiscord(modelPath, textureTone = DEFAULT_TEXTURE_TONE, textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
@@ -7308,6 +7346,8 @@ async function downloadHyper3dResults({ taskId, outputDir }) {
         ? "velvet_model_shaded.glb"
         : lowerName.includes("pbr")
           ? "velvet_model_pbr.glb"
+          : index === 0 && HYPER3D_MATERIAL.toLowerCase() === "pbr"
+            ? "velvet_model_pbr.glb"
           : index === 0
             ? "velvet_model.glb"
             : `velvet_model_${index + 1}.glb`
@@ -7354,12 +7394,20 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
 
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
 
-  const modelPaths = downloaded.modelPaths?.length ? downloaded.modelPaths : [downloaded.modelPath];
+  const modelPaths = downloaded.modelPaths?.length ? [...downloaded.modelPaths] : [downloaded.modelPath];
   for (const modelPath of modelPaths) {
     if (path.extname(modelPath).toLowerCase() === ".glb") {
       optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
       ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
     }
+  }
+
+  const hasPbrModel = modelPaths.some(file => /pbr/i.test(path.basename(file || "")));
+  const hasRobloxBasicModel = modelPaths.some(file => /(shaded|roblox|basic)/i.test(path.basename(file || "")));
+  if (texture !== "none" && hasPbrModel && !hasRobloxBasicModel) {
+    const pbrPath = modelPaths.find(file => /pbr/i.test(path.basename(file || ""))) || modelPaths[0];
+    const robloxPath = createRobloxBasicModelCopy(pbrPath, textureTone, textureAdjustments);
+    if (robloxPath) modelPaths.push(robloxPath);
   }
 
   return {
@@ -7543,8 +7591,8 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
 
     if (autoMultiviewPaths) {
       const generated = await generateWithOfficialHyper3d({
-        imagePaths: MULTIVIEW_VIEW_ORDER.map(view => autoMultiviewPaths[view]).filter(Boolean),
-        prompt: variationPrompt(difference),
+        imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => autoMultiviewPaths[view]).filter(Boolean),
+        prompt: "",
         texture: options.texture || "standard",
         triangles: options.triangles || null,
         tempDir,
@@ -7694,6 +7742,8 @@ function publicModelAttachments(files) {
     const lower = path.basename(file).toLowerCase();
     const name = lower.includes("shaded")
       ? "velvet_model_shaded.glb"
+      : lower.includes("roblox") || lower.includes("basic")
+        ? "velvet_model_roblox.glb"
       : lower.includes("pbr")
         ? "velvet_model_pbr.glb"
         : index === 0
@@ -8237,8 +8287,8 @@ client.on("interactionCreate", async interaction => {
 
         if (HYPER3D_API_KEY) {
           model = await generateWithOfficialHyper3d({
-            imagePaths: MULTIVIEW_VIEW_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
-            prompt: "Generate a Roblox-ready 3D accessory from these ordered multiview references.",
+            imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
+            prompt: "",
             texture: action.texture,
             triangles: action.triangles,
             tempDir: action.tempDir,
