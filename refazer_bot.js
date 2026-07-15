@@ -7268,6 +7268,21 @@ function selectHyper3dModelItem(items) {
     items.find(item => !/preview\.webp/i.test(item.name || ""));
 }
 
+function hyper3dModelItems(items) {
+  const modelItems = items.filter(item => /\.glb(?:$|\?)/i.test(item.name || item.url || ""));
+  if (modelItems.length) {
+    return modelItems.sort((a, b) => {
+      const aName = String(a.name || a.url || "").toLowerCase();
+      const bName = String(b.name || b.url || "").toLowerCase();
+      const score = name => name.includes("pbr") ? 0 : name.includes("shaded") ? 1 : 2;
+      return score(aName) - score(bName);
+    });
+  }
+
+  const selected = selectHyper3dModelItem(items);
+  return selected ? [selected] : [];
+}
+
 async function downloadHyper3dResults({ taskId, outputDir }) {
   const json = await hyper3dRequest("/download", {
     method: "POST",
@@ -7278,20 +7293,35 @@ async function downloadHyper3dResults({ taskId, outputDir }) {
   const items = Array.isArray(json?.list) ? json.list : [];
   fs.writeFileSync(path.join(outputDir, "hyper3d_download.json"), JSON.stringify(json, null, 2));
 
-  const selected = selectHyper3dModelItem(items);
-  if (!selected?.url) {
+  const selectedItems = hyper3dModelItems(items).filter(item => item?.url);
+  if (!selectedItems.length) {
     throw new Error("Hyper3D finished without a downloadable model file.");
   }
 
-  const safeName = path.basename(selected.name || "velvet_model.glb").replace(/[^\w.-]+/g, "_");
-  const extension = path.extname(safeName) || ".glb";
-  const modelPath = path.join(outputDir, extension.toLowerCase() === ".glb" ? "velvet_model.glb" : safeName);
-  fs.writeFileSync(modelPath, await downloadPublicUrl(selected.url));
+  const modelPaths = [];
+  for (const [index, selected] of selectedItems.slice(0, 3).entries()) {
+    const safeName = path.basename(selected.name || `velvet_model_${index + 1}.glb`).replace(/[^\w.-]+/g, "_");
+    const extension = path.extname(safeName) || ".glb";
+    const lowerName = safeName.toLowerCase();
+    const outputName = extension.toLowerCase() === ".glb"
+      ? lowerName.includes("shaded")
+        ? "velvet_model_shaded.glb"
+        : lowerName.includes("pbr")
+          ? "velvet_model_pbr.glb"
+          : index === 0
+            ? "velvet_model.glb"
+            : `velvet_model_${index + 1}.glb`
+      : safeName;
+    const modelPath = path.join(outputDir, outputName);
+    fs.writeFileSync(modelPath, await downloadPublicUrl(selected.url));
+    modelPaths.push(modelPath);
+  }
 
   return {
-    modelPath,
+    modelPath: modelPaths[0],
+    modelPaths,
     items,
-    selected,
+    selected: selectedItems[0],
   };
 }
 
@@ -7324,9 +7354,12 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
 
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
 
-  if (path.extname(downloaded.modelPath).toLowerCase() === ".glb") {
-    optimizeGlbForRoblox(downloaded.modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
-    ensureModelFitsDiscord(downloaded.modelPath, textureTone, textureAdjustments);
+  const modelPaths = downloaded.modelPaths?.length ? downloaded.modelPaths : [downloaded.modelPath];
+  for (const modelPath of modelPaths) {
+    if (path.extname(modelPath).toLowerCase() === ".glb") {
+      optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
+      ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
+    }
   }
 
   return {
@@ -7340,6 +7373,7 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
     sourceViews: imagePaths.map(file => path.basename(file)),
     outputDir,
     modelPath: downloaded.modelPath,
+    modelPaths,
     mode,
   };
 }
@@ -7650,6 +7684,25 @@ function publicModelAttachment(file, name = "velvet_model.glb") {
   return new AttachmentBuilder(file, { name });
 }
 
+function publicModelAttachments(files) {
+  const modelFiles = [...new Set((files || []).filter(Boolean))].filter(file => fs.existsSync(file));
+  if (!modelFiles.length) {
+    throw new Error("Final model file was not found.");
+  }
+
+  return modelFiles.slice(0, 3).map((file, index) => {
+    const lower = path.basename(file).toLowerCase();
+    const name = lower.includes("shaded")
+      ? "velvet_model_shaded.glb"
+      : lower.includes("pbr")
+        ? "velvet_model_pbr.glb"
+        : index === 0
+          ? "velvet_model.glb"
+          : `velvet_model_${index + 1}.glb`;
+    return publicModelAttachment(file, name);
+  });
+}
+
 function publicImageAttachment(file, name = "velvet_image.jpg") {
   return new AttachmentBuilder(file, { name });
 }
@@ -7748,11 +7801,12 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
   );
 }
 
-async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath }) {
+async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath, modelPaths }) {
+  const files = publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]);
   try {
     const dmMessage = await interaction.user.send({
       content,
-      files: [publicModelAttachment(modelPath)],
+      files,
     });
     return { deliveredInDm: true, message: dmMessage };
   } catch (err) {
@@ -7763,7 +7817,7 @@ async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath
     content:
       content +
       "\n\n**Note:** I could not DM you, so I delivered the model here. Enable DMs for private delivery next time.",
-    files: [publicModelAttachment(modelPath)],
+    files: publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]),
   });
   return { deliveredInDm: false, message: channelMessage };
 }
@@ -8245,6 +8299,7 @@ client.on("interactionCreate", async interaction => {
             `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
             "**Remaining balance:** updating...",
           modelPath: model.modelPath,
+          modelPaths: model.modelPaths,
         });
       } catch (err) {
         console.error(err);
@@ -10290,7 +10345,7 @@ client.on("interactionCreate", async interaction => {
             `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
             `**Price:** ${formatTokenAmount(price)}\n` +
             `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-          files: [publicModelAttachment(model.modelPath)],
+          files: publicModelAttachments(model.modelPaths?.length ? model.modelPaths : [model.modelPath]),
         });
       } catch (err) {
         console.error(err);
@@ -10639,7 +10694,7 @@ client.on("interactionCreate", async interaction => {
           `**Reference mode:** ${referenceMode}\n` +
           `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
           `**Remaining balance:** updating...`,
-        files: [publicModelAttachment(tripo.modelPath)],
+        files: publicModelAttachments(tripo.modelPaths?.length ? tripo.modelPaths : [tripo.modelPath]),
       });
 
       const debit = removeWalletBalance({
