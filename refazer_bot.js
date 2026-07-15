@@ -146,6 +146,7 @@ const DEFAULT_TEXTURE_ADJUSTMENTS = {
 const COOLDOWN_MS = 10000;
 const cooldowns = new Map();
 const inviteUses = new Map();
+const pendingMultiviewActions = new Map();
 const WALLET_TOKENS_PER_BRL = 1000 / 30;
 const AI_MODEL_LAUNCH_PROMO_ENABLED = cleanEnv(process.env.REFAZER_AI_MODEL_PROMO_ENABLED, "true") !== "false";
 const AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_LIMIT || 3);
@@ -1545,7 +1546,7 @@ const commands = [
       o
         .setName("texture")
         .setDescription("Texture quality")
-        .setRequired(true)
+        .setRequired(false)
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
@@ -1554,25 +1555,9 @@ const commands = [
     )
     .addStringOption(o =>
       o
-        .setName("confirm")
-        .setDescription("Type YES after checking the images")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o
-        .setName("generate")
-        .setDescription("Start generation now?")
-        .setRequired(true)
-        .addChoices(
-          { name: "No, quote only", value: "nao" },
-          { name: "Yes, generate now", value: "sim" }
-        )
-    )
-    .addStringOption(o =>
-      o
         .setName("enhancement")
         .setDescription("Reference image enhancement")
-        .setRequired(true)
+        .setRequired(false)
         .addChoices(
           { name: "No enhancement", value: "none" },
           { name: "Clean Local", value: "economy" }
@@ -7678,6 +7663,65 @@ function multiviewReviewAttachments(viewPaths) {
     .filter(Boolean);
 }
 
+function createPendingMultiviewAction(data) {
+  const id = crypto.randomBytes(8).toString("hex");
+  pendingMultiviewActions.set(id, {
+    id,
+    used: false,
+    createdAt: Date.now(),
+    ...data,
+  });
+  return id;
+}
+
+function multiviewReviewButtons(actionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`multiview_generate:${actionId}`)
+      .setLabel("Generate Model")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`multiview_cancel:${actionId}`)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function disableMultiviewReviewButtons(actionId, generated = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`multiview_generate:${actionId}`)
+      .setLabel(generated ? "Generation Started" : "Generate Model")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId(`multiview_cancel:${actionId}`)
+      .setLabel(generated ? "Locked" : "Cancelled")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true)
+  );
+}
+
+async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath }) {
+  try {
+    const dmMessage = await interaction.user.send({
+      content,
+      files: [publicModelAttachment(modelPath)],
+    });
+    return { deliveredInDm: true, message: dmMessage };
+  } catch (err) {
+    console.warn(`Could not deliver model by DM to ${interaction.user.id}:`, err.message);
+  }
+
+  const channelMessage = await interaction.followUp({
+    content:
+      content +
+      "\n\n**Note:** I could not DM you, so I delivered the model here. Enable DMs for private delivery next time.",
+    files: [publicModelAttachment(modelPath)],
+  });
+  return { deliveredInDm: false, message: channelMessage };
+}
+
 function publicViewName(view) {
   return {
     frente: "Front",
@@ -8008,6 +8052,202 @@ client.on("guildMemberAdd", async member => {
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
     const [kind, actionId] = String(interaction.customId || "").split(":");
+    if (kind === "multiview_cancel") {
+      const action = pendingMultiviewActions.get(actionId);
+      if (!action) {
+        await interaction.reply({ content: "This multiview request expired. Send `/multiview` again.", flags: 64 });
+        return;
+      }
+
+      if (action.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who created this request can cancel it.", flags: 64 });
+        return;
+      }
+
+      action.used = true;
+      pendingMultiviewActions.delete(actionId);
+      await interaction.update({
+        content: "## Multiview Request Cancelled\nNo Service Credits were charged.",
+        components: [disableMultiviewReviewButtons(actionId, false)],
+      });
+      return;
+    }
+
+    if (kind === "multiview_generate") {
+      const action = pendingMultiviewActions.get(actionId);
+      if (!action) {
+        await interaction.reply({ content: "This multiview request expired. Send `/multiview` again.", flags: 64 });
+        return;
+      }
+
+      if (action.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who created this request can generate it.", flags: 64 });
+        return;
+      }
+
+      if (action.used) {
+        await interaction.reply({ content: "This multiview request is already being processed.", flags: 64 });
+        return;
+      }
+
+      action.used = true;
+      pendingMultiviewActions.set(actionId, action);
+      await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
+      await interaction.followUp({ content: "## Generation Started\nI will deliver the final model by DM when possible.", flags: 64 });
+
+      if (!modelGenerationIsConfigured()) {
+        await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 });
+        return;
+      }
+
+      const quote = calculatePrice(interaction, {
+        mode: "multiview",
+        texture: action.texture,
+        triangles: action.triangles,
+        enhancement: action.enhancement,
+      });
+
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
+      if (balanceBefore < quote.walletAmount) {
+        await interaction.followUp({
+          content: formatInsufficientBalanceMessage({
+            service: "Multiview AI model",
+            price: quote.walletAmount,
+            balance: balanceBefore,
+          }),
+          flags: 64,
+        });
+        return;
+      }
+
+      let progressMessage = null;
+      let model = null;
+
+      try {
+        const onProgress = async ({ status, progress }) => {
+          const content = formatGenerationProgress({ status, progress });
+          if (progressMessage) {
+            await progressMessage.edit(content).catch(async () => {
+              progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
+            });
+          } else {
+            progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
+          }
+        };
+
+        if (HYPER3D_API_KEY) {
+          model = await generateWithOfficialHyper3d({
+            imagePaths: MULTIVIEW_VIEW_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
+            prompt: "Generate a Roblox-ready 3D accessory from these ordered multiview references.",
+            texture: action.texture,
+            triangles: action.triangles,
+            tempDir: action.tempDir,
+            textureTone: action.textureTone,
+            textureAdjustments: action.textureAdjustments,
+            onProgress,
+            mode: "multiview",
+          });
+        } else {
+          model = await generateMultiviewWithOfficialTripo({
+            viewPaths: action.viewPaths,
+            texture: action.texture,
+            triangles: action.triangles,
+            tempDir: action.tempDir,
+            textureTone: action.textureTone,
+            textureAdjustments: action.textureAdjustments,
+            onProgress,
+          });
+        }
+      } catch (err) {
+        console.error(err);
+        await interaction.followUp({
+          content:
+            "## Model Generation Failed\n" +
+            "No charge was deducted because no final model was delivered.",
+          flags: 64,
+        });
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
+      if (balanceBeforeDelivery < quote.walletAmount) {
+        await interaction.followUp({
+          content: formatInsufficientBalanceMessage({
+            service: "Multiview AI model",
+            price: quote.walletAmount,
+            balance: balanceBeforeDelivery,
+          }),
+          flags: 64,
+        });
+        return;
+      }
+
+      let delivery;
+      try {
+        delivery = await deliverModelPrivatelyOrFallback(interaction, {
+          content:
+            "## Final Model Generated\n" +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            "**Remaining balance:** updating...",
+          modelPath: model.modelPath,
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.followUp({
+          content:
+            "## Model Delivery Failed\n" +
+            "No charge was deducted because the final model could not be delivered.",
+          flags: 64,
+        });
+        return;
+      }
+
+      const debit = removeWalletBalance({
+        userId: interaction.user.id,
+        amount: quote.walletAmount,
+        actorId: client.user.id,
+        reason: "Modelo multiview gerado",
+        meta: { command: "multiview_button", serviceKey: "multiview", priceBrl: quote.price },
+      });
+
+      if (debit.ok && debit.paidWithWallet > 0) {
+        creditAffiliateServiceCommission({
+          buyerId: interaction.user.id,
+          walletAmount: debit.paidWithWallet,
+          priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
+          source: "remake_multiview",
+          actorId: client.user.id,
+          meta: { mode: "multiview" },
+        });
+      }
+
+      await delivery.message.edit({
+        content:
+          "## Final Model Generated\n" +
+          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+      }).catch(() => {});
+
+      await interaction.followUp({
+        content: delivery.deliveredInDm
+          ? "## Delivered Privately\nYour final model was sent to your DMs."
+          : "## Delivered\nYour final model was delivered in this channel because your DMs are closed.",
+        flags: 64,
+      }).catch(() => {});
+
+      pendingMultiviewActions.delete(actionId);
+      return;
+    }
+
     if (kind !== "clothing_reset") return;
 
     const action = getClothingTemplateAction(actionId);
@@ -10016,19 +10256,9 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "refazer_multiview" || interaction.commandName === "multiview") {
       await interaction.deferReply();
 
-      const confirmation = (interaction.options.getString("confirmar") || interaction.options.getString("confirm")).trim().toUpperCase();
-
-      if (!["SIM", "YES"].includes(confirmation)) {
-        await interaction.editReply({
-          content: "## ⚠️ Request not confirmed\nSend it again with `confirm: YES` after checking **front**, **right**, **back** and **left**.",
-        });
-        return;
-      }
-
-      const texture = interaction.options.getString("textura") || interaction.options.getString("texture");
-      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
-      const shouldGenerateNow = (interaction.options.getString("gerar") || interaction.options.getString("generate")) === "sim";
-      const triangles = interaction.options.getInteger("triangles");
+      const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
+      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "economy";
+      const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = textureToneForInteraction(interaction);
       const textureAdjustments = textureAdjustmentsForInteraction(interaction);
 
@@ -10048,6 +10278,16 @@ client.on("interactionCreate", async interaction => {
         triangles,
         enhancement,
       });
+
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
+      if (balanceBefore < quote.walletAmount) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Multiview AI model",
+          price: quote.walletAmount,
+          balance: balanceBefore,
+        }));
+        return;
+      }
 
       const attachments = {
         frente: interaction.options.getAttachment("frente") || interaction.options.getAttachment("front"),
@@ -10087,6 +10327,17 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      const actionId = createPendingMultiviewAction({
+        userId: interaction.user.id,
+        viewPaths,
+        texture,
+        enhancement,
+        triangles,
+        tempDir,
+        textureTone,
+        textureAdjustments,
+      });
+
       await interaction.editReply({
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
@@ -10098,163 +10349,11 @@ client.on("interactionCreate", async interaction => {
             .filter(view => viewPaths[view])
             .map((view, index) => `**${index + 1}. ${publicViewName(view)}:** \`${publicViewFileLabel(view, viewPaths[view])}\``)
             .join("\n") +
-          (shouldGenerateNow
-            ? "\n\n**Confirmed.** Starting final model generation..."
-            : "\n\nCheck the attachments. If any side is wrong, send the command again before generating."),
+          "\n\n**Next step:** review every side. If everything is correct, click **Generate Model**.\n" +
+          "**No Service Credits are charged until the final model is delivered.**",
         files: multiviewReviewAttachments(viewPaths),
+        components: [multiviewReviewButtons(actionId)],
       });
-
-      if (!shouldGenerateNow) {
-        return;
-      }
-
-      if (!modelGenerationIsConfigured()) {
-        await interaction.followUp("Real model generation is not configured yet. Contact support.");
-        return;
-      }
-
-      if (!imageEnhancementIsReady(enhancement)) {
-        await interaction.followUp({
-          content: "## Enhancement Unavailable\nThis option is not configured yet. Use **No enhancement** or contact support.",
-          flags: 64,
-        });
-        return;
-      }
-
-      const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
-      if (balanceBefore < quote.walletAmount) {
-        await interaction.followUp({
-          content:
-            `## Insufficient Balance\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to add Service Credits.",
-          flags: 64,
-        });
-        return;
-      }
-
-      let model;
-      let progressMessage = null;
-
-      try {
-        const onProgress = async ({ status, progress }) => {
-          const content = formatGenerationProgress({ status, progress });
-          if (progressMessage) {
-            await progressMessage.edit(content).catch(async () => {
-              progressMessage = await interaction.followUp(content).catch(() => null);
-            });
-          } else {
-            progressMessage = await interaction.followUp(content).catch(() => null);
-          }
-        };
-
-        if (HYPER3D_API_KEY) {
-          model = await generateWithOfficialHyper3d({
-            imagePaths: MULTIVIEW_VIEW_ORDER.map(view => viewPaths[view]).filter(Boolean),
-            prompt: "Generate a Roblox-ready 3D accessory from these ordered multiview references.",
-            texture,
-            triangles,
-            tempDir,
-            textureTone,
-            textureAdjustments,
-            onProgress,
-            mode: "multiview",
-          });
-        } else {
-          model = await generateMultiviewWithOfficialTripo({
-            viewPaths,
-            texture,
-            triangles,
-            tempDir,
-            textureTone,
-            textureAdjustments,
-            onProgress,
-          });
-        }
-      } catch (err) {
-        console.error(err);
-        await interaction.followUp(
-          "## Model generation failed\n" +
-          "No charge was deducted because no final model was delivered."
-        );
-
-        if (userIsAdmin(interaction)) {
-          await interaction.followUp({
-            content:
-              "## Admin diagnostic\n" +
-              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
-            flags: 64,
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
-      if (balanceBeforeDelivery < quote.walletAmount) {
-        await interaction.followUp({
-          content:
-            `## Insufficient Balance\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Your balance:** ${formatTokenAmount(balanceBeforeDelivery)}\n\n` +
-            "Use `/buy` to add Service Credits.",
-          flags: 64,
-        });
-        return;
-      }
-
-      let finalMessage;
-      try {
-        finalMessage = await interaction.followUp({
-          content:
-            `## ✅ Final Model Generated\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Remaining balance:** updating...`,
-          files: [publicModelAttachment(model.modelPath)],
-        });
-      } catch (err) {
-        console.error(err);
-        await interaction.followUp(
-          "## Model delivery failed\n" +
-          "No charge was deducted because the final model could not be delivered.\n\n" +
-          "The team can review this manually and compress or resend the file."
-        ).catch(() => {});
-
-        if (userIsAdmin(interaction)) {
-          await interaction.followUp({
-            content:
-              "## Admin diagnostic\n" +
-              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
-            flags: 64,
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      const debit = removeWalletBalance({
-        userId: interaction.user.id,
-        amount: quote.walletAmount,
-        actorId: client.user.id,
-        reason: "Modelo multiview gerado",
-        meta: { command: "refazer_multiview", serviceKey: "multiview", priceBrl: quote.price },
-      });
-      if (debit.ok && debit.paidWithWallet > 0) {
-        creditAffiliateServiceCommission({
-          buyerId: interaction.user.id,
-          walletAmount: debit.paidWithWallet,
-          priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
-          source: "remake_multiview",
-          actorId: client.user.id,
-          meta: { mode: "multiview" },
-        });
-      }
-
-      await finalMessage.edit({
-        content:
-          `## ✅ Final Model Generated\n` +
-          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-      }).catch(() => {});
       return;
     }
 
