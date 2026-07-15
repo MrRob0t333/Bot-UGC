@@ -6444,9 +6444,20 @@ async function writeResponseAsset(res, outputPath, fallbackJsonPath) {
 }
 
 async function downloadPublicUrl(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Nao consegui baixar retorno da IA. Codigo: ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  let lastStatus = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const res = await fetch(url);
+    if (res.ok) return Buffer.from(await res.arrayBuffer());
+
+    lastStatus = `${res.status} ${res.statusText}`;
+    if (!isTransientHyper3dStatus(res.status) || attempt === 4) {
+      break;
+    }
+
+    await wait(Math.min(30000, 3000 * (attempt + 1)));
+  }
+
+  throw new Error(`Nao consegui baixar retorno da IA. Codigo: ${lastStatus}`);
 }
 
 function getImageContentType(imagePath) {
@@ -7087,37 +7098,64 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   };
 }
 
+function isTransientHyper3dStatus(status) {
+  return [408, 429, 500, 502, 503, 504].includes(Number(status));
+}
+
 async function hyper3dRequest(endpoint, options = {}) {
   if (!HYPER3D_API_KEY) {
     throw new Error("HYPER3D_API_KEY nao configurado no .env");
   }
 
-  const res = await fetch(`${HYPER3D_API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${HYPER3D_API_KEY}`,
-      ...(options.headers || {}),
-    },
-  });
+  const attempts = options.retryAttempts || 5;
+  let lastError = null;
 
-  const text = await res.text();
-  let json = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let res;
+    try {
+      res = await fetch(`${HYPER3D_API_BASE}${endpoint}`, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${HYPER3D_API_KEY}`,
+          ...(options.headers || {}),
+        },
+      });
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts - 1) {
+        await wait(Math.min(45000, 3000 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
 
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
+    const text = await res.text();
+    let json = null;
+
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok) {
+      lastError = new Error(`Hyper3D API failed (${res.status}): ${text || res.statusText}`);
+      if (isTransientHyper3dStatus(res.status) && attempt < attempts - 1) {
+        const retryAfter = Number(res.headers.get("retry-after") || 0);
+        await wait(retryAfter > 0 ? Math.min(retryAfter * 1000, 45000) : Math.min(45000, 4000 * (attempt + 1)));
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (json?.error && json.error !== "OK") {
+      throw new Error(`Hyper3D API error ${json.error}: ${json.message || text}`);
+    }
+
+    return json;
   }
 
-  if (!res.ok) {
-    throw new Error(`Hyper3D API failed (${res.status}): ${text || res.statusText}`);
-  }
-
-  if (json?.error && json.error !== "OK") {
-    throw new Error(`Hyper3D API error ${json.error}: ${json.message || text}`);
-  }
-
-  return json;
+  throw lastError || new Error("Hyper3D API failed after retries.");
 }
 
 function hyper3dTriangleTarget(triangles) {
@@ -7257,8 +7295,20 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
     outputDir,
   });
 
-  await pollHyper3dTask(task.subscriptionKey, onProgress);
-  const downloaded = await downloadHyper3dResults({ taskId: task.taskId, outputDir });
+  let downloaded;
+  try {
+    await pollHyper3dTask(task.subscriptionKey, onProgress);
+    downloaded = await downloadHyper3dResults({ taskId: task.taskId, outputDir });
+  } catch (err) {
+    fs.writeFileSync(path.join(outputDir, "hyper3d_error.json"), JSON.stringify({
+      task_id: task.taskId,
+      subscription_key: task.subscriptionKey,
+      error: String(err.message || err),
+      at: new Date().toISOString(),
+    }, null, 2));
+    err.message = `${err.message || err} | Hyper3D task: ${task.taskId}`;
+    throw err;
+  }
 
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
 
