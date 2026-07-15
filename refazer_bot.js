@@ -91,6 +91,7 @@ const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium"
 const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE, "faithful");
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
+const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
@@ -121,7 +122,7 @@ const DEFAULT_RENDER_SETTINGS = {
   exposure: 0.15,
   lightPower: 1,
 };
-const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "brighter").toLowerCase();
+const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "normal").toLowerCase();
 const TEXTURE_TONES = {
   normal: {
     label: "Roblox Safe",
@@ -142,7 +143,7 @@ const TEXTURE_TONES = {
     gamma: 0.9,
   },
 };
-const DEFAULT_TEXTURE_TONE = TEXTURE_TONES[RAW_DEFAULT_TEXTURE_TONE] ? RAW_DEFAULT_TEXTURE_TONE : "brighter";
+const DEFAULT_TEXTURE_TONE = TEXTURE_TONES[RAW_DEFAULT_TEXTURE_TONE] ? RAW_DEFAULT_TEXTURE_TONE : "normal";
 const DEFAULT_TEXTURE_ADJUSTMENTS = {
   saturation: 1,
   value: 1,
@@ -2838,6 +2839,18 @@ function textureAdjustmentsForInteraction(interaction) {
   return normalizeTextureAdjustments({
     saturation: interaction.options.getNumber("texture_saturation") ?? base.saturation,
     value: interaction.options.getNumber("texture_value") ?? base.value,
+  });
+}
+
+function explicitTextureToneForInteraction(interaction, fallback = DEFAULT_TEXTURE_TONE) {
+  const selected = interaction.options.getString("texture_tone");
+  return selected && selected !== "default" ? normalizeTextureTone(selected) : normalizeTextureTone(fallback);
+}
+
+function explicitTextureAdjustmentsForInteraction(interaction, fallback = DEFAULT_TEXTURE_ADJUSTMENTS) {
+  return normalizeTextureAdjustments({
+    saturation: interaction.options.getNumber("texture_saturation") ?? fallback.saturation,
+    value: interaction.options.getNumber("texture_value") ?? fallback.value,
   });
 }
 
@@ -7239,7 +7252,9 @@ function appendHyper3dOptions(form, { prompt, texture, triangles }) {
   form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
   form.append("quality", HYPER3D_QUALITY);
   form.append("mesh_mode", HYPER3D_MESH_MODE);
-  form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
+  if (HYPER3D_USE_QUALITY_OVERRIDE) {
+    form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
+  }
   form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
   form.append("hd_texture", String(texture === "hd" || HYPER3D_HD_TEXTURE));
   form.append("texture_mode", HYPER3D_TEXTURE_MODE);
@@ -7274,7 +7289,8 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
   console.log(
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
-    `mesh=${HYPER3D_MESH_MODE} triangles=${hyper3dTriangleTarget(triangles)} prompt=${prompt ? "yes" : "no"}`
+    `mesh=${HYPER3D_MESH_MODE} triangles=${HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : "auto"} ` +
+    `prompt=${prompt ? "yes" : "no"}`
   );
 
   fs.writeFileSync(path.join(outputDir, "hyper3d_task.json"), JSON.stringify({
@@ -7282,9 +7298,11 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     subscription_key: json.jobs.subscription_key,
     image_count: imagePaths.length,
     image_order: imagePaths.map(file => path.basename(file)),
+    expected_multiview_order: imagePaths.length > 1 ? MULTIVIEW_UPLOAD_ORDER.map(publicViewName) : null,
     prompt: prompt || null,
     texture,
-    triangles: hyper3dTriangleTarget(triangles),
+    triangles: HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : null,
+    quality_override_enabled: HYPER3D_USE_QUALITY_OVERRIDE,
     tier: HYPER3D_TIER,
     quality: HYPER3D_QUALITY,
     mesh_mode: HYPER3D_MESH_MODE,
@@ -7382,6 +7400,8 @@ async function downloadHyper3dResults({ taskId, outputDir }) {
           ? "velvet_model_pbr.glb"
           : index === 0 && HYPER3D_MATERIAL.toLowerCase() === "pbr"
             ? "velvet_model_pbr.glb"
+          : index === 0 && HYPER3D_MATERIAL.toLowerCase() === "shaded"
+            ? "velvet_model_shaded.glb"
           : index === 0
             ? "velvet_model.glb"
             : `velvet_model_${index + 1}.glb`
@@ -10471,10 +10491,10 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply();
 
       const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
-      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "economy";
+      const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
-      const textureTone = textureToneForInteraction(interaction);
-      const textureAdjustments = textureAdjustmentsForInteraction(interaction);
+      const textureTone = explicitTextureToneForInteraction(interaction, "normal");
+      const textureAdjustments = explicitTextureAdjustmentsForInteraction(interaction, DEFAULT_TEXTURE_ADJUSTMENTS);
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
