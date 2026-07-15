@@ -80,13 +80,17 @@ const TRIPO_SMART_LOW_POLY = cleanEnv(process.env.TRIPO_SMART_LOW_POLY, "false")
 const TRIPO_QUAD = cleanEnv(process.env.TRIPO_QUAD, "false") === "true";
 const HYPER3D_API_KEY = cleanEnv(process.env.HYPER3D_API_KEY || process.env.RODIN_API_KEY);
 const HYPER3D_API_BASE = cleanEnv(process.env.HYPER3D_API_BASE, "https://api.hyper3d.com/api/v2").replace(/\/+$/, "");
-const HYPER3D_TIER = cleanEnv(process.env.HYPER3D_TIER, "Gen-2");
+const HYPER3D_TIER = cleanEnv(process.env.HYPER3D_TIER, "Gen-2.5-Medium");
 const HYPER3D_QUALITY = cleanEnv(process.env.HYPER3D_QUALITY, "medium");
-const HYPER3D_MESH_MODE = cleanEnv(process.env.HYPER3D_MESH_MODE, "Quad");
+const HYPER3D_MESH_MODE = cleanEnv(process.env.HYPER3D_MESH_MODE, "Raw");
 const HYPER3D_MATERIAL = cleanEnv(process.env.HYPER3D_MATERIAL, "PBR");
 const HYPER3D_HIGH_PACK = cleanEnv(process.env.HYPER3D_HIGH_PACK, "false") === "true";
 const HYPER3D_PREVIEW_RENDER = cleanEnv(process.env.HYPER3D_PREVIEW_RENDER, "false") === "true";
 const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") === "true";
+const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium");
+const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE, "faithful");
+const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
+const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -7172,6 +7176,10 @@ function appendHyper3dOptions(form, { prompt, texture, triangles }) {
   form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
   form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
   form.append("hd_texture", String(texture === "hd" || HYPER3D_HD_TEXTURE));
+  form.append("texture_mode", HYPER3D_TEXTURE_MODE);
+  form.append("geometry_instruct_mode", HYPER3D_GEOMETRY_INSTRUCT_MODE);
+  form.append("texture_delight", String(HYPER3D_TEXTURE_DELIGHT));
+  form.append("use_original_alpha", String(HYPER3D_USE_ORIGINAL_ALPHA));
 
   if (prompt) form.append("prompt", prompt);
   if (HYPER3D_HIGH_PACK) form.append("addons", "HighPack");
@@ -7209,6 +7217,10 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     quality: HYPER3D_QUALITY,
     mesh_mode: HYPER3D_MESH_MODE,
     material: texture === "none" ? "None" : HYPER3D_MATERIAL,
+    texture_mode: HYPER3D_TEXTURE_MODE,
+    geometry_instruct_mode: HYPER3D_GEOMETRY_INSTRUCT_MODE,
+    texture_delight: HYPER3D_TEXTURE_DELIGHT,
+    use_original_alpha: HYPER3D_USE_ORIGINAL_ALPHA,
     addons: HYPER3D_HIGH_PACK ? ["HighPack"] : [],
   }, null, 2));
 
