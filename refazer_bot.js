@@ -83,7 +83,7 @@ const HYPER3D_API_BASE = cleanEnv(process.env.HYPER3D_API_BASE, "https://api.hyp
 const HYPER3D_TIER = cleanEnv(process.env.HYPER3D_TIER, "Gen-2.5-Medium");
 const HYPER3D_QUALITY = cleanEnv(process.env.HYPER3D_QUALITY, "medium");
 const HYPER3D_MESH_MODE = cleanEnv(process.env.HYPER3D_MESH_MODE, "Raw");
-const HYPER3D_MATERIAL = cleanEnv(process.env.HYPER3D_MATERIAL, "PBR");
+const HYPER3D_MATERIAL = cleanEnv(process.env.HYPER3D_MATERIAL, "Shaded");
 const HYPER3D_HIGH_PACK = cleanEnv(process.env.HYPER3D_HIGH_PACK, "false") === "true";
 const HYPER3D_PREVIEW_RENDER = cleanEnv(process.env.HYPER3D_PREVIEW_RENDER, "false") === "true";
 const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") === "true";
@@ -93,6 +93,7 @@ const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "f
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
+const MODEL_DELIVERY_MODE = cleanEnv(process.env.REFAZER_MODEL_DELIVERY_MODE, "channel").toLowerCase();
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -7927,6 +7928,15 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
 
 async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath, modelPaths }) {
   const files = publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]);
+
+  if (MODEL_DELIVERY_MODE !== "dm") {
+    const channelMessage = await interaction.followUp({
+      content,
+      files,
+    });
+    return { deliveredInDm: false, message: channelMessage };
+  }
+
   try {
     const dmMessage = await interaction.user.send({
       content,
@@ -8319,7 +8329,7 @@ client.on("interactionCreate", async interaction => {
       action.used = true;
       pendingMultiviewActions.set(actionId, action);
       await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
-      await interaction.followUp({ content: "## Generation Started\nI will deliver the final model by DM when possible.", flags: 64 });
+      await interaction.followUp({ content: "## Generation Started\nI will deliver the final model here when it is ready.", flags: 64 });
 
       if (!modelGenerationIsConfigured()) {
         await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 });
