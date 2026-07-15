@@ -17,7 +17,6 @@ max_size = int(args[2])
 texture_tone = args[3] if len(args) > 3 else "normal"
 export_image_format = args[5] if len(args) > 5 else "AUTO"
 jpeg_quality = int(args[6]) if len(args) > 6 else 75
-max_triangles = int(args[7]) if len(args) > 7 and args[7] not in {"", "0", "null", "None"} else 0
 
 try:
     tone_config = json.loads(args[4]) if len(args) > 4 else {}
@@ -141,56 +140,7 @@ bpy.ops.import_scene.gltf(filepath=input_path)
 
 resized = []
 tone_adjusted = []
-decimated = []
 color_images = base_color_images()
-
-
-def mesh_triangle_count(obj):
-    mesh = obj.data
-    mesh.calc_loop_triangles()
-    return len(mesh.loop_triangles)
-
-
-def scene_triangle_count():
-    total = 0
-    for obj in bpy.context.scene.objects:
-        if obj.type == "MESH" and obj.data:
-            total += mesh_triangle_count(obj)
-    return total
-
-
-def apply_triangle_limit():
-    if max_triangles <= 0:
-        return
-
-    current = scene_triangle_count()
-    if current <= max_triangles:
-        decimated.append(f"not needed: {current}/{max_triangles}")
-        return
-
-    for attempt in range(4):
-        current = scene_triangle_count()
-        if current <= max_triangles:
-            break
-
-        ratio = max(0.05, min(0.98, (max_triangles / current) * 0.94))
-        for obj in list(bpy.context.scene.objects):
-            if obj.type != "MESH" or not obj.data:
-                continue
-            bpy.ops.object.select_all(action="DESELECT")
-            bpy.context.view_layer.objects.active = obj
-            obj.select_set(True)
-            modifier = obj.modifiers.new(f"RobloxTriangleLimit{attempt + 1}", "DECIMATE")
-            modifier.ratio = ratio
-            if hasattr(modifier, "use_collapse_triangulate"):
-                modifier.use_collapse_triangulate = True
-            try:
-                bpy.ops.object.modifier_apply(modifier=modifier.name)
-            except Exception as exc:
-                print(f"Could not apply decimate on {obj.name}: {exc}")
-
-    final = scene_triangle_count()
-    decimated.append(f"{current} -> {final} target {max_triangles}")
 
 for image in list(bpy.data.images):
     width, height = image.size
@@ -205,8 +155,6 @@ for image in list(bpy.data.images):
 
     if should_adjust_tone(image, color_images) and adjust_texture_tone(image):
         tone_adjusted.append(f"{image.name}: {texture_tone}")
-
-apply_triangle_limit()
 
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -234,13 +182,6 @@ if tone_adjusted:
         print(f"- {item}")
 else:
     print("Roblox texture tone not changed.")
-
-if decimated:
-    print("Roblox triangle limit applied:")
-    for item in decimated:
-        print(f"- {item}")
-else:
-    print("Roblox triangle limit not requested.")
 
 print(f"GLB image export format: {export_image_format}")
 if export_image_format == "JPEG":

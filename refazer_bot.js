@@ -6151,8 +6151,7 @@ function optimizeGlbForRoblox(
   textureAdjustments = DEFAULT_TEXTURE_ADJUSTMENTS,
   maxTextureSize = ROBLOX_MAX_TEXTURE_SIZE,
   exportImageFormat = "AUTO",
-  jpegQuality = 75,
-  maxTriangles = null
+  jpegQuality = 75
 ) {
   if (!modelPath || !fs.existsSync(modelPath) || path.extname(modelPath).toLowerCase() !== ".glb") {
     return modelPath;
@@ -6176,7 +6175,6 @@ function optimizeGlbForRoblox(
         JSON.stringify(textureToneConfig(textureTone, textureAdjustments)),
         exportImageFormat,
         String(jpegQuality),
-        maxTriangles ? String(maxTriangles) : "0",
       ],
       { stdio: "inherit" }
     );
@@ -6969,7 +6967,7 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75, triangles || ROBLOX_SAFE_TRIANGLE_LIMIT);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
   ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
@@ -7031,7 +7029,7 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
   const modelPath = path.join(tripoDir, "tripo_real.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75, triangles || ROBLOX_SAFE_TRIANGLE_LIMIT);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
   ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
@@ -7078,7 +7076,7 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
   const modelPath = path.join(tripoDir, "velvet_model.glb");
   fs.writeFileSync(modelPath, modelBuffer);
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
-  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75, triangles || ROBLOX_SAFE_TRIANGLE_LIMIT);
+  optimizeGlbForRoblox(modelPath, textureTone, textureAdjustments);
   ensureModelFitsDiscord(modelPath, textureTone, textureAdjustments);
 
   return {
@@ -7265,7 +7263,7 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
   if (onProgress) await onProgress({ status: "finalizing", progress: 100 });
 
   if (path.extname(downloaded.modelPath).toLowerCase() === ".glb") {
-    optimizeGlbForRoblox(downloaded.modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75, triangles || ROBLOX_SAFE_TRIANGLE_LIMIT);
+    optimizeGlbForRoblox(downloaded.modelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
     ensureModelFitsDiscord(downloaded.modelPath, textureTone, textureAdjustments);
   }
 
@@ -7550,15 +7548,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   const modelPath = path.join(tripoDir, "refeito.glb");
   const jsonPath = path.join(tripoDir, "tripo_result.json");
   const savedPath = await writeResponseAsset(res, modelPath, jsonPath);
-  optimizeGlbForRoblox(
-    savedPath,
-    options.textureTone || DEFAULT_TEXTURE_TONE,
-    options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS,
-    ROBLOX_MAX_TEXTURE_SIZE,
-    "AUTO",
-    75,
-    options.triangles || ROBLOX_SAFE_TRIANGLE_LIMIT
-  );
+  optimizeGlbForRoblox(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE, options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS);
   ensureModelFitsDiscord(savedPath, options.textureTone || DEFAULT_TEXTURE_TONE, options.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS);
 
   return {
