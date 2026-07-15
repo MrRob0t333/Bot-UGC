@@ -91,6 +91,7 @@ const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium"
 const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE, "faithful");
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
+const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
 const MERCADO_PAGO_ACCESS_TOKEN = cleanEnv(process.env.MERCADO_PAGO_ACCESS_TOKEN);
 const MERCADO_PAGO_PUBLIC_KEY = cleanEnv(process.env.MERCADO_PAGO_PUBLIC_KEY);
@@ -6971,7 +6972,34 @@ function viewPathsFromRenderedImages(imagePaths) {
 }
 
 function modelGenerationIsConfigured() {
+  if (MODEL_PROVIDER === "hyper3d") return Boolean(HYPER3D_API_KEY);
+  if (MODEL_PROVIDER === "tripo") return Boolean(TRIPO_API_KEY || TRIPO_AI_ENDPOINT);
   return Boolean(HYPER3D_API_KEY || TRIPO_API_KEY || TRIPO_AI_ENDPOINT);
+}
+
+function shouldUseHyper3d() {
+  return MODEL_PROVIDER === "hyper3d" || (MODEL_PROVIDER === "auto" && Boolean(HYPER3D_API_KEY));
+}
+
+function shouldUseTripo() {
+  return MODEL_PROVIDER === "tripo" || (MODEL_PROVIDER === "auto" && !HYPER3D_API_KEY && Boolean(TRIPO_API_KEY || TRIPO_AI_ENDPOINT));
+}
+
+function activeModelEngineLabel() {
+  if (MODEL_PROVIDER === "hyper3d") {
+    return HYPER3D_API_KEY
+      ? `Hyper3D locked (${HYPER3D_TIER}, ${HYPER3D_MATERIAL}, ${HYPER3D_MESH_MODE})`
+      : "Hyper3D locked but HYPER3D_API_KEY is missing";
+  }
+  if (MODEL_PROVIDER === "tripo") {
+    if (TRIPO_API_KEY) return `Tripo locked (${TRIPO_MODEL_VERSION})`;
+    if (TRIPO_AI_ENDPOINT) return "Legacy custom endpoint locked";
+    return "Tripo locked but TRIPO_API_KEY is missing";
+  }
+  if (HYPER3D_API_KEY) return `Hyper3D auto (${HYPER3D_TIER}, ${HYPER3D_MATERIAL}, ${HYPER3D_MESH_MODE})`;
+  if (TRIPO_API_KEY) return `Tripo auto fallback (${TRIPO_MODEL_VERSION})`;
+  if (TRIPO_AI_ENDPOINT) return "Legacy custom endpoint auto fallback";
+  return "not configured";
 }
 
 async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, tempDir, preferredView, textureTone, textureAdjustments, onProgress }) {
@@ -7242,6 +7270,12 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
   if (!json?.uuid || !json?.jobs?.subscription_key) {
     throw new Error("Hyper3D did not return uuid/subscription_key.");
   }
+
+  console.log(
+    `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
+    `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
+    `mesh=${HYPER3D_MESH_MODE} triangles=${hyper3dTriangleTarget(triangles)} prompt=${prompt ? "yes" : "no"}`
+  );
 
   fs.writeFileSync(path.join(outputDir, "hyper3d_task.json"), JSON.stringify({
     uuid: json.uuid,
@@ -7584,7 +7618,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
     };
   }
 
-  if (HYPER3D_API_KEY) {
+  if (shouldUseHyper3d()) {
     const autoMultiviewPaths = !options.preferredView
       ? viewPathsFromRenderedImages(imagePaths)
       : null;
@@ -7622,7 +7656,7 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
     });
   }
 
-  if (TRIPO_API_KEY) {
+  if (shouldUseTripo()) {
     const autoMultiviewPaths = !options.preferredView
       ? viewPathsFromRenderedImages(imagePaths)
       : null;
@@ -7738,7 +7772,27 @@ function publicModelAttachments(files) {
     throw new Error("Final model file was not found.");
   }
 
-  return modelFiles.slice(0, 3).map((file, index) => {
+  const deliverableFiles = modelFiles.filter(file => {
+    const size = fs.statSync(file).size;
+    if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return true;
+    console.warn(
+      `Skipping model attachment ${path.basename(file)} because it is ${formatBytes(size)}, ` +
+      `above Discord limit ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}.`
+    );
+    return false;
+  });
+
+  if (!deliverableFiles.length) {
+    const sizes = modelFiles
+      .map(file => `${path.basename(file)}=${formatBytes(fs.statSync(file).size)}`)
+      .join(", ");
+    throw new Error(
+      `Final model files are too large for Discord delivery. ` +
+      `Limit: ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}. Files: ${sizes}`
+    );
+  }
+
+  return deliverableFiles.slice(0, 3).map((file, index) => {
     const lower = path.basename(file).toLowerCase();
     const name = lower.includes("shaded")
       ? "velvet_model_shaded.glb"
@@ -8178,6 +8232,8 @@ function startWebhookServer() {
 
 client.once("clientReady", async () => {
   console.log(`Bot laboratorio online como ${client.user.tag}`);
+  console.log(`Model engine active: ${activeModelEngineLabel()}`);
+  console.log(`Multiview upload order: ${MULTIVIEW_UPLOAD_ORDER.map(publicViewName).join(", ")}`);
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
   startWebhookServer();
@@ -8285,7 +8341,7 @@ client.on("interactionCreate", async interaction => {
           }
         };
 
-        if (HYPER3D_API_KEY) {
+        if (shouldUseHyper3d()) {
           model = await generateWithOfficialHyper3d({
             imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
             prompt: "",
@@ -8297,7 +8353,7 @@ client.on("interactionCreate", async interaction => {
             onProgress,
             mode: "multiview",
           });
-        } else {
+        } else if (shouldUseTripo()) {
           model = await generateMultiviewWithOfficialTripo({
             viewPaths: action.viewPaths,
             texture: action.texture,
@@ -8307,6 +8363,8 @@ client.on("interactionCreate", async interaction => {
             textureAdjustments: action.textureAdjustments,
             onProgress,
           });
+        } else {
+          throw new Error(`Model provider is not configured: ${activeModelEngineLabel()}`);
         }
       } catch (err) {
         console.error(err);
@@ -10345,8 +10403,9 @@ client.on("interactionCreate", async interaction => {
           await interaction.followUp(formatGenerationProgress({ status, progress })).catch(() => {});
         };
 
-        const model = HYPER3D_API_KEY
-          ? await generateWithOfficialHyper3d({
+        let model;
+        if (shouldUseHyper3d()) {
+          model = await generateWithOfficialHyper3d({
             imagePaths: [],
             prompt,
             texture,
@@ -10356,8 +10415,9 @@ client.on("interactionCreate", async interaction => {
             textureAdjustments,
             onProgress,
             mode: "prompt",
-          })
-          : await generatePromptModelWithOfficialTripo({
+          });
+        } else if (shouldUseTripo()) {
+          model = await generatePromptModelWithOfficialTripo({
             prompt,
             texture,
             triangles,
@@ -10366,6 +10426,9 @@ client.on("interactionCreate", async interaction => {
             textureAdjustments,
             onProgress,
           });
+        } else {
+          throw new Error(`Model provider is not configured: ${activeModelEngineLabel()}`);
+        }
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
