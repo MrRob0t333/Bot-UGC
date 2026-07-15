@@ -1762,7 +1762,7 @@ const commands = [
       o
         .setName("textura")
         .setDescription("Qualidade da textura")
-        .setRequired(true)
+        .setRequired(false)
         .addChoices(
           { name: "Sem textura", value: "none" },
           { name: "Padrao", value: "standard" },
@@ -1771,25 +1771,9 @@ const commands = [
     )
     .addStringOption(o =>
       o
-        .setName("confirmar")
-        .setDescription("Digite SIM para confirmar que as fotos estao nas posicoes certas")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o
-        .setName("gerar")
-        .setDescription("Iniciar a geracao agora?")
-        .setRequired(true)
-        .addChoices(
-          { name: "Nao, apenas orcamento", value: "nao" },
-          { name: "Sim, gerar agora", value: "sim" }
-        )
-    )
-    .addStringOption(o =>
-      o
         .setName("melhoria")
         .setDescription("Melhoria das imagens antes da modelagem")
-        .setRequired(true)
+        .setRequired(false)
         .addChoices(
           { name: "Sem melhoria", value: "none" },
           { name: "Limpeza local", value: "economy" }
