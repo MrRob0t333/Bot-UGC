@@ -88,7 +88,7 @@ const HYPER3D_HIGH_PACK = cleanEnv(process.env.HYPER3D_HIGH_PACK, "false") === "
 const HYPER3D_PREVIEW_RENDER = cleanEnv(process.env.HYPER3D_PREVIEW_RENDER, "false") === "true";
 const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") === "true";
 const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium");
-const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE, "faithful");
+const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE);
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
@@ -7248,6 +7248,7 @@ function hyper3dTriangleTarget(triangles) {
 }
 
 function appendHyper3dOptions(form, { prompt, texture, triangles }) {
+  const geometryInstructMode = HYPER3D_GEOMETRY_INSTRUCT_MODE.toLowerCase();
   form.append("tier", HYPER3D_TIER);
   form.append("geometry_file_format", "glb");
   form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
@@ -7259,7 +7260,12 @@ function appendHyper3dOptions(form, { prompt, texture, triangles }) {
   form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
   form.append("hd_texture", String(texture === "hd" || HYPER3D_HD_TEXTURE));
   form.append("texture_mode", HYPER3D_TEXTURE_MODE);
-  form.append("geometry_instruct_mode", HYPER3D_GEOMETRY_INSTRUCT_MODE);
+  if (
+    HYPER3D_GEOMETRY_INSTRUCT_MODE &&
+    !["off", "none", "default", "auto", "false", "0"].includes(geometryInstructMode)
+  ) {
+    form.append("geometry_instruct_mode", HYPER3D_GEOMETRY_INSTRUCT_MODE);
+  }
   form.append("texture_delight", String(HYPER3D_TEXTURE_DELIGHT));
   form.append("use_original_alpha", String(HYPER3D_USE_ORIGINAL_ALPHA));
 
@@ -7291,7 +7297,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
     `mesh=${HYPER3D_MESH_MODE} triangles=${HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : "auto"} ` +
-    `prompt=${prompt ? "yes" : "no"}`
+    `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} prompt=${prompt ? "yes" : "no"}`
   );
 
   fs.writeFileSync(path.join(outputDir, "hyper3d_task.json"), JSON.stringify({
