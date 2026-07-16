@@ -360,6 +360,10 @@ const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", 
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Service Credits";
 const WALLET_MIN_PURCHASE = Number(process.env.REFAZER_WALLET_MIN_PURCHASE || 300);
+const PURCHASE_EXPIRATION_MINUTES = Number(process.env.REFAZER_PURCHASE_EXPIRATION_MINUTES || 30);
+const PURCHASE_EXPIRATION_MS = PURCHASE_EXPIRATION_MINUTES > 0
+  ? PURCHASE_EXPIRATION_MINUTES * 60 * 1000
+  : 0;
 const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
 const VELVET_EMOJIS = {
   shield: "<:escudo:1524645193817788516>",
@@ -3445,6 +3449,12 @@ async function createMercadoPagoPreference(request, options = {}) {
     };
   }
 
+  if (request.expiresAt) {
+    payload.expires = true;
+    payload.expiration_date_from = request.createdAt;
+    payload.expiration_date_to = request.expiresAt;
+  }
+
   if (MERCADO_PAGO_WEBHOOK_URL) payload.notification_url = MERCADO_PAGO_WEBHOOK_URL;
 
   return mercadoPagoRequest("/checkout/preferences", payload);
@@ -3515,6 +3525,12 @@ async function createMercadoPagoPrepaidSubscriptionPreference(request) {
     auto_return: "approved",
   };
 
+  if (request.expiresAt) {
+    payload.expires = true;
+    payload.expiration_date_from = request.createdAt;
+    payload.expiration_date_to = request.expiresAt;
+  }
+
   if (MERCADO_PAGO_WEBHOOK_URL) payload.notification_url = MERCADO_PAGO_WEBHOOK_URL;
 
   return mercadoPagoRequest("/checkout/preferences", payload);
@@ -3554,6 +3570,12 @@ async function createMercadoPagoLifetimeSubscriptionPreference(request) {
     auto_return: "approved",
   };
 
+  if (request.expiresAt) {
+    payload.expires = true;
+    payload.expiration_date_from = request.createdAt;
+    payload.expiration_date_to = request.expiresAt;
+  }
+
   return mercadoPagoRequest("/checkout/preferences", payload);
 }
 
@@ -3580,6 +3602,10 @@ async function createMercadoPagoPixPayment(request) {
     },
     notification_url: MERCADO_PAGO_WEBHOOK_URL || undefined,
   };
+
+  if (request.expiresAt) {
+    payload.date_of_expiration = request.expiresAt;
+  }
 
   return mercadoPagoRequest("/v1/payments", payload, {
     headers: {
@@ -3610,6 +3636,7 @@ function formatMercadoPagoPixMessage({ request, priceLabel, payment }) {
     uiLine("Package", formatTokenAmount(request.amount)),
     uiLine("Price", uiMoney(priceLabel)),
     uiLine("Status", "Awaiting Pix payment"),
+    purchaseExpirationLine(request),
     "",
     "## Pay with Pix",
     pixCode
@@ -3897,9 +3924,68 @@ function creditAffiliateServiceCommission({ buyerId, walletAmount, priceBrl, sou
   return credited;
 }
 
+function purchaseExpiresAtFrom(createdAt) {
+  if (!PURCHASE_EXPIRATION_MS) return null;
+  const created = Date.parse(createdAt || "");
+  if (!Number.isFinite(created)) return null;
+  return new Date(created + PURCHASE_EXPIRATION_MS).toISOString();
+}
+
+function purchaseExpiresAt(request) {
+  return request?.expiresAt || purchaseExpiresAtFrom(request?.createdAt);
+}
+
+function purchaseIsExpired(request, now = Date.now()) {
+  if (!request || request.status !== "pending") return false;
+  const expiresAt = Date.parse(purchaseExpiresAt(request) || "");
+  return Number.isFinite(expiresAt) && expiresAt <= now;
+}
+
+function purchaseExpirationLine(request) {
+  const expiresAt = purchaseExpiresAt(request);
+  if (!expiresAt) return "";
+
+  const expires = new Date(expiresAt);
+  const minutes = Math.max(1, Math.round((expires.getTime() - Date.now()) / 60000));
+  return uiLine("Expires", `${expires.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" })} (about ${minutes} min)`);
+}
+
+function expirePendingPurchases(now = Date.now()) {
+  const db = readWalletDb();
+  let changed = false;
+  const expired = [];
+
+  for (const request of db.purchaseRequests || []) {
+    if (!purchaseIsExpired(request, now)) continue;
+    request.status = "expired";
+    request.expiredAt = new Date(now).toISOString();
+    request.reason = request.reason || "Payment window expired.";
+    expired.push(request);
+    changed = true;
+  }
+
+  if (changed) writeWalletDb(db);
+  return expired;
+}
+
+function expirePurchaseRequest(requestId, reason = "Payment window expired.") {
+  const db = readWalletDb();
+  const request = db.purchaseRequests.find(item => item.id === requestId);
+  if (!request) return { ok: false, reason: "Pedido nao encontrado." };
+  if (request.status !== "pending") return { ok: false, reason: "Esse pedido ja foi resolvido.", request };
+  if (!purchaseIsExpired(request)) return { ok: false, reason: "Pedido ainda esta dentro do prazo.", request };
+
+  request.status = "expired";
+  request.expiredAt = new Date().toISOString();
+  request.reason = reason;
+  writeWalletDb(db);
+  return { ok: true, request };
+}
+
 function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, brlOverride = null, source = "buy", channelId = null, meta = {} }) {
   const db = readWalletDb();
   const brl = Number((brlOverride ?? (amount / WALLET_TOKENS_PER_BRL)).toFixed(2));
+  const createdAt = new Date().toISOString();
   const request = {
     id: `compra-${Date.now()}`,
     userId,
@@ -3911,7 +3997,8 @@ function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, br
     channelId,
     meta,
     status: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt,
+    expiresAt: purchaseExpiresAtFrom(createdAt),
   };
   db.purchaseRequests.push(request);
   writeWalletDb(db);
@@ -3922,6 +4009,13 @@ function resolvePurchase({ requestId, action, actorId, reason }) {
   const db = readWalletDb();
   const request = db.purchaseRequests.find(item => item.id === requestId);
   if (!request) return { ok: false, reason: "Pedido nao encontrado." };
+  if (purchaseIsExpired(request)) {
+    request.status = "expired";
+    request.expiredAt = new Date().toISOString();
+    request.reason = "Payment window expired.";
+    writeWalletDb(db);
+    return { ok: false, reason: "Esse pedido expirou. Crie um novo checkout." };
+  }
   if (request.status !== "pending") return { ok: false, reason: "Esse pedido ja foi resolvido." };
 
   if (action === "aprovar") {
@@ -4020,6 +4114,13 @@ async function activatePrepaidSubscription({ request, provider, paymentId }) {
   const db = readWalletDb();
   const storedRequest = db.purchaseRequests.find(item => item.id === request.id);
   if (!storedRequest) return { ok: false, reason: "Pedido nao encontrado." };
+  if (purchaseIsExpired(storedRequest)) {
+    storedRequest.status = "expired";
+    storedRequest.expiredAt = new Date().toISOString();
+    storedRequest.reason = "Payment window expired.";
+    writeWalletDb(db);
+    return { ok: false, reason: "Esse pedido expirou. Crie um novo checkout." };
+  }
   if (storedRequest.status !== "pending") return { ok: false, reason: "Esse pedido ja foi resolvido." };
 
   const user = walletUser(db, request.userId);
@@ -4111,6 +4212,13 @@ async function activateLifetimeSubscription({ request, provider, paymentId }) {
   const db = readWalletDb();
   const storedRequest = db.purchaseRequests.find(item => item.id === request.id);
   if (!storedRequest) return { ok: false, reason: "Order not found." };
+  if (purchaseIsExpired(storedRequest)) {
+    storedRequest.status = "expired";
+    storedRequest.expiredAt = new Date().toISOString();
+    storedRequest.reason = "Payment window expired.";
+    writeWalletDb(db);
+    return { ok: false, reason: "This order expired. Create a new checkout." };
+  }
   if (storedRequest.status !== "pending") return { ok: false, reason: "Order already resolved." };
 
   storedRequest.status = "approved";
@@ -4502,9 +4610,10 @@ function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLi
     "Pricing reference: 1,000 Service Credits is a $5.45 USD service package. This is not a cash exchange rate.",
     "",
     uiLine("Order ID", `\`${request.id}\``),
-    uiLine("Package", `${formatTokenAmount(request.amount)} Service Credits`),
+    uiLine("Package", formatTokenAmount(request.amount)),
     uiLine("Price", uiMoney(priceLabel)),
     uiLine("Status", "Awaiting payment"),
+    purchaseExpirationLine(request),
     "",
     "## Next Step",
     paymentLink
@@ -4532,7 +4641,7 @@ function formatAffiliateMessage(profile) {
   ].join("\n");
 }
 
-function formatSubscriptionMessage({ plan, provider, email, link, orderId = null, priceLabel = null }) {
+function formatSubscriptionMessage({ plan, provider, email, link, orderId = null, priceLabel = null, expiresAt = null }) {
   const isPrepaid = provider === "Mercado Pago Pix";
   const displayedPrice = priceLabel || (isPrepaid
     ? formatCurrencyFromBrl(plan.brl, "BRL")
@@ -4548,6 +4657,7 @@ function formatSubscriptionMessage({ plan, provider, email, link, orderId = null
     uiLine("Price", plan.lifetime ? `${displayedPrice} one-time` : isPrepaid ? `${displayedPrice} / ${PREPAID_SUBSCRIPTION_DAYS} days` : `${displayedPrice}/month`),
     uiLine("Provider", provider),
     orderId ? uiLine("Order ID", `\`${orderId}\``) : null,
+    expiresAt ? uiLine("Expires", new Date(expiresAt).toLocaleString("en-US", { timeZone: "America/Sao_Paulo" })) : null,
     uiLine("Email", email),
     "",
     link
@@ -9010,7 +9120,11 @@ client.once("clientReady", async () => {
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
   startWebhookServer();
+  expirePendingPurchases();
   expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
+  setInterval(() => {
+    expirePendingPurchases();
+  }, 5 * 60 * 1000);
   setInterval(() => {
     expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
   }, 60 * 60 * 1000);
@@ -9674,6 +9788,7 @@ client.on("interactionCreate", async interaction => {
         let link = null;
         let provider = paymentProviderLabel(requestedProvider);
         let orderId = null;
+        let expiresAt = null;
 
         if (plan.lifetime) {
           const request = createPurchaseRequest({
@@ -9691,6 +9806,7 @@ client.on("interactionCreate", async interaction => {
             },
           });
           orderId = request.id;
+          expiresAt = request.expiresAt;
 
           if (requestedProvider.startsWith("mercadopago")) {
             const preference = await createMercadoPagoLifetimeSubscriptionPreference(request);
@@ -9723,6 +9839,7 @@ client.on("interactionCreate", async interaction => {
           link = preference.init_point || preference.sandbox_init_point || null;
           provider = "Mercado Pago Pix";
           orderId = request.id;
+          expiresAt = request.expiresAt;
         } else if (requestedProvider.startsWith("mercadopago")) {
           const subscription = await createMercadoPagoSubscription({
             userId: interaction.user.id,
@@ -9741,7 +9858,7 @@ client.on("interactionCreate", async interaction => {
         }
 
         await interaction.reply({
-          content: formatSubscriptionMessage({ plan, provider, email, link, orderId, priceLabel: subscriptionPriceLabel }),
+          content: formatSubscriptionMessage({ plan, provider, email, link, orderId, priceLabel: subscriptionPriceLabel, expiresAt }),
           flags: 64,
         });
         return;
@@ -10016,6 +10133,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "velvet_admin_compras" || interaction.commandName === "admin_purchases") {
+      expirePendingPurchases();
       const db = readWalletDb();
       const pending = db.purchaseRequests.filter(item => item.status === "pending").slice(-10);
 
@@ -10024,7 +10142,7 @@ client.on("interactionCreate", async interaction => {
           ? [
             "## Pending Purchases",
             ...pending.map(item =>
-              `\`${item.id}\` | <@${item.userId}> | **${formatTokenAmount(item.amount)}** | ${formatCurrencyFromBrl(item.brl, item.currency || DEFAULT_CURRENCY)}`
+              `\`${item.id}\` | <@${item.userId}> | **${formatTokenAmount(item.amount)}** | ${formatCurrencyFromBrl(item.brl, item.currency || DEFAULT_CURRENCY)} | expires ${purchaseExpiresAt(item) || "never"}`
             ),
           ].join("\n")
           : "## Pending Purchases\nThere are no pending purchases.",
