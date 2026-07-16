@@ -386,6 +386,7 @@ const SERVICE_CREDIT_SCOPES = {
   clothing: "Clothing copy",
   remake: "AI remake",
   multiview: "Multiview model",
+  image_model: "Single image model",
   prompt_model: "Prompt model",
   image: "Image generation",
   enhancement: "Reference cleanup",
@@ -1390,6 +1391,62 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("image_model")
+    .setDescription("Generates a 3D model from one reference image")
+    .addAttachmentOption(o =>
+      o.setName("image").setDescription("Main reference image").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture")
+        .setDescription("Texture quality")
+        .setRequired(false)
+        .addChoices(
+          { name: "No texture", value: "none" },
+          { name: "Standard", value: "standard" },
+          { name: "HD", value: "hd" }
+        )
+    )
+    .addIntegerOption(o =>
+      o.setName("triangles").setDescription("Triangle limit. Max: 3950").setRequired(false).setMinValue(500).setMaxValue(3950)
+    )
+    .addBooleanOption(o =>
+      o
+        .setName("alpha")
+        .setDescription("Use image transparency/alpha in the AI generation. Default: off")
+        .setRequired(false)
+    )
+    .addStringOption(o =>
+      o
+        .setName("detail_level")
+        .setDescription("Final detail level")
+        .setRequired(false)
+        .addChoices(
+          { name: "Standard", value: "medium" },
+          { name: `Sharper Details (+${brlToWalletTokens(modelQualityConfig("high").priceExtraBrl)} ${WALLET_TOKEN_NAME})`, value: "high" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("texture_tone")
+        .setDescription("Final texture tone")
+        .setRequired(false)
+        .addChoices(
+          { name: "Use my default", value: "default" },
+          { name: "Roblox Safe", value: "normal" },
+          { name: "Brighter", value: "brighter" },
+          { name: "Vibrant", value: "vibrant" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("texture_saturation").setDescription("Texture saturation. 1.00 keeps original").setRequired(false).setMinValue(0.5).setMaxValue(1.5)
+    )
+    .addNumberOption(o =>
+      o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("admin_add")
     .setDescription("Admin: adds Service Credits to a user")
     .addUserOption(o =>
@@ -1672,7 +1729,7 @@ const commands = [
         .setRequired(false)
         .addChoices(
           { name: "Standard", value: "medium" },
-          { name: "Sharper Details (+R$1)", value: "high" }
+          { name: `Sharper Details (+${brlToWalletTokens(modelQualityConfig("high").priceExtraBrl)} ${WALLET_TOKEN_NAME})`, value: "high" }
         )
     )
     .toJSON(),
@@ -2017,7 +2074,7 @@ function promptModelBaseBrlForPlan(plan) {
 
 function aiModelPromoUsage(userId) {
   const db = readWalletDb();
-  const serviceKeys = new Set(["remake", "multiview", "prompt_model"]);
+  const serviceKeys = new Set(["remake", "multiview", "image_model", "prompt_model"]);
   return db.transactions.filter(transaction =>
     transaction.userId === userId &&
     transaction.type === "debit" &&
@@ -2675,6 +2732,7 @@ function normalizeServiceScopes(input) {
       if (["clothes", "roupa", "roupas", "steal_clothing"].includes(item)) return "clothing";
       if (["refazer", "single", "ai_remake"].includes(item)) return "remake";
       if (["multi", "refazer_multiview"].includes(item)) return "multiview";
+      if (["image_model", "single_image", "single_image_model", "one_image"].includes(item)) return "image_model";
       if (["prompt", "text", "text_model"].includes(item)) return "prompt_model";
       if (["images", "generate_image"].includes(item)) return "image";
       if (["enhance", "cleanup", "clean", "enhance_images"].includes(item)) return "enhancement";
@@ -8274,6 +8332,15 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     await interaction.deferUpdate().catch(() => {});
   }
 
+  const actionType = action.actionType || "multiview";
+  const priceMode = action.priceMode || "multiview";
+  const serviceKey = action.serviceKey || "multiview";
+  const serviceLabel = action.serviceLabel || "Multiview AI model";
+  const generationMode = action.generationMode || "multiview";
+  const generationImagePaths = Array.isArray(action.imagePaths) && action.imagePaths.length
+    ? action.imagePaths
+    : MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths?.[view]).filter(Boolean);
+
   if (!modelGenerationIsConfigured()) {
     await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(() => {});
     return;
@@ -8281,7 +8348,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
 
   const advancedTextureCfg = advancedTextureConfig(action.advancedTexture);
   const quote = calculatePrice(interaction, {
-    mode: "multiview",
+    mode: priceMode,
     texture: action.texture,
     triangles: action.triangles,
     enhancement: action.enhancement,
@@ -8289,10 +8356,10 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     advancedTexture: action.advancedTexture,
   });
 
-  const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
+  const balanceBefore = walletAvailableBalance(interaction.user.id, serviceKey);
   if (balanceBefore < quote.walletAmount) {
     const content = formatInsufficientBalanceMessage({
-      service: "Multiview AI model",
+      service: serviceLabel,
       price: quote.walletAmount,
       balance: balanceBefore,
     });
@@ -8310,7 +8377,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   action.waitingTextureDecision = false;
   setPendingMultiviewAction(actionId, action);
   console.log(
-    `[Multiview] generation start action=${actionId} user=${interaction.user.id} ` +
+    `[${actionType}] generation start action=${actionId} user=${interaction.user.id} ` +
     `texture=${action.texture} triangles=${action.triangles || "auto"} advanced_texture=${action.advancedTexture || "none"}`
   );
 
@@ -8341,7 +8408,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
 
     if (shouldUseHyper3d()) {
       model = await generateWithOfficialHyper3d({
-        imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
+        imagePaths: generationImagePaths,
         prompt: "",
         texture: action.texture,
         triangles: action.triangles,
@@ -8349,18 +8416,29 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
         textureTone: action.textureTone,
         textureAdjustments: action.textureAdjustments,
         onProgress,
-        mode: "multiview",
+        mode: generationMode,
         useAlpha: action.useAlpha,
         modelQuality: action.modelQuality,
         advancedTexture: action.advancedTexture,
         textureSourceImagePath: advancedTextureCfg.resolution ? action.viewPaths[action.textureSource] : null,
       });
-    } else if (shouldUseTripo()) {
+    } else if (shouldUseTripo() && generationMode === "multiview") {
       model = await generateMultiviewWithOfficialTripo({
         viewPaths: action.viewPaths,
         texture: action.texture,
         triangles: action.triangles,
         tempDir: action.tempDir,
+        textureTone: action.textureTone,
+        textureAdjustments: action.textureAdjustments,
+        onProgress,
+      });
+    } else if (shouldUseTripo()) {
+      model = await generateModelWithOfficialTripo({
+        imagePaths: generationImagePaths,
+        texture: action.texture,
+        triangles: action.triangles,
+        tempDir: action.tempDir,
+        preferredView: null,
         textureTone: action.textureTone,
         textureAdjustments: action.textureAdjustments,
         onProgress,
@@ -8388,11 +8466,11 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     return;
   }
 
-  const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
+  const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, serviceKey);
   if (balanceBeforeDelivery < quote.walletAmount) {
     await interaction.followUp({
       content: formatInsufficientBalanceMessage({
-        service: "Multiview AI model",
+        service: serviceLabel,
         price: quote.walletAmount,
         balance: balanceBeforeDelivery,
       }),
@@ -8426,8 +8504,8 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     userId: interaction.user.id,
     amount: quote.walletAmount,
     actorId: client.user.id,
-    reason: "Modelo multiview gerado",
-    meta: { command: "multiview_button", serviceKey: "multiview", priceBrl: quote.price },
+    reason: `${serviceLabel} generated`,
+    meta: { command: `${actionType}_button`, serviceKey, priceBrl: quote.price },
   });
 
   if (debit.ok && debit.paidWithWallet > 0) {
@@ -8435,9 +8513,9 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
       buyerId: interaction.user.id,
       walletAmount: debit.paidWithWallet,
       priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
-      source: "remake_multiview",
+      source: serviceKey === "image_model" ? "remake_image_model" : "remake_multiview",
       actorId: client.user.id,
-      meta: { mode: "multiview" },
+      meta: { mode: actionType },
     });
   }
 
@@ -8455,7 +8533,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     flags: 64,
   }).catch(() => {});
 
-  console.log(`[Multiview] generation delivered action=${actionId} user=${interaction.user.id}`);
+  console.log(`[${actionType}] generation delivered action=${actionId} user=${interaction.user.id}`);
   deletePendingMultiviewAction(actionId);
 }
 
@@ -8594,6 +8672,7 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "## 🎨 Model Services",
     "`/price` - Preview the price before ordering",
     "`/remake` - Remake a UGC from an item ID",
+    "`/image_model` - Generate a model from one reference image",
     "`/multiview` - Remake from front, right, back and left images",
     "`/enhance_images` - Clean reference images before multiview",
   ];
@@ -9040,6 +9119,7 @@ client.on("interactionCreate", async interaction => {
     "price",
     "generate_image",
     "enhance_images",
+    "image_model",
     "prompt_model",
     "multiview",
     "refazer",
@@ -10943,6 +11023,97 @@ client.on("interactionCreate", async interaction => {
         console.error(err);
         await interaction.editReply("## Model generation failed\nNo charge was deducted because no final model was delivered.");
       }
+      return;
+    }
+
+    if (interaction.commandName === "image_model") {
+      await interaction.deferReply();
+
+      const image = interaction.options.getAttachment("image");
+      const texture = interaction.options.getString("texture") || "standard";
+      const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
+      const textureTone = explicitTextureToneForInteraction(interaction, "normal");
+      const textureAdjustments = explicitTextureAdjustmentsForInteraction(interaction, DEFAULT_TEXTURE_ADJUSTMENTS);
+      const useAlpha = interaction.options.getBoolean("alpha") ?? HYPER3D_USE_ORIGINAL_ALPHA;
+      const modelQuality = normalizeModelQuality(interaction.options.getString("detail_level") || "medium");
+      const qualityConfig = modelQualityConfig(modelQuality);
+      const enhancement = "none";
+      const advancedTexture = "none";
+
+      if (!modelGenerationIsConfigured()) {
+        await interaction.editReply("## Model generation unavailable\nThis service is not configured yet.");
+        return;
+      }
+
+      const quote = calculatePrice(interaction, {
+        mode: "single",
+        texture,
+        triangles,
+        enhancement,
+        modelQuality,
+        advancedTexture,
+      });
+
+      const balanceBefore = walletAvailableBalance(interaction.user.id, "image_model");
+      if (balanceBefore < quote.walletAmount) {
+        await interaction.editReply(formatInsufficientBalanceMessage({
+          service: "Single image AI model",
+          price: quote.walletAmount,
+          balance: balanceBefore,
+        }));
+        return;
+      }
+
+      const tempDir = path.join(__dirname, "temp", "refazer", `image-model-${interaction.id}`);
+      const inputDir = path.join(tempDir, "image_model_inputs");
+      fs.mkdirSync(inputDir, { recursive: true });
+
+      const ext = path.extname(image.name) || ".png";
+      const imagePath = await downloadAttachmentToFile(image, path.join(inputDir, `image${ext}`));
+
+      const actionId = createPendingMultiviewAction({
+        actionType: "image_model",
+        userId: interaction.user.id,
+        imagePaths: [imagePath],
+        viewPaths: { frente: imagePath },
+        texture,
+        enhancement,
+        triangles,
+        tempDir,
+        textureTone,
+        textureAdjustments,
+        useAlpha,
+        modelQuality,
+        advancedTexture,
+        textureSource: "none",
+        advancedTexturePrompted: true,
+        waitingTextureDecision: false,
+        priceMode: "single",
+        serviceKey: "image_model",
+        serviceLabel: "Single image AI model",
+        generationMode: "image",
+      });
+
+      const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
+
+      await interaction.editReply({
+        content:
+          "## Single Image Model Quote\n" +
+          `**Texture:** ${textureLabel}\n` +
+          `**Triangles:** ${triangles} (Roblox safe default)\n` +
+          `**Detail level:** ${qualityConfig.label}\n` +
+          `**Texture tone:** ${textureToneSummary(textureTone)}\n` +
+          `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
+          `**AI alpha:** ${useAlpha ? "On" : "Off"}\n\n` +
+          `${quote.lines.map(line => `**${line}**`).join("\n")}\n\n` +
+          `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+          "### Reference Check\n" +
+          `**Image:** \`${publicViewFileLabel("frente", imagePath)}\`\n\n` +
+          "**Next step:** review the image. If it is correct, click **Generate Model**.\n" +
+          "**No Service Credits are charged until the final model is delivered.**",
+        files: [publicImageAttachment(imagePath, `single-image${ext}`)],
+        components: [multiviewReviewButtons(actionId)],
+      });
       return;
     }
 
