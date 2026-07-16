@@ -359,7 +359,7 @@ const IMAGE_RESOLUTIONS = {
 const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"]);
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Service Credits";
-const WALLET_MIN_PURCHASE = 1000;
+const WALLET_MIN_PURCHASE = Number(process.env.REFAZER_WALLET_MIN_PURCHASE || 300);
 const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
 const VELVET_EMOJIS = {
   shield: "<:escudo:1524645193817788516>",
@@ -1081,6 +1081,14 @@ const commands = [
     )
     .addNumberOption(o =>
       o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_roblox_status")
+    .setDescription("Admin: checks Roblox cookie/safe-mode status")
+    .addBooleanOption(o =>
+      o.setName("reset_pause").setDescription("Clear the current Roblox Safe Mode pause").setRequired(false)
     )
     .toJSON(),
 
@@ -5062,6 +5070,8 @@ async function checkCooldown(interaction) {
 }
 
 async function downloadBuffer(url) {
+  assertRobloxSafeModeAvailable();
+
   const headers = {};
 
   if (ROBLOSECURITY) {
@@ -5076,6 +5086,11 @@ async function downloadBuffer(url) {
     }
 
     if (res.status === 401 || res.status === 403) {
+      markRobloxAuthProblem({
+        status: res.status,
+        url,
+        message: "Roblox denied access with the current cookie/account.",
+      });
       throw new Error("Nao tenho permissao para acessar esse item.");
     }
 
@@ -5107,11 +5122,19 @@ function robloxHeaders(extra = {}, cookie = ROBLOX_COOKIES[0]) {
 const ROBLOX_ASSET_SOURCE_CACHE_TTL_MS = 10 * 60 * 1000;
 const ROBLOX_REQUEST_INTERVAL_MS = Number(process.env.REFAZER_ROBLOX_REQUEST_INTERVAL_MS || 1200);
 const ROBLOX_RATE_LIMIT_PAUSE_MS = Number(process.env.REFAZER_ROBLOX_RATE_LIMIT_PAUSE_MS || 120000);
+const ROBLOX_AUTH_PAUSE_MS = Number(process.env.REFAZER_ROBLOX_AUTH_PAUSE_MS || 15 * 60 * 1000);
 const robloxAssetSourceCache = new Map();
 let nextRobloxRequestAt = 0;
 let robloxRateLimitedUntil = 0;
 let nextRobloxPublicRequestAt = 0;
 let robloxPublicRateLimitedUntil = 0;
+const robloxHealth = {
+  pausedUntil: 0,
+  lastError: "",
+  lastStatus: 0,
+  lastUrl: "",
+  lastAt: null,
+};
 const sniperCatalogCache = new Map();
 let lastSniperDebug = null;
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
@@ -5119,6 +5142,68 @@ const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_
 function isRobloxRateLimitError(err) {
   const message = String(err?.message || err || "");
   return message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
+}
+
+function robloxPauseRemainingMs() {
+  return Math.max(0, robloxHealth.pausedUntil - Date.now());
+}
+
+function robloxSafeModeIsPaused() {
+  return robloxPauseRemainingMs() > 0;
+}
+
+function markRobloxAuthProblem({ status, url, message }) {
+  robloxHealth.pausedUntil = Date.now() + ROBLOX_AUTH_PAUSE_MS;
+  robloxHealth.lastError = message || "Roblox auth/access problem";
+  robloxHealth.lastStatus = status || 0;
+  robloxHealth.lastUrl = url || "";
+  robloxHealth.lastAt = new Date().toISOString();
+}
+
+function clearRobloxSafePause() {
+  robloxHealth.pausedUntil = 0;
+  robloxHealth.lastError = "";
+  robloxHealth.lastStatus = 0;
+}
+
+function assertRobloxSafeModeAvailable() {
+  if (!robloxSafeModeIsPaused()) return;
+  const minutes = Math.ceil(robloxPauseRemainingMs() / 60000);
+  throw new Error(
+    `Roblox Safe Mode is active for about ${minutes} more minute(s). ` +
+    "Roblox access was paused after an auth/access failure. Use /multiview or /image_model with uploaded images."
+  );
+}
+
+function robloxStatusMessage() {
+  const paused = robloxSafeModeIsPaused();
+  const lines = [
+    "## Roblox Access Status",
+    `**Safe Mode:** ${paused ? "Paused" : "Ready"}`,
+    `**Pause remaining:** ${paused ? `${Math.ceil(robloxPauseRemainingMs() / 60000)} min` : "none"}`,
+    `**Configured cookies:** ${ROBLOX_COOKIES.length}`,
+    `**Request interval:** ${ROBLOX_REQUEST_INTERVAL_MS}ms`,
+    `**Rate-limit pause:** ${Math.ceil(ROBLOX_RATE_LIMIT_PAUSE_MS / 60000)} min`,
+    `**Auth/access pause:** ${Math.ceil(ROBLOX_AUTH_PAUSE_MS / 60000)} min`,
+  ];
+
+  if (robloxHealth.lastAt) {
+    lines.push(
+      "",
+      "### Last Roblox issue",
+      `**At:** ${robloxHealth.lastAt}`,
+      `**Status:** ${robloxHealth.lastStatus || "unknown"}`,
+      `**Error:** ${robloxHealth.lastError || "none"}`,
+      `**URL:** ${robloxHealth.lastUrl || "unknown"}`
+    );
+  }
+
+  lines.push(
+    "",
+    "When Safe Mode is paused, Roblox-dependent commands like `/views`, `/steal` and bulk copy should wait. AI commands with uploaded images still work."
+  );
+
+  return lines.join("\n");
 }
 
 async function waitForRobloxSlot() {
@@ -5155,6 +5240,8 @@ function retryDelayFromResponse(res, attempt) {
 }
 
 async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
+  assertRobloxSafeModeAvailable();
+
   let lastText = "";
   let lastStatus = 0;
   const cookies = ROBLOX_COOKIES.length ? ROBLOX_COOKIES : [""];
@@ -5209,6 +5296,13 @@ async function fetchRobloxJson(url) {
   const text = await res.text();
 
   if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      markRobloxAuthProblem({
+        status: res.status,
+        url,
+        message: `Roblox denied JSON/API access with the current cookie/account: ${text.slice(0, 180)}`,
+      });
+    }
     throw new Error(`Roblox request failed (${res.status}): ${text.slice(0, 300)}`);
   }
 
@@ -9107,6 +9201,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_info",
     "admin_bulk_views",
     "admin_views_full",
+    "admin_roblox_status",
     "copiar",
     "steal",
     "sniper",
@@ -9243,6 +9338,7 @@ client.on("interactionCreate", async interaction => {
       "admin_post_info",
       "admin_bulk_views",
       "admin_views_full",
+      "admin_roblox_status",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Esse comando e reservado para a equipe.",
@@ -9957,6 +10053,22 @@ client.on("interactionCreate", async interaction => {
           `## Official Message Published\n` +
           `**Type:** ${type.replace(/_/g, " ")}\n` +
           `**Channel:** ${channel}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_roblox_status") {
+      const resetPause = interaction.options.getBoolean("reset_pause") || false;
+
+      if (resetPause) {
+        clearRobloxSafePause();
+      }
+
+      await interaction.reply({
+        content:
+          robloxStatusMessage() +
+          (resetPause ? "\n\n**Action:** Safe Mode pause cleared manually." : ""),
         flags: 64,
       });
       return;
