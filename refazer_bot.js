@@ -7247,6 +7247,10 @@ function hyper3dTriangleTarget(triangles) {
   return Math.max(1000, Math.min(3950, requested));
 }
 
+function shouldSendHyper3dTriangleTarget(triangles) {
+  return HYPER3D_USE_QUALITY_OVERRIDE || Boolean(Number(triangles));
+}
+
 function appendHyper3dOptions(form, { prompt, texture, triangles }) {
   const geometryInstructMode = HYPER3D_GEOMETRY_INSTRUCT_MODE.toLowerCase();
   form.append("tier", HYPER3D_TIER);
@@ -7254,7 +7258,7 @@ function appendHyper3dOptions(form, { prompt, texture, triangles }) {
   form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
   form.append("quality", HYPER3D_QUALITY);
   form.append("mesh_mode", HYPER3D_MESH_MODE);
-  if (HYPER3D_USE_QUALITY_OVERRIDE) {
+  if (shouldSendHyper3dTriangleTarget(triangles)) {
     form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
   }
   form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
@@ -7296,7 +7300,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
   console.log(
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
-    `mesh=${HYPER3D_MESH_MODE} triangles=${HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : "auto"} ` +
+    `mesh=${HYPER3D_MESH_MODE} triangles=${shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : "auto"} ` +
     `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} alpha=${HYPER3D_USE_ORIGINAL_ALPHA ? "yes" : "no"} ` +
     `prompt=${prompt ? "yes" : "no"}`
   );
@@ -7309,8 +7313,8 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     expected_multiview_order: imagePaths.length > 1 ? MULTIVIEW_UPLOAD_ORDER.map(publicViewName) : null,
     prompt: prompt || null,
     texture,
-    triangles: HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : null,
-    quality_override_enabled: HYPER3D_USE_QUALITY_OVERRIDE,
+    triangles: shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : null,
+    quality_override_enabled: shouldSendHyper3dTriangleTarget(triangles),
     tier: HYPER3D_TIER,
     quality: HYPER3D_QUALITY,
     mesh_mode: HYPER3D_MESH_MODE,
