@@ -8151,7 +8151,7 @@ function persistPendingMultiviewActions() {
 }
 
 function setPendingMultiviewAction(actionId, action) {
-  setPendingMultiviewAction(actionId, action);
+  pendingMultiviewActions.set(actionId, action);
   persistPendingMultiviewActions();
 }
 
