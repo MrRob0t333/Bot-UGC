@@ -11367,12 +11367,21 @@ client.on("interactionCreate", async interaction => {
   } catch (err) {
     console.error(err);
 
-    const message = "Erro ao processar o comando. Tente novamente ou chame o suporte.";
+    const message = "## Command failed\nSomething went wrong while processing this command. No charge was deducted if no final delivery happened.";
 
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp({ content: message, flags: 64 }).catch(() => {});
     } else {
       await interaction.reply({ content: message, flags: 64 }).catch(() => {});
+    }
+
+    if (userIsAdmin(interaction)) {
+      const diagnostic =
+        "## Admin diagnostic\n" +
+        `\`\`\`\n${String(err?.stack || err?.message || err).slice(0, 1800)}\n\`\`\``;
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({ content: diagnostic, flags: 64 }).catch(() => {});
+      }
     }
   }
 });
