@@ -10623,6 +10623,15 @@ client.on("interactionCreate", async interaction => {
           "## View Rendering Failed\n" +
           "I could not render this UGC. Check if the ID is valid or try another item."
         );
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.stack || err.message || err).slice(0, 1800)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
       }
       return;
     }
