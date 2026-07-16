@@ -3175,7 +3175,7 @@ function stripeUnitAmountFromBrl(brl, currencyCode = DEFAULT_CURRENCY) {
   return Math.max(50, Math.round(value * 100));
 }
 
-async function mercadoPagoRequest(endpoint, body) {
+async function mercadoPagoRequest(endpoint, body, options = {}) {
   if (!MERCADO_PAGO_ACCESS_TOKEN) {
     throw new Error("MERCADO_PAGO_ACCESS_TOKEN nao configurado.");
   }
@@ -3185,6 +3185,7 @@ async function mercadoPagoRequest(endpoint, body) {
     headers: {
       Authorization: `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`,
       "Content-Type": "application/json",
+      ...(options.headers || {}),
     },
     body: JSON.stringify(body),
   });
@@ -3554,6 +3555,71 @@ async function createMercadoPagoLifetimeSubscriptionPreference(request) {
   };
 
   return mercadoPagoRequest("/checkout/preferences", payload);
+}
+
+function mercadoPagoPayerEmailFor(request) {
+  const email = cleanEnv(request.meta?.email || request.email);
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email;
+  return `discord-${request.userId}@velvetugc.com`;
+}
+
+async function createMercadoPagoPixPayment(request) {
+  const payload = {
+    transaction_amount: Number(request.brl.toFixed(2)),
+    description: `${request.amount} Service Credits`,
+    payment_method_id: "pix",
+    external_reference: request.id,
+    payer: {
+      email: mercadoPagoPayerEmailFor(request),
+    },
+    metadata: {
+      type: "service_credits",
+      user_id: request.userId,
+      amount: request.amount,
+      request_id: request.id,
+    },
+    notification_url: MERCADO_PAGO_WEBHOOK_URL || undefined,
+  };
+
+  return mercadoPagoRequest("/v1/payments", payload, {
+    headers: {
+      "X-Idempotency-Key": request.id,
+    },
+  });
+}
+
+function mercadoPagoPixAttachments(payment, requestId) {
+  const base64 = payment?.point_of_interaction?.transaction_data?.qr_code_base64;
+  if (!base64) return [];
+
+  const buffer = Buffer.from(String(base64).replace(/^data:image\/\w+;base64,/, ""), "base64");
+  return [new AttachmentBuilder(buffer, { name: `${requestId}_pix_qr.png` })];
+}
+
+function formatMercadoPagoPixMessage({ request, priceLabel, payment }) {
+  const transactionData = payment?.point_of_interaction?.transaction_data || {};
+  const pixCode = transactionData.qr_code;
+  const ticketUrl = transactionData.ticket_url;
+
+  return [
+    "# Pix Checkout",
+    "Your order was created successfully.",
+    SERVICE_CREDITS_NOTE,
+    "",
+    uiLine("Order ID", `\`${request.id}\``),
+    uiLine("Package", formatTokenAmount(request.amount)),
+    uiLine("Price", uiMoney(priceLabel)),
+    uiLine("Status", "Awaiting Pix payment"),
+    "",
+    "## Pay with Pix",
+    pixCode
+      ? "Scan the QR Code below or copy and paste this Pix code in your bank app:"
+      : "Open the Mercado Pago Pix payment page below:",
+    pixCode ? `\`\`\`\n${pixCode}\n\`\`\`` : "",
+    ticketUrl ? `Payment page: ${ticketUrl}` : "",
+    "",
+    "Your Service Credits will be released automatically after Mercado Pago confirms the payment.",
+  ].filter(Boolean).join("\n");
 }
 
 function makeAffiliateCode(userId) {
@@ -9395,6 +9461,7 @@ client.on("interactionCreate", async interaction => {
       const priceLabel = formatCurrencyFromBrl(request.brl, currency);
       let paymentLink = null;
       let paymentProvider = "manual";
+      let pixPayment = null;
 
       if (requestedProvider === "stripe" && STRIPE_SECRET_KEY) {
         try {
@@ -9404,16 +9471,30 @@ client.on("interactionCreate", async interaction => {
         } catch (err) {
           console.error(err);
         }
-      } else if (requestedProvider.startsWith("mercadopago") && MERCADO_PAGO_ACCESS_TOKEN) {
+      } else if (requestedProvider === "mercadopago_pix" && MERCADO_PAGO_ACCESS_TOKEN) {
         try {
-          const preference = await createMercadoPagoPreference(request, {
-            defaultPaymentMethodId: requestedProvider === "mercadopago_pix" ? "pix" : null,
-          });
+          pixPayment = await createMercadoPagoPixPayment(request);
+          paymentProvider = paymentProviderLabel(requestedProvider);
+        } catch (err) {
+          console.error(err);
+        }
+      } else if (requestedProvider === "mercadopago" && MERCADO_PAGO_ACCESS_TOKEN) {
+        try {
+          const preference = await createMercadoPagoPreference(request);
           paymentLink = preference.init_point || preference.sandbox_init_point || null;
           paymentProvider = paymentProviderLabel(requestedProvider);
         } catch (err) {
           console.error(err);
         }
+      }
+
+      if (pixPayment) {
+        await interaction.reply({
+          content: formatMercadoPagoPixMessage({ request, priceLabel, payment: pixPayment }),
+          files: mercadoPagoPixAttachments(pixPayment, request.id),
+          flags: 64,
+        });
+        return;
       }
 
       await interaction.reply({
