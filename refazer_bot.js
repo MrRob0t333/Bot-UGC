@@ -449,6 +449,8 @@ const MULTIVIEW_VIEW_ALIASES = {
 };
 const MULTIVIEW_UPLOAD_ORDER = parseMultiviewUploadOrder(process.env.REFAZER_MULTIVIEW_UPLOAD_ORDER);
 const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
+const PENDING_MULTIVIEW_PATH = path.join(__dirname, "data", "pending_multiview_actions.json");
+const PENDING_MULTIVIEW_TTL_MS = 6 * 60 * 60 * 1000;
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error("Falta REFAZER_DISCORD_TOKEN, REFAZER_CLIENT_ID ou REFAZER_GUILD_ID no .env.");
@@ -8127,13 +8129,53 @@ function multiviewReviewAttachments(viewPaths) {
 
 function createPendingMultiviewAction(data) {
   const id = crypto.randomBytes(8).toString("hex");
-  pendingMultiviewActions.set(id, {
+  setPendingMultiviewAction(id, {
     id,
     used: false,
     createdAt: Date.now(),
     ...data,
   });
   return id;
+}
+
+function persistPendingMultiviewActions() {
+  try {
+    fs.mkdirSync(path.dirname(PENDING_MULTIVIEW_PATH), { recursive: true });
+    fs.writeFileSync(
+      PENDING_MULTIVIEW_PATH,
+      JSON.stringify(Object.fromEntries(pendingMultiviewActions), null, 2)
+    );
+  } catch (err) {
+    console.warn("Could not persist pending multiview actions:", err.message || err);
+  }
+}
+
+function setPendingMultiviewAction(actionId, action) {
+  setPendingMultiviewAction(actionId, action);
+  persistPendingMultiviewActions();
+}
+
+function deletePendingMultiviewAction(actionId) {
+  pendingMultiviewActions.delete(actionId);
+  persistPendingMultiviewActions();
+}
+
+function loadPendingMultiviewActions() {
+  if (!fs.existsSync(PENDING_MULTIVIEW_PATH)) return;
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(PENDING_MULTIVIEW_PATH, "utf8"));
+    const now = Date.now();
+    for (const [id, action] of Object.entries(raw || {})) {
+      if (!action || action.used) continue;
+      if (now - Number(action.createdAt || 0) > PENDING_MULTIVIEW_TTL_MS) continue;
+      pendingMultiviewActions.set(id, action);
+    }
+    persistPendingMultiviewActions();
+    console.log(`Loaded ${pendingMultiviewActions.size} pending multiview action(s).`);
+  } catch (err) {
+    console.warn("Could not load pending multiview actions:", err.message || err);
+  }
 }
 
 function multiviewReviewButtons(actionId) {
@@ -8266,7 +8308,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
 
   action.used = true;
   action.waitingTextureDecision = false;
-  pendingMultiviewActions.set(actionId, action);
+  setPendingMultiviewAction(actionId, action);
   console.log(
     `[Multiview] generation start action=${actionId} user=${interaction.user.id} ` +
     `texture=${action.texture} triangles=${action.triangles || "auto"} advanced_texture=${action.advancedTexture || "none"}`
@@ -8414,7 +8456,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   }).catch(() => {});
 
   console.log(`[Multiview] generation delivered action=${actionId} user=${interaction.user.id}`);
-  pendingMultiviewActions.delete(actionId);
+  deletePendingMultiviewAction(actionId);
 }
 
 function publicViewName(view) {
@@ -8725,6 +8767,7 @@ client.once("clientReady", async () => {
   console.log(`Bot laboratorio online como ${client.user.tag}`);
   console.log(`Model engine active: ${activeModelEngineLabel()}`);
   console.log(`Multiview upload order: ${MULTIVIEW_UPLOAD_ORDER.map(publicViewName).join(", ")}`);
+  loadPendingMultiviewActions();
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
   startWebhookServer();
@@ -8819,7 +8862,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       action.used = true;
-      pendingMultiviewActions.delete(actionId);
+      deletePendingMultiviewAction(actionId);
       await interaction.update({
         content: "## Multiview Request Cancelled\nNo Service Credits were charged.",
         components: [disableMultiviewReviewButtons(actionId, false)],
@@ -8862,10 +8905,10 @@ client.on("interactionCreate", async interaction => {
         !action.advancedTexturePrompted;
 
       if (shouldOfferAdvancedTexture) {
-        const extraAmount = brlToWalletAmount(advancedTextureConfig("basic").priceExtraBrl);
+        const extraAmount = brlToWalletTokens(advancedTextureConfig("basic").priceExtraBrl);
         action.advancedTexturePrompted = true;
         action.waitingTextureDecision = true;
-        pendingMultiviewActions.set(actionId, action);
+        setPendingMultiviewAction(actionId, action);
         await interaction.reply({
           content:
             "## Optional Advanced Texture\n" +
