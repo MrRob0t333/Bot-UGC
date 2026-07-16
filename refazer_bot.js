@@ -183,6 +183,24 @@ const MODEL_QUALITY_CONFIG = {
   },
 };
 
+const ADVANCED_TEXTURE_CONFIG = {
+  none: {
+    label: "Off",
+    resolution: null,
+    priceExtraBrl: 0,
+  },
+  basic: {
+    label: "Advanced Texture Basic",
+    resolution: "Basic",
+    priceExtraBrl: Number(process.env.REFAZER_ADVANCED_TEXTURE_BASIC_EXTRA_BRL || 3),
+  },
+  high: {
+    label: "Advanced Texture High",
+    resolution: "High",
+    priceExtraBrl: Number(process.env.REFAZER_ADVANCED_TEXTURE_HIGH_EXTRA_BRL || 5),
+  },
+};
+
 const PRICE_CONFIG = {
   baseFree: 30,
   baseBasic: 25,
@@ -1645,6 +1663,17 @@ const commands = [
           { name: "Sharper Details (+R$1)", value: "high" }
         )
     )
+    .addStringOption(o =>
+      o
+        .setName("advanced_texture")
+        .setDescription("Optional paid texture pass using one selected reference image")
+        .setRequired(false)
+        .addChoices(
+          { name: "Off", value: "none" },
+          { name: "Basic (+R$3)", value: "basic" },
+          { name: "High (+R$5)", value: "high" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1923,6 +1952,15 @@ function modelQualityConfig(value) {
   return MODEL_QUALITY_CONFIG[normalizeModelQuality(value)] || MODEL_QUALITY_CONFIG.medium;
 }
 
+function normalizeAdvancedTexture(value) {
+  const key = cleanEnv(value || "none").toLowerCase().replace(/[\s-]+/g, "_");
+  return ADVANCED_TEXTURE_CONFIG[key] ? key : "none";
+}
+
+function advancedTextureConfig(value) {
+  return ADVANCED_TEXTURE_CONFIG[normalizeAdvancedTexture(value)] || ADVANCED_TEXTURE_CONFIG.none;
+}
+
 function multiviewExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteMultiviewExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumMultiviewExtra;
@@ -2047,10 +2085,11 @@ function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   return cost;
 }
 
-function calculatePrice(interaction, { mode, texture, triangles, enhancement, modelQuality }) {
+function calculatePrice(interaction, { mode, texture, triangles, enhancement, modelQuality, advancedTexture }) {
   const plan = userRemakePlan(interaction);
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   const qualityConfig = modelQualityConfig(modelQuality);
+  const advancedTextureCfg = advancedTextureConfig(advancedTexture);
   let price = remakeBasePriceForPlan(plan);
   const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(price)}`];
   const promoExtraLines = [];
@@ -2093,6 +2132,14 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement, mo
     promoExtraBrl += qualityConfig.priceExtraBrl;
   }
 
+  if (advancedTextureCfg.priceExtraBrl > 0) {
+    price += advancedTextureCfg.priceExtraBrl;
+    const line = `${advancedTextureCfg.label}: +${formatWalletAmount(advancedTextureCfg.priceExtraBrl)}`;
+    lines.push(line);
+    promoExtraLines.push(line);
+    promoExtraBrl += advancedTextureCfg.priceExtraBrl;
+  }
+
   const estimatedCost = estimatedApiCostBrl({ mode, texture, lowPoly, enhancement });
   const minimumSafePrice = Math.ceil(estimatedCost + API_COST_ESTIMATE_BRL.minProfit);
 
@@ -2112,6 +2159,7 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement, mo
     promoExtraBrl,
     promoExtraLines,
     modelQuality: normalizeModelQuality(modelQuality),
+    advancedTexture: normalizeAdvancedTexture(advancedTexture),
     apiCredits: apiCreditsFor({ mode, texture, lowPoly }),
     estimatedApiCostBrl: estimatedCost,
     estimatedProfitBrl: price - estimatedCost,
@@ -7514,9 +7562,68 @@ async function downloadHyper3dResults({ taskId, outputDir }) {
   };
 }
 
-async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", texture, triangles, tempDir, textureTone, textureAdjustments, onProgress, mode = "image", useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
+async function generateTextureOnlyWithHyper3d({ modelPath, imagePath, texture, resolution, tempDir, textureTone, textureAdjustments, onProgress }) {
+  if (!modelPath || !fs.existsSync(modelPath)) throw new Error("Advanced texture requires a generated model file.");
+  if (!imagePath || !fs.existsSync(imagePath)) throw new Error("Advanced texture requires a selected reference image.");
+
+  const outputDir = path.join(tempDir, "hyper3d_texture_only");
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const form = new FormData();
+  form.append("image", new Blob([fs.readFileSync(imagePath)], { type: getImageContentType(imagePath) }), path.basename(imagePath));
+  form.append("model", new Blob([fs.readFileSync(modelPath)], { type: "model/gltf-binary" }), path.basename(modelPath));
+  form.append("geometry_file_format", "glb");
+  form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
+  form.append("resolution", resolution || "Basic");
+  form.append("reference_scale", "1");
+
+  const json = await hyper3dRequest("/rodin_texture_only", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!json?.uuid || !json?.jobs?.subscription_key) {
+    throw new Error("Hyper3D texture pass did not return uuid/subscription_key.");
+  }
+
+  console.log(
+    `[Hyper3D] texture task created uuid=${json.uuid} source=${path.basename(imagePath)} ` +
+    `resolution=${resolution || "Basic"} material=${texture === "none" ? "None" : HYPER3D_MATERIAL}`
+  );
+
+  fs.writeFileSync(path.join(outputDir, "hyper3d_texture_task.json"), JSON.stringify({
+    uuid: json.uuid,
+    subscription_key: json.jobs.subscription_key,
+    source_image: path.basename(imagePath),
+    source_model: path.basename(modelPath),
+    resolution: resolution || "Basic",
+    material: texture === "none" ? "None" : HYPER3D_MATERIAL,
+  }, null, 2));
+
+  if (onProgress) await onProgress({ status: "texturing", progress: 96 });
+  await pollHyper3dTask(json.jobs.subscription_key, onProgress);
+  const downloaded = await downloadHyper3dResults({ taskId: json.uuid, outputDir });
+
+  const modelPaths = downloaded.modelPaths?.length ? [...downloaded.modelPaths] : [downloaded.modelPath];
+  for (const outputModelPath of modelPaths) {
+    if (path.extname(outputModelPath).toLowerCase() === ".glb") {
+      optimizeGlbForRoblox(outputModelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
+      ensureModelFitsDiscord(outputModelPath, textureTone, textureAdjustments);
+    }
+  }
+
+  return {
+    modelPath: modelPaths[0],
+    modelPaths,
+    taskId: json.uuid,
+    subscriptionKey: json.jobs.subscription_key,
+  };
+}
+
+async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", texture, triangles, tempDir, textureTone, textureAdjustments, onProgress, mode = "image", useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null, textureSourceImagePath = null, advancedTexture = "none" }) {
   const outputDir = path.join(tempDir, "hyper3d_ai");
   fs.mkdirSync(outputDir, { recursive: true });
+  const advancedTextureCfg = advancedTextureConfig(advancedTexture);
 
   const task = await createHyper3dTask({
     imagePaths,
@@ -7559,6 +7666,34 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
     const pbrPath = modelPaths.find(file => /pbr/i.test(path.basename(file || ""))) || modelPaths[0];
     const robloxPath = createRobloxBasicModelCopy(pbrPath, textureTone, textureAdjustments);
     if (robloxPath) modelPaths.push(robloxPath);
+  }
+
+  if (advancedTextureCfg.resolution && textureSourceImagePath) {
+    const sourceModelPath = modelPaths.find(file => /pbr/i.test(path.basename(file || ""))) || modelPaths[0];
+    const textured = await generateTextureOnlyWithHyper3d({
+      modelPath: sourceModelPath,
+      imagePath: textureSourceImagePath,
+      texture,
+      resolution: advancedTextureCfg.resolution,
+      tempDir,
+      textureTone,
+      textureAdjustments,
+      onProgress,
+    });
+
+    return {
+      skipped: false,
+      official: true,
+      provider: "hyper3d",
+      taskId: textured.taskId,
+      subscriptionKey: textured.subscriptionKey,
+      baseTaskId: task.taskId,
+      baseSubscriptionKey: task.subscriptionKey,
+      consumedCredit: (HYPER3D_HIGH_PACK ? 1.5 : 0.5) + 0.5,
+      sourceImage: textureSourceImagePath ? path.basename(textureSourceImagePath) : null,
+      modelPath: textured.modelPath,
+      modelPaths: textured.modelPaths,
+    };
   }
 
   return {
@@ -7967,6 +8102,9 @@ function formatGenerationProgress({ status, progress }) {
   if (status === "finalizing") {
     return "Finalizing Roblox-ready file...";
   }
+  if (status === "texturing") {
+    return "Applying advanced texture reference...";
+  }
 
   return `Generation: ${status || "processing"} ${progress || 0}%`;
 }
@@ -8004,6 +8142,27 @@ function multiviewReviewButtons(actionId) {
       .setCustomId(`multiview_cancel:${actionId}`)
       .setLabel("Cancel")
       .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function multiviewTextureSourceButtons(actionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`multiview_texture_source:${actionId}:frente`)
+      .setLabel("Use Front")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`multiview_texture_source:${actionId}:direita`)
+      .setLabel("Use Right")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`multiview_texture_source:${actionId}:costas`)
+      .setLabel("Use Back")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`multiview_texture_source:${actionId}:esquerda`)
+      .setLabel("Use Left")
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
@@ -8394,7 +8553,38 @@ client.on("messageCreate", async message => {
 
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
-    const [kind, actionId] = String(interaction.customId || "").split(":");
+    const [kind, actionId, extra] = String(interaction.customId || "").split(":");
+    if (kind === "multiview_texture_source") {
+      const action = pendingMultiviewActions.get(actionId);
+      if (!action) {
+        await interaction.reply({ content: "This multiview request expired. Send `/multiview` again.", flags: 64 });
+        return;
+      }
+
+      if (action.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who created this request can choose the texture source.", flags: 64 });
+        return;
+      }
+
+      if (action.used) {
+        await interaction.reply({ content: "This multiview request is already being processed.", flags: 64 });
+        return;
+      }
+
+      if (!MULTIVIEW_VIEW_ORDER.includes(extra) || !action.viewPaths[extra]) {
+        await interaction.reply({ content: "Invalid texture source.", flags: 64 });
+        return;
+      }
+
+      action.textureSource = extra;
+      pendingMultiviewActions.set(actionId, action);
+      await interaction.reply({
+        content: `Texture source selected: **${publicViewName(extra)}**.`,
+        flags: 64,
+      });
+      return;
+    }
+
     if (kind === "multiview_cancel") {
       const action = pendingMultiviewActions.get(actionId);
       if (!action) {
@@ -8433,6 +8623,15 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      const advancedTextureCfg = advancedTextureConfig(action.advancedTexture);
+      if (advancedTextureCfg.resolution && (!action.textureSource || !action.viewPaths[action.textureSource])) {
+        await interaction.reply({
+          content: "## Choose Texture Source\nSelect **Use Front**, **Use Right**, **Use Back** or **Use Left** before generating.",
+          flags: 64,
+        });
+        return;
+      }
+
       action.used = true;
       pendingMultiviewActions.set(actionId, action);
       await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
@@ -8449,6 +8648,7 @@ client.on("interactionCreate", async interaction => {
         triangles: action.triangles,
         enhancement: action.enhancement,
         modelQuality: action.modelQuality,
+        advancedTexture: action.advancedTexture,
       });
 
       const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
@@ -8492,6 +8692,8 @@ client.on("interactionCreate", async interaction => {
             mode: "multiview",
             useAlpha: action.useAlpha,
             modelQuality: action.modelQuality,
+            advancedTexture: action.advancedTexture,
+            textureSourceImagePath: advancedTextureCfg.resolution ? action.viewPaths[action.textureSource] : null,
           });
         } else if (shouldUseTripo()) {
           model = await generateMultiviewWithOfficialTripo({
@@ -10630,6 +10832,8 @@ client.on("interactionCreate", async interaction => {
         "medium"
       );
       const qualityConfig = modelQualityConfig(modelQuality);
+      const advancedTexture = normalizeAdvancedTexture(interaction.options.getString("advanced_texture") || "none");
+      const advancedTextureCfg = advancedTextureConfig(advancedTexture);
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
@@ -10647,6 +10851,7 @@ client.on("interactionCreate", async interaction => {
         triangles,
         enhancement,
         modelQuality,
+        advancedTexture,
       });
 
       const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
@@ -10708,12 +10913,15 @@ client.on("interactionCreate", async interaction => {
         textureAdjustments,
         useAlpha,
         modelQuality,
+        advancedTexture,
+        textureSource: advancedTextureCfg.resolution ? null : "none",
       });
 
       await interaction.editReply({
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
           `\n**Detail level:** ${qualityConfig.label}` +
+          `\n**Advanced texture:** ${advancedTextureCfg.label}` +
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
           `\n**AI alpha:** ${useAlpha ? "On" : "Off"}` +
@@ -10723,10 +10931,15 @@ client.on("interactionCreate", async interaction => {
             .filter(view => viewPaths[view])
             .map((view, index) => `**${index + 1}. ${publicViewName(view)}:** \`${publicViewFileLabel(view, viewPaths[view])}\``)
             .join("\n") +
+          (advancedTextureCfg.resolution
+            ? "\n\n**Texture source:** choose which reference image should guide the advanced texture before generating."
+            : "") +
           "\n\n**Next step:** review every side. If everything is correct, click **Generate Model**.\n" +
           "**No Service Credits are charged until the final model is delivered.**",
         files: multiviewReviewAttachments(viewPaths),
-        components: [multiviewReviewButtons(actionId)],
+        components: advancedTextureCfg.resolution
+          ? [multiviewTextureSourceButtons(actionId), multiviewReviewButtons(actionId)]
+          : [multiviewReviewButtons(actionId)],
       });
       return;
     }
