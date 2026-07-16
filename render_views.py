@@ -199,7 +199,7 @@ scene = bpy.context.scene
 render_resolution = int(os.environ.get("REFAZER_RENDER_RESOLUTION", "768"))
 scene.render.resolution_x = render_resolution
 scene.render.resolution_y = render_resolution
-scene.render.film_transparent = False
+scene.render.film_transparent = os.environ.get("REFAZER_RENDER_TRANSPARENT_BACKGROUND", "true").lower() not in {"0", "false", "no", "off"}
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
 

@@ -90,7 +90,7 @@ const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") ===
 const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium");
 const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE);
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
-const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
+const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "true") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const MODEL_DELIVERY_MODE = cleanEnv(process.env.REFAZER_MODEL_DELIVERY_MODE, "channel").toLowerCase();
@@ -7297,7 +7297,8 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
     `mesh=${HYPER3D_MESH_MODE} triangles=${HYPER3D_USE_QUALITY_OVERRIDE ? hyper3dTriangleTarget(triangles) : "auto"} ` +
-    `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} prompt=${prompt ? "yes" : "no"}`
+    `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} alpha=${HYPER3D_USE_ORIGINAL_ALPHA ? "yes" : "no"} ` +
+    `prompt=${prompt ? "yes" : "no"}`
   );
 
   fs.writeFileSync(path.join(outputDir, "hyper3d_task.json"), JSON.stringify({
