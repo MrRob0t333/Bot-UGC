@@ -560,6 +560,16 @@ const commands = [
     )
     .addStringOption(o =>
       o
+        .setName("advanced_texture_prompt")
+        .setDescription("Show the optional advanced texture offer before generation")
+        .setRequired(false)
+        .addChoices(
+          { name: "Show", value: "show" },
+          { name: "Hide", value: "hide" }
+        )
+    )
+    .addStringOption(o =>
+      o
         .setName("texture_tone")
         .setDescription("Default final texture tone for Roblox")
         .setRequired(false)
@@ -1661,17 +1671,6 @@ const commands = [
         .addChoices(
           { name: "Standard", value: "medium" },
           { name: "Sharper Details (+R$1)", value: "high" }
-        )
-    )
-    .addStringOption(o =>
-      o
-        .setName("advanced_texture")
-        .setDescription("Optional paid texture pass using one selected reference image")
-        .setRequired(false)
-        .addChoices(
-          { name: "Off", value: "none" },
-          { name: "Basic (+R$3)", value: "basic" },
-          { name: "High (+R$5)", value: "high" }
         )
     )
     .toJSON(),
@@ -2861,6 +2860,7 @@ function walletPreferences(userId) {
     currency: user.currency || DEFAULT_CURRENCY,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
+    advancedTexturePrompt: user.advancedTexturePrompt !== false,
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -2880,6 +2880,9 @@ function updateWalletPreferences(userId, updates) {
       ...updates.textureAdjustments,
     });
   }
+  if (typeof updates.advancedTexturePrompt === "boolean") {
+    user.advancedTexturePrompt = updates.advancedTexturePrompt;
+  }
   if (updates.renderSettings) {
     user.renderSettings = {
       ...DEFAULT_RENDER_SETTINGS,
@@ -2893,6 +2896,7 @@ function updateWalletPreferences(userId, updates) {
     currency: user.currency,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
+    advancedTexturePrompt: user.advancedTexturePrompt !== false,
     renderSettings: {
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
@@ -8145,25 +8149,37 @@ function multiviewReviewButtons(actionId) {
   );
 }
 
-function multiviewTextureSourceButtons(actionId) {
-  return new ActionRowBuilder().addComponents(
+function multiviewAdvancedTextureOfferButtons(actionId) {
+  return [
+    new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`multiview_texture_source:${actionId}:frente`)
+      .setCustomId(`multiview_texture_offer:${actionId}:frente`)
       .setLabel("Use Front")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`multiview_texture_source:${actionId}:direita`)
+      .setCustomId(`multiview_texture_offer:${actionId}:direita`)
       .setLabel("Use Right")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`multiview_texture_source:${actionId}:costas`)
+      .setCustomId(`multiview_texture_offer:${actionId}:costas`)
       .setLabel("Use Back")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId(`multiview_texture_source:${actionId}:esquerda`)
+      .setCustomId(`multiview_texture_offer:${actionId}:esquerda`)
       .setLabel("Use Left")
       .setStyle(ButtonStyle.Primary)
-  );
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`multiview_texture_offer:${actionId}:skip`)
+        .setLabel("No, generate normally")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`multiview_texture_offer:${actionId}:never`)
+        .setLabel("No, never show again")
+        .setStyle(ButtonStyle.Danger)
+    ),
+  ];
 }
 
 function disableMultiviewReviewButtons(actionId, generated = false) {
@@ -8209,6 +8225,189 @@ async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath
     files: publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]),
   });
   return { deliveredInDm: false, message: channelMessage };
+}
+
+async function startPendingMultiviewGeneration(interaction, actionId, action, { updateMode = "review" } = {}) {
+  if (!modelGenerationIsConfigured()) {
+    await interaction.reply({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(async () => {
+      await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(() => {});
+    });
+    return;
+  }
+
+  const advancedTextureCfg = advancedTextureConfig(action.advancedTexture);
+  const quote = calculatePrice(interaction, {
+    mode: "multiview",
+    texture: action.texture,
+    triangles: action.triangles,
+    enhancement: action.enhancement,
+    modelQuality: action.modelQuality,
+    advancedTexture: action.advancedTexture,
+  });
+
+  const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
+  if (balanceBefore < quote.walletAmount) {
+    const content = formatInsufficientBalanceMessage({
+      service: "Multiview AI model",
+      price: quote.walletAmount,
+      balance: balanceBefore,
+    });
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content, flags: 64 }).catch(() => {});
+    } else {
+      await interaction.reply({ content, flags: 64 }).catch(async () => {
+        await interaction.followUp({ content, flags: 64 }).catch(() => {});
+      });
+    }
+    return;
+  }
+
+  action.used = true;
+  action.waitingTextureDecision = false;
+  pendingMultiviewActions.set(actionId, action);
+
+  if (updateMode === "offer") {
+    await interaction.update({
+      content: "## Generation Started\nI will deliver the final model here when it is ready.",
+      components: [],
+    });
+  } else {
+    await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
+    await interaction.followUp({ content: "## Generation Started\nI will deliver the final model here when it is ready.", flags: 64 });
+  }
+
+  let progressMessage = null;
+  let model = null;
+
+  try {
+    const onProgress = async ({ status, progress }) => {
+      const content = formatGenerationProgress({ status, progress });
+      if (progressMessage) {
+        await progressMessage.edit(content).catch(async () => {
+          progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
+        });
+      } else {
+        progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
+      }
+    };
+
+    if (shouldUseHyper3d()) {
+      model = await generateWithOfficialHyper3d({
+        imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
+        prompt: "",
+        texture: action.texture,
+        triangles: action.triangles,
+        tempDir: action.tempDir,
+        textureTone: action.textureTone,
+        textureAdjustments: action.textureAdjustments,
+        onProgress,
+        mode: "multiview",
+        useAlpha: action.useAlpha,
+        modelQuality: action.modelQuality,
+        advancedTexture: action.advancedTexture,
+        textureSourceImagePath: advancedTextureCfg.resolution ? action.viewPaths[action.textureSource] : null,
+      });
+    } else if (shouldUseTripo()) {
+      model = await generateMultiviewWithOfficialTripo({
+        viewPaths: action.viewPaths,
+        texture: action.texture,
+        triangles: action.triangles,
+        tempDir: action.tempDir,
+        textureTone: action.textureTone,
+        textureAdjustments: action.textureAdjustments,
+        onProgress,
+      });
+    } else {
+      throw new Error(`Model provider is not configured: ${activeModelEngineLabel()}`);
+    }
+  } catch (err) {
+    console.error(err);
+    await interaction.followUp({
+      content:
+        "## Model Generation Failed\n" +
+        "No charge was deducted because no final model was delivered.",
+      flags: 64,
+    });
+
+    if (userIsAdmin(interaction)) {
+      await interaction.followUp({
+        content:
+          "## Admin diagnostic\n" +
+          `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+        flags: 64,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
+  if (balanceBeforeDelivery < quote.walletAmount) {
+    await interaction.followUp({
+      content: formatInsufficientBalanceMessage({
+        service: "Multiview AI model",
+        price: quote.walletAmount,
+        balance: balanceBeforeDelivery,
+      }),
+      flags: 64,
+    });
+    return;
+  }
+
+  let delivery;
+  try {
+    delivery = await deliverModelPrivatelyOrFallback(interaction, {
+      content:
+        "## Final Model Generated\n" +
+        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+        "**Remaining balance:** updating...",
+      modelPath: model.modelPath,
+      modelPaths: model.modelPaths,
+    });
+  } catch (err) {
+    console.error(err);
+    await interaction.followUp({
+      content:
+        "## Model Delivery Failed\n" +
+        "No charge was deducted because the final model could not be delivered.",
+      flags: 64,
+    });
+    return;
+  }
+
+  const debit = removeWalletBalance({
+    userId: interaction.user.id,
+    amount: quote.walletAmount,
+    actorId: client.user.id,
+    reason: "Modelo multiview gerado",
+    meta: { command: "multiview_button", serviceKey: "multiview", priceBrl: quote.price },
+  });
+
+  if (debit.ok && debit.paidWithWallet > 0) {
+    creditAffiliateServiceCommission({
+      buyerId: interaction.user.id,
+      walletAmount: debit.paidWithWallet,
+      priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
+      source: "remake_multiview",
+      actorId: client.user.id,
+      meta: { mode: "multiview" },
+    });
+  }
+
+  await delivery.message.edit({
+    content:
+      "## Final Model Generated\n" +
+      `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+      `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+  }).catch(() => {});
+
+  await interaction.followUp({
+    content: delivery.deliveredInDm
+      ? "## Delivered Privately\nYour final model was sent to your DMs."
+      : "## Delivered\nYour final model was delivered in this channel because your DMs are closed.",
+    flags: 64,
+  }).catch(() => {});
+
+  pendingMultiviewActions.delete(actionId);
 }
 
 function publicViewName(view) {
@@ -8554,7 +8753,7 @@ client.on("messageCreate", async message => {
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
     const [kind, actionId, extra] = String(interaction.customId || "").split(":");
-    if (kind === "multiview_texture_source") {
+    if (kind === "multiview_texture_offer") {
       const action = pendingMultiviewActions.get(actionId);
       if (!action) {
         await interaction.reply({ content: "This multiview request expired. Send `/multiview` again.", flags: 64 });
@@ -8562,7 +8761,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (action.userId !== interaction.user.id) {
-        await interaction.reply({ content: "Only the user who created this request can choose the texture source.", flags: 64 });
+        await interaction.reply({ content: "Only the user who created this request can choose this option.", flags: 64 });
         return;
       }
 
@@ -8571,17 +8770,32 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      if (extra === "never") {
+        updateWalletPreferences(interaction.user.id, { advancedTexturePrompt: false });
+        action.advancedTexture = "none";
+        action.textureSource = "none";
+        action.waitingTextureDecision = false;
+        await startPendingMultiviewGeneration(interaction, actionId, action, { updateMode: "offer" });
+        return;
+      }
+
+      if (extra === "skip") {
+        action.advancedTexture = "none";
+        action.textureSource = "none";
+        action.waitingTextureDecision = false;
+        await startPendingMultiviewGeneration(interaction, actionId, action, { updateMode: "offer" });
+        return;
+      }
+
       if (!MULTIVIEW_VIEW_ORDER.includes(extra) || !action.viewPaths[extra]) {
         await interaction.reply({ content: "Invalid texture source.", flags: 64 });
         return;
       }
 
+      action.advancedTexture = "basic";
       action.textureSource = extra;
-      pendingMultiviewActions.set(actionId, action);
-      await interaction.reply({
-        content: `Texture source selected: **${publicViewName(extra)}**.`,
-        flags: 64,
-      });
+      action.waitingTextureDecision = false;
+      await startPendingMultiviewGeneration(interaction, actionId, action, { updateMode: "offer" });
       return;
     }
 
@@ -8623,179 +8837,41 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const advancedTextureCfg = advancedTextureConfig(action.advancedTexture);
-      if (advancedTextureCfg.resolution && (!action.textureSource || !action.viewPaths[action.textureSource])) {
+      if (action.waitingTextureDecision) {
         await interaction.reply({
-          content: "## Choose Texture Source\nSelect **Use Front**, **Use Right**, **Use Back** or **Use Left** before generating.",
+          content: "## Choose Texture Option\nUse the Advanced Texture prompt already shown above, or choose **No, generate normally**.",
           flags: 64,
         });
         return;
       }
 
-      action.used = true;
-      pendingMultiviewActions.set(actionId, action);
-      await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
-      await interaction.followUp({ content: "## Generation Started\nI will deliver the final model here when it is ready.", flags: 64 });
+      const prefs = walletPreferences(interaction.user.id);
+      const shouldOfferAdvancedTexture =
+        shouldUseHyper3d() &&
+        action.texture !== "none" &&
+        action.advancedTexture === "none" &&
+        action.textureSource === "none" &&
+        prefs.advancedTexturePrompt !== false &&
+        !action.advancedTexturePrompted;
 
-      if (!modelGenerationIsConfigured()) {
-        await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 });
-        return;
-      }
-
-      const quote = calculatePrice(interaction, {
-        mode: "multiview",
-        texture: action.texture,
-        triangles: action.triangles,
-        enhancement: action.enhancement,
-        modelQuality: action.modelQuality,
-        advancedTexture: action.advancedTexture,
-      });
-
-      const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
-      if (balanceBefore < quote.walletAmount) {
-        await interaction.followUp({
-          content: formatInsufficientBalanceMessage({
-            service: "Multiview AI model",
-            price: quote.walletAmount,
-            balance: balanceBefore,
-          }),
-          flags: 64,
-        });
-        return;
-      }
-
-      let progressMessage = null;
-      let model = null;
-
-      try {
-        const onProgress = async ({ status, progress }) => {
-          const content = formatGenerationProgress({ status, progress });
-          if (progressMessage) {
-            await progressMessage.edit(content).catch(async () => {
-              progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
-            });
-          } else {
-            progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
-          }
-        };
-
-        if (shouldUseHyper3d()) {
-          model = await generateWithOfficialHyper3d({
-            imagePaths: MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths[view]).filter(Boolean),
-            prompt: "",
-            texture: action.texture,
-            triangles: action.triangles,
-            tempDir: action.tempDir,
-            textureTone: action.textureTone,
-            textureAdjustments: action.textureAdjustments,
-            onProgress,
-            mode: "multiview",
-            useAlpha: action.useAlpha,
-            modelQuality: action.modelQuality,
-            advancedTexture: action.advancedTexture,
-            textureSourceImagePath: advancedTextureCfg.resolution ? action.viewPaths[action.textureSource] : null,
-          });
-        } else if (shouldUseTripo()) {
-          model = await generateMultiviewWithOfficialTripo({
-            viewPaths: action.viewPaths,
-            texture: action.texture,
-            triangles: action.triangles,
-            tempDir: action.tempDir,
-            textureTone: action.textureTone,
-            textureAdjustments: action.textureAdjustments,
-            onProgress,
-          });
-        } else {
-          throw new Error(`Model provider is not configured: ${activeModelEngineLabel()}`);
-        }
-      } catch (err) {
-        console.error(err);
-        await interaction.followUp({
+      if (shouldOfferAdvancedTexture) {
+        const extraAmount = brlToWalletAmount(advancedTextureConfig("basic").priceExtraBrl);
+        action.advancedTexturePrompted = true;
+        action.waitingTextureDecision = true;
+        pendingMultiviewActions.set(actionId, action);
+        await interaction.reply({
           content:
-            "## Model Generation Failed\n" +
-            "No charge was deducted because no final model was delivered.",
-          flags: 64,
-        });
-
-        if (userIsAdmin(interaction)) {
-          await interaction.followUp({
-            content:
-              "## Admin diagnostic\n" +
-              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
-            flags: 64,
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, "multiview");
-      if (balanceBeforeDelivery < quote.walletAmount) {
-        await interaction.followUp({
-          content: formatInsufficientBalanceMessage({
-            service: "Multiview AI model",
-            price: quote.walletAmount,
-            balance: balanceBeforeDelivery,
-          }),
+            "## Optional Advanced Texture\n" +
+            "Small logos, hearts and printed details can sometimes disappear. Advanced Texture uses **one** reference image as the texture guide before delivery.\n\n" +
+            `**Extra price:** ${formatTokenAmount(extraAmount)}\n\n` +
+            "Choose the side with the most important visible texture, or skip and generate normally.",
+          components: multiviewAdvancedTextureOfferButtons(actionId),
           flags: 64,
         });
         return;
       }
 
-      let delivery;
-      try {
-        delivery = await deliverModelPrivatelyOrFallback(interaction, {
-          content:
-            "## Final Model Generated\n" +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            "**Remaining balance:** updating...",
-          modelPath: model.modelPath,
-          modelPaths: model.modelPaths,
-        });
-      } catch (err) {
-        console.error(err);
-        await interaction.followUp({
-          content:
-            "## Model Delivery Failed\n" +
-            "No charge was deducted because the final model could not be delivered.",
-          flags: 64,
-        });
-        return;
-      }
-
-      const debit = removeWalletBalance({
-        userId: interaction.user.id,
-        amount: quote.walletAmount,
-        actorId: client.user.id,
-        reason: "Modelo multiview gerado",
-        meta: { command: "multiview_button", serviceKey: "multiview", priceBrl: quote.price },
-      });
-
-      if (debit.ok && debit.paidWithWallet > 0) {
-        creditAffiliateServiceCommission({
-          buyerId: interaction.user.id,
-          walletAmount: debit.paidWithWallet,
-          priceBrl: debit.paidWithWallet / WALLET_TOKENS_PER_BRL,
-          source: "remake_multiview",
-          actorId: client.user.id,
-          meta: { mode: "multiview" },
-        });
-      }
-
-      await delivery.message.edit({
-        content:
-          "## Final Model Generated\n" +
-          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
-      }).catch(() => {});
-
-      await interaction.followUp({
-        content: delivery.deliveredInDm
-          ? "## Delivered Privately\nYour final model was sent to your DMs."
-          : "## Delivered\nYour final model was delivered in this channel because your DMs are closed.",
-        flags: 64,
-      }).catch(() => {});
-
-      pendingMultiviewActions.delete(actionId);
+      await startPendingMultiviewGeneration(interaction, actionId, action, { updateMode: "review" });
       return;
     }
 
@@ -8974,6 +9050,7 @@ client.on("interactionCreate", async interaction => {
       const renderRoughness = interaction.options.getNumber("render_roughness");
       const renderExposure = interaction.options.getNumber("render_exposure");
       const renderLightPower = interaction.options.getNumber("render_light_power");
+      const advancedTexturePrompt = interaction.options.getString("advanced_texture_prompt");
 
       if (renderLighting) renderUpdates.lighting = renderLighting;
       if (renderIor !== null) renderUpdates.ior = renderIor;
@@ -8992,6 +9069,7 @@ client.on("interactionCreate", async interaction => {
           }
           : null,
         renderSettings: Object.keys(renderUpdates).length ? normalizeRenderSettings(renderUpdates) : null,
+        advancedTexturePrompt: advancedTexturePrompt ? advancedTexturePrompt === "show" : undefined,
       });
       const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
 
@@ -9003,6 +9081,7 @@ client.on("interactionCreate", async interaction => {
           `**Texture tone:** ${textureToneSummary(prefs.textureTone)}\n\n` +
           `**Texture controls:** ${textureAdjustmentsSummary(prefs.textureAdjustments)}\n\n` +
           `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
+          `**Advanced texture offer:** ${prefs.advancedTexturePrompt ? "Shown before generation" : "Hidden"}\n\n` +
           `Payment previews will use **${prefs.currency}**. Bot messages will follow your language preference when available.`,
         flags: 64,
       });
@@ -10832,8 +10911,7 @@ client.on("interactionCreate", async interaction => {
         "medium"
       );
       const qualityConfig = modelQualityConfig(modelQuality);
-      const advancedTexture = normalizeAdvancedTexture(interaction.options.getString("advanced_texture") || "none");
-      const advancedTextureCfg = advancedTextureConfig(advancedTexture);
+      const advancedTexture = "none";
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
@@ -10914,14 +10992,15 @@ client.on("interactionCreate", async interaction => {
         useAlpha,
         modelQuality,
         advancedTexture,
-        textureSource: advancedTextureCfg.resolution ? null : "none",
+        textureSource: "none",
+        advancedTexturePrompted: false,
+        waitingTextureDecision: false,
       });
 
       await interaction.editReply({
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
           `\n**Detail level:** ${qualityConfig.label}` +
-          `\n**Advanced texture:** ${advancedTextureCfg.label}` +
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
           `\n**AI alpha:** ${useAlpha ? "On" : "Off"}` +
@@ -10931,15 +11010,10 @@ client.on("interactionCreate", async interaction => {
             .filter(view => viewPaths[view])
             .map((view, index) => `**${index + 1}. ${publicViewName(view)}:** \`${publicViewFileLabel(view, viewPaths[view])}\``)
             .join("\n") +
-          (advancedTextureCfg.resolution
-            ? "\n\n**Texture source:** choose which reference image should guide the advanced texture before generating."
-            : "") +
           "\n\n**Next step:** review every side. If everything is correct, click **Generate Model**.\n" +
           "**No Service Credits are charged until the final model is delivered.**",
         files: multiviewReviewAttachments(viewPaths),
-        components: advancedTextureCfg.resolution
-          ? [multiviewTextureSourceButtons(actionId), multiviewReviewButtons(actionId)]
-          : [multiviewReviewButtons(actionId)],
+        components: [multiviewReviewButtons(actionId)],
       });
       return;
     }
