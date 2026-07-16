@@ -8228,10 +8228,12 @@ async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath
 }
 
 async function startPendingMultiviewGeneration(interaction, actionId, action, { updateMode = "review" } = {}) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate().catch(() => {});
+  }
+
   if (!modelGenerationIsConfigured()) {
-    await interaction.reply({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(async () => {
-      await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(() => {});
-    });
+    await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(() => {});
     return;
   }
 
@@ -8265,14 +8267,18 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   action.used = true;
   action.waitingTextureDecision = false;
   pendingMultiviewActions.set(actionId, action);
+  console.log(
+    `[Multiview] generation start action=${actionId} user=${interaction.user.id} ` +
+    `texture=${action.texture} triangles=${action.triangles || "auto"} advanced_texture=${action.advancedTexture || "none"}`
+  );
 
   if (updateMode === "offer") {
-    await interaction.update({
+    await interaction.editReply({
       content: "## Generation Started\nI will deliver the final model here when it is ready.",
       components: [],
     });
   } else {
-    await interaction.update({ components: [disableMultiviewReviewButtons(actionId, true)] });
+    await interaction.editReply({ components: [disableMultiviewReviewButtons(actionId, true)] });
     await interaction.followUp({ content: "## Generation Started\nI will deliver the final model here when it is ready.", flags: 64 });
   }
 
@@ -8407,6 +8413,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     flags: 64,
   }).catch(() => {});
 
+  console.log(`[Multiview] generation delivered action=${actionId} user=${interaction.user.id}`);
   pendingMultiviewActions.delete(actionId);
 }
 
