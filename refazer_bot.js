@@ -27,6 +27,13 @@ function cleanEnv(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
 
+function parseIdListEnv(value) {
+  return String(value || "")
+    .split(/[,\s;]+/)
+    .map(item => cleanEnv(item))
+    .filter(Boolean);
+}
+
 function normalizeTripoApiBase(value) {
   const base = cleanEnv(value, "https://api.tripo3d.ai/v2/openapi").replace(/\/+$/, "");
 
@@ -58,6 +65,9 @@ const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "15219595263942370
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
 const AFFILIATE_ROLE = cleanEnv(process.env.REFAZER_AFFILIATE_ROLE, "1523108378346520607");
+const COMMAND_CHANNEL_IDS = new Set(parseIdListEnv(process.env.REFAZER_COMMAND_CHANNELS || process.env.REFAZER_ALLOWED_COMMAND_CHANNELS));
+const CLEAN_CHANNEL_IDS = new Set(parseIdListEnv(process.env.REFAZER_CLEAN_CHANNELS || process.env.REFAZER_DELETE_USER_MESSAGES_CHANNELS));
+const COMMAND_CHANNEL_ADMIN_BYPASS = cleanEnv(process.env.REFAZER_COMMAND_CHANNEL_ADMIN_BYPASS, "true") !== "false";
 
 const BLENDER_PATH =
   cleanEnv(process.env.BLENDER_PATH) ||
@@ -90,7 +100,7 @@ const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") ===
 const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium");
 const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE);
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
-const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "true") === "true";
+const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const MODEL_DELIVERY_MODE = cleanEnv(process.env.REFAZER_MODEL_DELIVERY_MODE, "channel").toLowerCase();
@@ -159,6 +169,19 @@ const AI_MODEL_LAUNCH_PROMO_ENABLED = cleanEnv(process.env.REFAZER_AI_MODEL_PROM
 const AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_LIMIT || 3);
 const AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_PRICE_BRL || 15);
 const AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_REGULAR_PRICE_BRL || 20);
+
+const MODEL_QUALITY_CONFIG = {
+  medium: {
+    label: "Standard",
+    hyper3dQuality: "medium",
+    priceExtraBrl: 0,
+  },
+  high: {
+    label: "Sharper Details",
+    hyper3dQuality: "high",
+    priceExtraBrl: Number(process.env.REFAZER_MODEL_QUALITY_HIGH_EXTRA_BRL || 1),
+  },
+};
 
 const PRICE_CONFIG = {
   baseFree: 30,
@@ -440,7 +463,7 @@ function loadMeshParser() {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages],
 });
 
 function parseMultiviewUploadOrder(raw) {
@@ -1606,6 +1629,22 @@ const commands = [
     .addNumberOption(o =>
       o.setName("texture_value").setDescription("Texture brightness/value. 1.00 keeps original").setRequired(false).setMinValue(0.6).setMaxValue(1.6)
     )
+    .addBooleanOption(o =>
+      o
+        .setName("alpha")
+        .setDescription("Use image transparency/alpha in the AI generation. Default: off")
+        .setRequired(false)
+    )
+    .addStringOption(o =>
+      o
+        .setName("detail_level")
+        .setDescription("Final detail level. Standard is the safest promo default")
+        .setRequired(false)
+        .addChoices(
+          { name: "Standard", value: "medium" },
+          { name: "Sharper Details (+R$1)", value: "high" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1875,6 +1914,15 @@ function planForInteraction(interaction) {
   return userRemakePlan(interaction);
 }
 
+function normalizeModelQuality(value) {
+  const key = cleanEnv(value || "medium").toLowerCase().replace(/[\s-]+/g, "_");
+  return MODEL_QUALITY_CONFIG[key] ? key : "medium";
+}
+
+function modelQualityConfig(value) {
+  return MODEL_QUALITY_CONFIG[normalizeModelQuality(value)] || MODEL_QUALITY_CONFIG.medium;
+}
+
 function multiviewExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteMultiviewExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumMultiviewExtra;
@@ -1962,21 +2010,26 @@ function aiModelLaunchPromoFor(interaction) {
 function applyAiModelLaunchPromo(interaction, quote) {
   const promo = aiModelLaunchPromoFor(interaction);
   if (!promo) return quote;
+  const promoExtraBrl = Number(quote.promoExtraBrl || 0);
+  const promoExtraWalletAmount = brlToWalletTokens(promoExtraBrl);
+  const walletAmount = promo.walletAmount + promoExtraWalletAmount;
+  const priceBrl = promo.priceBrl + promoExtraBrl;
 
   return {
     ...quote,
     promo,
     originalPrice: quote.price ?? quote.priceBrl,
     originalWalletAmount: quote.walletAmount,
-    price: promo.priceBrl,
-    priceBrl: promo.priceBrl,
-    walletAmount: promo.walletAmount,
-    estimatedProfitBrl: promo.priceBrl - (quote.estimatedApiCostBrl || 0),
+    price: priceBrl,
+    priceBrl,
+    walletAmount,
+    estimatedProfitBrl: priceBrl - (quote.estimatedApiCostBrl || 0),
     lines: [
       `${promo.label}: ${formatWalletAmount(promo.priceBrl)}`,
       promo.remainingFirstSlots > 0
         ? `First ${promo.firstLimit} AI models: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL)} each`
         : `Promo price after first ${promo.firstLimit}: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each`,
+      ...(quote.promoExtraLines || []),
     ],
   };
 }
@@ -1994,11 +2047,14 @@ function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   return cost;
 }
 
-function calculatePrice(interaction, { mode, texture, triangles, enhancement }) {
+function calculatePrice(interaction, { mode, texture, triangles, enhancement, modelQuality }) {
   const plan = userRemakePlan(interaction);
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
+  const qualityConfig = modelQualityConfig(modelQuality);
   let price = remakeBasePriceForPlan(plan);
   const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(price)}`];
+  const promoExtraLines = [];
+  let promoExtraBrl = 0;
 
   if (mode === "multiview") {
     const multiviewExtra = multiviewExtraForPlan(plan);
@@ -2029,6 +2085,14 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     lines.push(`${enhancementConfig.label}: +${formatWalletAmount(enhancementExtra)}`);
   }
 
+  if (qualityConfig.priceExtraBrl > 0) {
+    price += qualityConfig.priceExtraBrl;
+    const line = `${qualityConfig.label} quality: +${formatWalletAmount(qualityConfig.priceExtraBrl)}`;
+    lines.push(line);
+    promoExtraLines.push(line);
+    promoExtraBrl += qualityConfig.priceExtraBrl;
+  }
+
   const estimatedCost = estimatedApiCostBrl({ mode, texture, lowPoly, enhancement });
   const minimumSafePrice = Math.ceil(estimatedCost + API_COST_ESTIMATE_BRL.minProfit);
 
@@ -2045,6 +2109,9 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement }) 
     price,
     walletAmount: brlToWalletTokens(price),
     lines,
+    promoExtraBrl,
+    promoExtraLines,
+    modelQuality: normalizeModelQuality(modelQuality),
     apiCredits: apiCreditsFor({ mode, texture, lowPoly }),
     estimatedApiCostBrl: estimatedCost,
     estimatedProfitBrl: price - estimatedCost,
@@ -4848,6 +4915,20 @@ function userIsAllowed(interaction) {
   return userIsAdmin(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
+function commandChannelIsAllowed(interaction) {
+  if (!COMMAND_CHANNEL_IDS.size) return true;
+  if (COMMAND_CHANNEL_ADMIN_BYPASS && userIsAdmin(interaction)) return true;
+  return COMMAND_CHANNEL_IDS.has(interaction.channelId);
+}
+
+function formatAllowedCommandChannelsMessage() {
+  const channels = [...COMMAND_CHANNEL_IDS].map(id => `<#${id}>`).join(", ");
+  return [
+    "## Commands are limited to specific channels",
+    `Please use the bot in: ${channels || "the official bot channel"}.`,
+  ].join("\n");
+}
+
 async function checkCooldown(interaction) {
   const userId = interaction.user.id;
   const now = Date.now();
@@ -7251,12 +7332,13 @@ function shouldSendHyper3dTriangleTarget(triangles) {
   return HYPER3D_USE_QUALITY_OVERRIDE || Boolean(Number(triangles));
 }
 
-function appendHyper3dOptions(form, { prompt, texture, triangles }) {
+function appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
   const geometryInstructMode = HYPER3D_GEOMETRY_INSTRUCT_MODE.toLowerCase();
+  const qualityConfig = modelQuality ? modelQualityConfig(modelQuality) : { label: HYPER3D_QUALITY, hyper3dQuality: HYPER3D_QUALITY };
   form.append("tier", HYPER3D_TIER);
   form.append("geometry_file_format", "glb");
   form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
-  form.append("quality", HYPER3D_QUALITY);
+  form.append("quality", qualityConfig.hyper3dQuality);
   form.append("mesh_mode", HYPER3D_MESH_MODE);
   if (shouldSendHyper3dTriangleTarget(triangles)) {
     form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
@@ -7271,14 +7353,15 @@ function appendHyper3dOptions(form, { prompt, texture, triangles }) {
     form.append("geometry_instruct_mode", HYPER3D_GEOMETRY_INSTRUCT_MODE);
   }
   form.append("texture_delight", String(HYPER3D_TEXTURE_DELIGHT));
-  form.append("use_original_alpha", String(HYPER3D_USE_ORIGINAL_ALPHA));
+  form.append("use_original_alpha", String(Boolean(useAlpha)));
 
   if (prompt) form.append("prompt", prompt);
   if (HYPER3D_HIGH_PACK) form.append("addons", "HighPack");
 }
 
-async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "standard", triangles = null, outputDir }) {
+async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "standard", triangles = null, outputDir, useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
   const form = new FormData();
+  const qualityConfig = modelQuality ? modelQualityConfig(modelQuality) : { label: HYPER3D_QUALITY, hyper3dQuality: HYPER3D_QUALITY };
 
   for (const imagePath of imagePaths.slice(0, 5)) {
     const imageBuffer = fs.readFileSync(imagePath);
@@ -7286,7 +7369,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     form.append("images", imageBlob, path.basename(imagePath));
   }
 
-  appendHyper3dOptions(form, { prompt, texture, triangles });
+  appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha, modelQuality });
 
   const json = await hyper3dRequest("/rodin", {
     method: "POST",
@@ -7300,8 +7383,8 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
   console.log(
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
-    `mesh=${HYPER3D_MESH_MODE} triangles=${shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : "auto"} ` +
-    `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} alpha=${HYPER3D_USE_ORIGINAL_ALPHA ? "yes" : "no"} ` +
+    `quality=${qualityConfig.hyper3dQuality} mesh=${HYPER3D_MESH_MODE} triangles=${shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : "auto"} ` +
+    `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} alpha=${useAlpha ? "yes" : "no"} ` +
     `prompt=${prompt ? "yes" : "no"}`
   );
 
@@ -7316,13 +7399,13 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     triangles: shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : null,
     quality_override_enabled: shouldSendHyper3dTriangleTarget(triangles),
     tier: HYPER3D_TIER,
-    quality: HYPER3D_QUALITY,
+    quality: qualityConfig.hyper3dQuality,
     mesh_mode: HYPER3D_MESH_MODE,
     material: texture === "none" ? "None" : HYPER3D_MATERIAL,
     texture_mode: HYPER3D_TEXTURE_MODE,
     geometry_instruct_mode: HYPER3D_GEOMETRY_INSTRUCT_MODE,
     texture_delight: HYPER3D_TEXTURE_DELIGHT,
-    use_original_alpha: HYPER3D_USE_ORIGINAL_ALPHA,
+    use_original_alpha: Boolean(useAlpha),
     addons: HYPER3D_HIGH_PACK ? ["HighPack"] : [],
   }, null, 2));
 
@@ -7431,7 +7514,7 @@ async function downloadHyper3dResults({ taskId, outputDir }) {
   };
 }
 
-async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", texture, triangles, tempDir, textureTone, textureAdjustments, onProgress, mode = "image" }) {
+async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", texture, triangles, tempDir, textureTone, textureAdjustments, onProgress, mode = "image", useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
   const outputDir = path.join(tempDir, "hyper3d_ai");
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -7441,6 +7524,8 @@ async function generateWithOfficialHyper3d({ imagePaths = [], prompt = "", textu
     texture,
     triangles,
     outputDir,
+    useAlpha,
+    modelQuality,
   });
 
   let downloaded;
@@ -8296,6 +8381,17 @@ client.on("guildMemberAdd", async member => {
   }
 });
 
+client.on("messageCreate", async message => {
+  if (!message.guild || message.author?.bot) return;
+  if (!CLEAN_CHANNEL_IDS.has(message.channelId)) return;
+
+  await message.delete().catch(err => {
+    if (err?.code !== 10008) {
+      console.warn(`Could not delete user message in clean channel ${message.channelId}:`, err.message || err);
+    }
+  });
+});
+
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
     const [kind, actionId] = String(interaction.customId || "").split(":");
@@ -8352,6 +8448,7 @@ client.on("interactionCreate", async interaction => {
         texture: action.texture,
         triangles: action.triangles,
         enhancement: action.enhancement,
+        modelQuality: action.modelQuality,
       });
 
       const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
@@ -8393,6 +8490,8 @@ client.on("interactionCreate", async interaction => {
             textureAdjustments: action.textureAdjustments,
             onProgress,
             mode: "multiview",
+            useAlpha: action.useAlpha,
+            modelQuality: action.modelQuality,
           });
         } else if (shouldUseTripo()) {
           model = await generateMultiviewWithOfficialTripo({
@@ -8623,6 +8722,14 @@ client.on("interactionCreate", async interaction => {
     "refazer_multiview",
   ].includes(interaction.commandName)) return;
   try {
+    if (!commandChannelIsAllowed(interaction)) {
+      await interaction.reply({
+        content: formatAllowedCommandChannelsMessage(),
+        flags: 64,
+      });
+      return;
+    }
+
     if (DISABLED_STORED_VALUE_COMMANDS.has(interaction.commandName)) {
       await interaction.reply({
         content: [
@@ -10516,6 +10623,13 @@ client.on("interactionCreate", async interaction => {
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = explicitTextureToneForInteraction(interaction, "normal");
       const textureAdjustments = explicitTextureAdjustmentsForInteraction(interaction, DEFAULT_TEXTURE_ADJUSTMENTS);
+      const useAlpha = interaction.options.getBoolean("alpha") ?? HYPER3D_USE_ORIGINAL_ALPHA;
+      const modelQuality = normalizeModelQuality(
+        interaction.options.getString("detail_level") ||
+        interaction.options.getString("model_quality") ||
+        "medium"
+      );
+      const qualityConfig = modelQualityConfig(modelQuality);
 
       if (!["none", "economy"].includes(enhancement)) {
         await interaction.editReply({
@@ -10532,6 +10646,7 @@ client.on("interactionCreate", async interaction => {
         texture,
         triangles,
         enhancement,
+        modelQuality,
       });
 
       const balanceBefore = walletAvailableBalance(interaction.user.id, "multiview");
@@ -10591,13 +10706,17 @@ client.on("interactionCreate", async interaction => {
         tempDir,
         textureTone,
         textureAdjustments,
+        useAlpha,
+        modelQuality,
       });
 
       await interaction.editReply({
         content:
           formatPriceQuote({ mode: "multiview", texture, triangles, enhancement, quote }) +
+          `\n**Detail level:** ${qualityConfig.label}` +
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
+          `\n**AI alpha:** ${useAlpha ? "On" : "Off"}` +
           "\n\n### Reference Check\n" +
           (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.map(publicViewName).join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
