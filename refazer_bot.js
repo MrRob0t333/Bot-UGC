@@ -10619,9 +10619,16 @@ client.on("interactionCreate", async interaction => {
         });
       } catch (err) {
         console.error(err);
+        const errorMessage = String(err.message || err);
+        const publicReason = errorMessage.includes("Nao tenho permissao")
+          ? "I do not have permission to access this Roblox item. It may be private, restricted, moderated, or unavailable to the current Roblox cookie."
+          : errorMessage.includes("rate-limiting") || errorMessage.includes("429")
+            ? "Roblox is rate-limiting requests right now. Wait a few minutes and try again."
+            : "I could not render this UGC. Check if the ID is valid, public, and supported.";
+
         await interaction.editReply(
           "## View Rendering Failed\n" +
-          "I could not render this UGC. Check if the ID is valid or try another item."
+          publicReason
         );
 
         if (userIsAdmin(interaction)) {
