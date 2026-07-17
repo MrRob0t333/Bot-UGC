@@ -8352,7 +8352,15 @@ function publicModelAttachment(file, name = "velvet_model.glb") {
   return new AttachmentBuilder(file, { name });
 }
 
-function publicModelAttachments(files) {
+function publicModelAttachmentName(file, index) {
+  const lower = path.basename(file).toLowerCase();
+  if (lower.includes("shaded")) return "velvet_model_shaded.glb";
+  if (lower.includes("roblox") || lower.includes("basic")) return "velvet_model_roblox.glb";
+  if (lower.includes("pbr")) return "velvet_model_pbr.glb";
+  return index === 0 ? "velvet_model.glb" : `velvet_model_${index + 1}.glb`;
+}
+
+function publicModelDeliveryItems(files) {
   const modelFiles = [...new Set((files || []).filter(Boolean))].filter(file => fs.existsSync(file));
   if (!modelFiles.length) {
     throw new Error("Final model file was not found.");
@@ -8378,19 +8386,15 @@ function publicModelAttachments(files) {
     );
   }
 
-  return deliverableFiles.slice(0, 3).map((file, index) => {
-    const lower = path.basename(file).toLowerCase();
-    const name = lower.includes("shaded")
-      ? "velvet_model_shaded.glb"
-      : lower.includes("roblox") || lower.includes("basic")
-        ? "velvet_model_roblox.glb"
-      : lower.includes("pbr")
-        ? "velvet_model_pbr.glb"
-        : index === 0
-          ? "velvet_model.glb"
-          : `velvet_model_${index + 1}.glb`;
-    return publicModelAttachment(file, name);
-  });
+  return deliverableFiles.slice(0, 3).map((file, index) => ({
+    file,
+    name: publicModelAttachmentName(file, index),
+    size: fs.statSync(file).size,
+  }));
+}
+
+function publicModelAttachments(files) {
+  return publicModelDeliveryItems(files).map(item => publicModelAttachment(item.file, item.name));
 }
 
 function publicImageAttachment(file, name = "velvet_image.jpg") {
@@ -8567,33 +8571,53 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
   );
 }
 
+async function sendModelDeliveryParts(sendPayload, { content, items }) {
+  let firstMessage = null;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const message = await sendPayload({
+      content: index === 0
+        ? content
+        : `## Additional Model File\n**File:** ${item.name}\n**Size:** ${formatBytes(item.size)}`,
+      files: [publicModelAttachment(item.file, item.name)],
+    });
+    if (!firstMessage) firstMessage = message;
+  }
+
+  return firstMessage;
+}
+
 async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath, modelPaths }) {
-  const files = publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]);
+  const items = publicModelDeliveryItems(modelPaths?.length ? modelPaths : [modelPath]);
 
   if (MODEL_DELIVERY_MODE !== "dm") {
-    const channelMessage = await interaction.followUp({
-      content,
-      files,
-    });
+    const channelMessage = await sendModelDeliveryParts(
+      payload => interaction.followUp(payload),
+      { content, items }
+    );
     return { deliveredInDm: false, message: channelMessage };
   }
 
   try {
-    const dmMessage = await interaction.user.send({
-      content,
-      files,
-    });
+    const dmMessage = await sendModelDeliveryParts(
+      payload => interaction.user.send(payload),
+      { content, items }
+    );
     return { deliveredInDm: true, message: dmMessage };
   } catch (err) {
     console.warn(`Could not deliver model by DM to ${interaction.user.id}:`, err.message);
   }
 
-  const channelMessage = await interaction.followUp({
-    content:
-      content +
-      "\n\n**Note:** I could not DM you, so I delivered the model here. Enable DMs for private delivery next time.",
-    files: publicModelAttachments(modelPaths?.length ? modelPaths : [modelPath]),
-  });
+  const channelMessage = await sendModelDeliveryParts(
+    payload => interaction.followUp(payload),
+    {
+      content:
+        content +
+        "\n\n**Note:** I could not DM you, so I delivered the model here. Enable DMs for private delivery next time.",
+      items,
+    }
+  );
   return { deliveredInDm: false, message: channelMessage };
 }
 
