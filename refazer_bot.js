@@ -96,7 +96,6 @@ const HYPER3D_MESH_MODE = cleanEnv(process.env.HYPER3D_MESH_MODE, "Raw");
 const HYPER3D_MATERIAL = cleanEnv(process.env.HYPER3D_MATERIAL, "Shaded");
 const HYPER3D_HIGH_PACK = cleanEnv(process.env.HYPER3D_HIGH_PACK, "false") === "true";
 const HYPER3D_PREVIEW_RENDER = cleanEnv(process.env.HYPER3D_PREVIEW_RENDER, "false") === "true";
-const HYPER3D_HD_TEXTURE = cleanEnv(process.env.HYPER3D_HD_TEXTURE, "false") === "true";
 const HYPER3D_TEXTURE_MODE = cleanEnv(process.env.HYPER3D_TEXTURE_MODE, "medium");
 const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INSTRUCT_MODE);
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
@@ -212,10 +211,6 @@ const PRICE_CONFIG = {
   basicMultiviewExtra: 5,
   premiumMultiviewExtra: 0,
   eliteMultiviewExtra: 0,
-  hdTextureExtra: 8,
-  basicHdTextureExtra: 5,
-  premiumHdTextureExtra: 3,
-  eliteHdTextureExtra: 2,
   noTextureDiscount: 2,
   lowPolyExtra: 3,
   basicLowPolyExtra: 0,
@@ -228,7 +223,6 @@ const API_COST_ESTIMATE_BRL = {
   minProfit: Number(process.env.REFAZER_MIN_PROFIT_BRL || 10),
   modelStandard: Number(process.env.REFAZER_API_COST_MODEL_STANDARD_BRL || 7),
   modelNoTexture: Number(process.env.REFAZER_API_COST_MODEL_NO_TEXTURE_BRL || 6),
-  modelHd: Number(process.env.REFAZER_API_COST_MODEL_HD_BRL || 9),
   multiviewExtra: Number(process.env.REFAZER_API_COST_MULTIVIEW_EXTRA_BRL || 2),
   lowPolyExtra: Number(process.env.REFAZER_API_COST_LOWPOLY_EXTRA_BRL || 1),
 };
@@ -1123,7 +1117,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addIntegerOption(o =>
@@ -1181,7 +1174,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addIntegerOption(o =>
@@ -1252,7 +1244,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addStringOption(o =>
@@ -1376,7 +1367,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addIntegerOption(o =>
@@ -1416,7 +1406,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addIntegerOption(o =>
@@ -1689,7 +1678,6 @@ const commands = [
         .addChoices(
           { name: "No texture", value: "none" },
           { name: "Standard", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addStringOption(o =>
@@ -1778,7 +1766,6 @@ const commands = [
         .addChoices(
           { name: "Sem textura", value: "none" },
           { name: "Padrao", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addIntegerOption(o =>
@@ -1875,7 +1862,6 @@ const commands = [
         .addChoices(
           { name: "Sem textura", value: "none" },
           { name: "Padrao", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addStringOption(o =>
@@ -1921,7 +1907,6 @@ const commands = [
         .addChoices(
           { name: "Sem textura", value: "none" },
           { name: "Padrao", value: "standard" },
-          { name: "HD", value: "hd" }
         )
     )
     .addStringOption(o =>
@@ -2038,13 +2023,6 @@ function multiviewExtraForPlan(plan) {
   return PRICE_CONFIG.multiviewExtra;
 }
 
-function hdTextureExtraForPlan(plan) {
-  if (plan === "elite") return PRICE_CONFIG.eliteHdTextureExtra;
-  if (plan === "premium") return PRICE_CONFIG.premiumHdTextureExtra;
-  if (plan === "basic") return PRICE_CONFIG.basicHdTextureExtra;
-  return PRICE_CONFIG.hdTextureExtra;
-}
-
 function lowPolyExtraForPlan(plan) {
   if (plan === "elite") return PRICE_CONFIG.eliteLowPolyExtra;
   if (plan === "premium") return PRICE_CONFIG.premiumLowPolyExtra;
@@ -2143,11 +2121,11 @@ function applyAiModelLaunchPromo(interaction, quote) {
 }
 
 function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
+  texture = normalizeTextureOption(texture);
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   let cost = API_COST_ESTIMATE_BRL.modelStandard;
 
   if (texture === "none") cost = API_COST_ESTIMATE_BRL.modelNoTexture;
-  if (texture === "hd") cost = API_COST_ESTIMATE_BRL.modelHd;
   if (mode === "multiview") cost += API_COST_ESTIMATE_BRL.multiviewExtra;
   if (lowPoly) cost += API_COST_ESTIMATE_BRL.lowPolyExtra;
   cost += enhancementConfig.estimatedCostBrl || 0;
@@ -2156,6 +2134,7 @@ function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
 }
 
 function calculatePrice(interaction, { mode, texture, triangles, enhancement, modelQuality, advancedTexture }) {
+  texture = normalizeTextureOption(texture);
   const plan = userRemakePlan(interaction);
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
   const qualityConfig = modelQualityConfig(modelQuality);
@@ -2171,11 +2150,7 @@ function calculatePrice(interaction, { mode, texture, triangles, enhancement, mo
     lines.push(`Multiview: +${formatWalletAmount(multiviewExtra)}`);
   }
 
-  if (texture === "hd") {
-    const hdTextureExtra = hdTextureExtraForPlan(plan);
-    price += hdTextureExtra;
-    lines.push(`HD texture: +${formatWalletAmount(hdTextureExtra)}`);
-  } else if (texture === "none") {
+  if (texture === "none") {
     price -= PRICE_CONFIG.noTextureDiscount;
     lines.push(`No texture: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
   }
@@ -2274,16 +2249,13 @@ function calculateImageEnhancementPrice(interaction, { quality, count }) {
 }
 
 function calculatePromptModelPrice(interaction, { texture, triangles }) {
+  texture = normalizeTextureOption(texture);
   const plan = planForInteraction(interaction);
   const lowPoly = Boolean(triangles);
   let priceBrl = promptModelBaseBrlForPlan(plan);
   const lines = [`Base ${remakePlanLabel(plan)}: ${formatWalletAmount(priceBrl)}`];
 
-  if (texture === "hd") {
-    const hdTextureExtra = hdTextureExtraForPlan(plan);
-    priceBrl += hdTextureExtra;
-    lines.push(`HD texture: +${formatWalletAmount(hdTextureExtra)}`);
-  } else if (texture === "none") {
+  if (texture === "none") {
     priceBrl -= PRICE_CONFIG.noTextureDiscount;
     lines.push(`No texture: -${formatWalletAmount(PRICE_CONFIG.noTextureDiscount)}`);
   }
@@ -2595,6 +2567,10 @@ function brlToWalletTokens(value) {
 
 function formatWalletAmount(value) {
   return `${brlToWalletTokens(value)} ${WALLET_TOKEN_NAME}`;
+}
+
+function normalizeTextureOption(texture) {
+  return texture === "none" ? "none" : "standard";
 }
 
 function emptyWalletDb() {
@@ -4705,7 +4681,7 @@ function formatOfficialGuide(language) {
       "Use `/multiview` quando tiver imagens de frente, direita, costas e esquerda. Esse modo costuma dar resultado melhor.",
       "",
       "## 5. Escolhas disponíveis",
-      "**Texture:** sem textura, padrão ou HD.",
+      "**Texture:** sem textura ou padrão.",
       "**Enhancement:** sem melhoria, economy, standard ou premium.",
       "**Triangles:** limite opcional para deixar o modelo mais leve e compatível.",
       "",
@@ -4747,7 +4723,7 @@ function formatOfficialGuide(language) {
     "Use `/multiview` when you have front, right, back and left images. This usually gives better results.",
     "",
     "## 5. Available choices",
-    "**Texture:** no texture, standard or HD.",
+    "**Texture:** no texture or standard.",
     "**Enhancement:** none, economy, standard or premium.",
     "**Triangles:** optional limit to make the model lighter and more compatible.",
     "",
@@ -5108,7 +5084,8 @@ function imageEnhancementIsReady(enhancement) {
 }
 
 function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
-  const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
+  texture = normalizeTextureOption(texture);
+  const textureLabel = texture === "none" ? "No texture" : "Standard";
   const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
   const effectiveTriangles = triangles || ROBLOX_SAFE_TRIANGLE_LIMIT;
 
@@ -5126,7 +5103,8 @@ function formatPriceQuote({ mode, texture, triangles, enhancement, quote }) {
 }
 
 formatPriceQuote = function formatPriceQuoteClean({ mode, texture, triangles, enhancement, quote }) {
-  const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
+  texture = normalizeTextureOption(texture);
+  const textureLabel = texture === "none" ? "No texture" : "Standard";
   const enhancementLabel = (IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label;
   const effectiveTriangles = triangles || ROBLOX_SAFE_TRIANGLE_LIMIT;
 
@@ -7499,7 +7477,6 @@ async function generateModelWithOfficialTripo({ imagePaths, texture, triangles, 
     pbr: texture !== "none",
   };
 
-  if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
   applyTripoGenerationOptions(payload);
 
@@ -7561,7 +7538,6 @@ async function generateMultiviewWithOfficialTripo({ viewPaths, texture, triangle
     pbr: texture !== "none",
   };
 
-  if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
   applyTripoGenerationOptions(payload);
 
@@ -7613,7 +7589,6 @@ async function generatePromptModelWithOfficialTripo({ prompt, texture, triangles
     pbr: texture !== "none",
   };
 
-  if (texture === "hd") payload.texture_quality = "detailed";
   if (triangles) payload.face_limit = triangles;
   applyTripoGenerationOptions(payload);
 
@@ -7726,7 +7701,7 @@ function appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha = HYP
     form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
   }
   form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
-  form.append("hd_texture", String(texture === "hd" || HYPER3D_HD_TEXTURE));
+  form.append("hd_texture", "false");
   form.append("texture_mode", HYPER3D_TEXTURE_MODE);
   if (
     HYPER3D_GEOMETRY_INSTRUCT_MODE &&
@@ -8573,16 +8548,36 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
 
 async function sendModelDeliveryParts(sendPayload, { content, items }) {
   let firstMessage = null;
+  const failures = [];
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    const message = await sendPayload({
-      content: index === 0
-        ? content
-        : `## Additional Model File\n**File:** ${item.name}\n**Size:** ${formatBytes(item.size)}`,
-      files: [publicModelAttachment(item.file, item.name)],
-    });
-    if (!firstMessage) firstMessage = message;
+    try {
+      const message = await sendPayload({
+        content: index === 0
+          ? content
+          : `## Additional Model File\n**File:** ${item.name}\n**Size:** ${formatBytes(item.size)}`,
+        files: [publicModelAttachment(item.file, item.name)],
+      });
+      if (!firstMessage) firstMessage = message;
+    } catch (err) {
+      failures.push(`${item.name} (${formatBytes(item.size)}): ${err.message || err}`);
+      console.warn(`Could not deliver ${item.name}:`, err.message || err);
+    }
+  }
+
+  if (!firstMessage) {
+    throw new Error(`No generated model file could be delivered. ${failures.join(" | ")}`);
+  }
+
+  if (failures.length) {
+    await sendPayload({
+      content:
+        "## Delivery Warning\n" +
+        "At least one optional model file could not be attached, but the delivered file above is available.\n" +
+        failures.map(item => `- ${item}`).join("\n"),
+      files: [],
+    }).catch(() => {});
   }
 
   return firstMessage;
@@ -8631,6 +8626,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   const serviceKey = action.serviceKey || "multiview";
   const serviceLabel = action.serviceLabel || "Multiview AI model";
   const generationMode = action.generationMode || "multiview";
+  action.texture = normalizeTextureOption(action.texture || "standard");
   const generationImagePaths = Array.isArray(action.imagePaths) && action.imagePaths.length
     ? action.imagePaths
     : MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths?.[view]).filter(Boolean);
@@ -8785,12 +8781,26 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     });
   } catch (err) {
     console.error(err);
+    const modelFiles = (model?.modelPaths?.length ? model.modelPaths : [model?.modelPath])
+      .filter(Boolean)
+      .filter(file => fs.existsSync(file))
+      .map(file => `${path.basename(file)}=${formatBytes(fs.statSync(file).size)}`)
+      .join(", ");
     await interaction.followUp({
       content:
         "## Model Delivery Failed\n" +
         "No charge was deducted because the final model could not be delivered.",
       flags: 64,
     });
+    if (userIsAdmin(interaction)) {
+      await interaction.followUp({
+        content:
+          "## Admin delivery diagnostic\n" +
+          `**Files:** ${modelFiles || "none"}\n` +
+          `**Error:** \`${String(err.message || err).slice(0, 1200)}\``,
+        flags: 64,
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -10301,7 +10311,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply({ flags: 64 });
 
       const mode = interaction.options.getString("modo");
-      const texture = interaction.options.getString("textura") || interaction.options.getString("texture");
+      const texture = normalizeTextureOption(interaction.options.getString("textura") || interaction.options.getString("texture"));
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement");
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const quote = calculatePrice(interaction, {
@@ -10994,7 +11004,7 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      const texture = interaction.options.getString("texture") || "standard";
+      const texture = normalizeTextureOption(interaction.options.getString("texture") || "standard");
       const enhancement = interaction.options.getString("enhancement") || "none";
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const singleQuote = calculatePrice(interaction, {
@@ -11281,7 +11291,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply();
 
       const prompt = interaction.options.getString("prompt").trim();
-      const texture = interaction.options.getString("texture") || "standard";
+      const texture = normalizeTextureOption(interaction.options.getString("texture") || "standard");
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = textureToneForInteraction(interaction);
       const textureAdjustments = textureAdjustmentsForInteraction(interaction);
@@ -11381,7 +11391,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply();
 
       const image = interaction.options.getAttachment("image");
-      const texture = interaction.options.getString("texture") || "standard";
+      const texture = normalizeTextureOption(interaction.options.getString("texture") || "standard");
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = explicitTextureToneForInteraction(interaction, "normal");
       const textureAdjustments = explicitTextureAdjustmentsForInteraction(interaction, DEFAULT_TEXTURE_ADJUSTMENTS);
@@ -11445,7 +11455,7 @@ client.on("interactionCreate", async interaction => {
         generationMode: "image",
       });
 
-      const textureLabel = texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard";
+      const textureLabel = texture === "none" ? "No texture" : "Standard";
 
       await interaction.editReply({
         content:
@@ -11471,7 +11481,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "refazer_multiview" || interaction.commandName === "multiview") {
       await interaction.deferReply();
 
-      const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
+      const texture = normalizeTextureOption(interaction.options.getString("textura") || interaction.options.getString("texture") || "standard");
       const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
       const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
       const textureTone = explicitTextureToneForInteraction(interaction, "normal");
@@ -11641,7 +11651,7 @@ client.on("interactionCreate", async interaction => {
   await interaction.deferReply();
   const difference = interaction.options.getInteger("diferenca") || interaction.options.getInteger("difference");
   const enhancement = interaction.options.getString("melhoria") || interaction.options.getString("enhancement") || "none";
-  const texture = interaction.options.getString("textura") || interaction.options.getString("texture") || "standard";
+  const texture = normalizeTextureOption(interaction.options.getString("textura") || interaction.options.getString("texture") || "standard");
   const triangles = interaction.options.getInteger("triangles") || ROBLOX_SAFE_TRIANGLE_LIMIT;
   const preferredView = interaction.options.getString("vista") || interaction.options.getString("view");
   const textureTone = textureToneForInteraction(interaction);
@@ -11711,7 +11721,7 @@ client.on("interactionCreate", async interaction => {
     `## 🎨 UGC Remake\n` +
     `**UGC:** \`${id}\`\n` +
     `**Difference:** ${difference}/10\n` +
-    `**Texture:** ${texture === "none" ? "No texture" : texture === "hd" ? "HD" : "Standard"}\n` +
+    `**Texture:** ${texture === "none" ? "No texture" : "Standard"}\n` +
     `**Enhancement:** ${(IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none).label}\n` +
     `**Texture tone:** ${textureToneSummary(textureTone)}\n` +
     `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
