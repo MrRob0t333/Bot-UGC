@@ -122,7 +122,9 @@ const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
 const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
 const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
 const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
-const DISCORD_MAX_ATTACHMENT_BYTES = Number(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB || 24) * 1024 * 1024;
+const DISCORD_SAFE_ATTACHMENT_MB = Number(cleanEnv(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB, "7.5"));
+const DISCORD_MAX_ATTACHMENT_BYTES =
+  Math.max(1, Number.isFinite(DISCORD_SAFE_ATTACHMENT_MB) ? DISCORD_SAFE_ATTACHMENT_MB : 7.5) * 1024 * 1024;
 const ROBLOX_SAFE_TRIANGLE_LIMIT = Number(process.env.REFAZER_DEFAULT_TRIANGLES || 3900);
 
 const DEFAULT_RENDER_SETTINGS = {
@@ -5255,7 +5257,8 @@ async function downloadBuffer(url) {
 }
 
 async function downloadRobloxAsset(assetId) {
-  return downloadBuffer(`https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`);
+  const source = await fetchRobloxAssetSource(assetId);
+  return source.buffer;
 }
 
 function robloxHeaders(extra = {}, cookie = ROBLOX_COOKIES[0]) {
@@ -8311,16 +8314,24 @@ function formatBytes(bytes) {
   return `${value} B`;
 }
 
-function publicModelAttachment(file, name = "velvet_model.glb") {
+function discordAttachmentLimitBytes(interaction) {
+  const interactionLimit = Number(interaction?.attachmentSizeLimit);
+  if (Number.isFinite(interactionLimit) && interactionLimit > 0) {
+    return Math.max(1024 * 1024, Math.floor(interactionLimit * 0.92));
+  }
+  return DISCORD_MAX_ATTACHMENT_BYTES;
+}
+
+function publicModelAttachment(file, name = "velvet_model.glb", maxBytes = DISCORD_MAX_ATTACHMENT_BYTES) {
   if (!file || !fs.existsSync(file)) {
     throw new Error("Final model file was not found.");
   }
 
   const size = fs.statSync(file).size;
-  if (size > DISCORD_MAX_ATTACHMENT_BYTES) {
+  if (size > maxBytes) {
     throw new Error(
       `Final model is too large for Discord delivery (${formatBytes(size)}). ` +
-      `Current delivery limit is ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}.`
+      `Current delivery limit is ${formatBytes(maxBytes)}.`
     );
   }
 
@@ -8335,7 +8346,7 @@ function publicModelAttachmentName(file, index) {
   return index === 0 ? "velvet_model.glb" : `velvet_model_${index + 1}.glb`;
 }
 
-function publicModelDeliveryItems(files) {
+function publicModelDeliveryItems(files, maxBytes = DISCORD_MAX_ATTACHMENT_BYTES) {
   const modelFiles = [...new Set((files || []).filter(Boolean))].filter(file => fs.existsSync(file));
   if (!modelFiles.length) {
     throw new Error("Final model file was not found.");
@@ -8343,10 +8354,10 @@ function publicModelDeliveryItems(files) {
 
   const deliverableFiles = modelFiles.filter(file => {
     const size = fs.statSync(file).size;
-    if (size <= DISCORD_MAX_ATTACHMENT_BYTES) return true;
+    if (size <= maxBytes) return true;
     console.warn(
       `Skipping model attachment ${path.basename(file)} because it is ${formatBytes(size)}, ` +
-      `above Discord limit ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}.`
+      `above Discord limit ${formatBytes(maxBytes)}.`
     );
     return false;
   });
@@ -8357,7 +8368,7 @@ function publicModelDeliveryItems(files) {
       .join(", ");
     throw new Error(
       `Final model files are too large for Discord delivery. ` +
-      `Limit: ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}. Files: ${sizes}`
+      `Limit: ${formatBytes(maxBytes)}. Files: ${sizes}`
     );
   }
 
@@ -8368,8 +8379,8 @@ function publicModelDeliveryItems(files) {
   }));
 }
 
-function publicModelAttachments(files) {
-  return publicModelDeliveryItems(files).map(item => publicModelAttachment(item.file, item.name));
+function publicModelAttachments(files, maxBytes = DISCORD_MAX_ATTACHMENT_BYTES) {
+  return publicModelDeliveryItems(files, maxBytes).map(item => publicModelAttachment(item.file, item.name, maxBytes));
 }
 
 function publicImageAttachment(file, name = "velvet_image.jpg") {
@@ -8557,7 +8568,7 @@ async function sendModelDeliveryParts(sendPayload, { content, items }) {
         content: index === 0
           ? content
           : `## Additional Model File\n**File:** ${item.name}\n**Size:** ${formatBytes(item.size)}`,
-        files: [publicModelAttachment(item.file, item.name)],
+        files: [publicModelAttachment(item.file, item.name, item.maxBytes)],
       });
       if (!firstMessage) firstMessage = message;
     } catch (err) {
@@ -8584,7 +8595,13 @@ async function sendModelDeliveryParts(sendPayload, { content, items }) {
 }
 
 async function deliverModelPrivatelyOrFallback(interaction, { content, modelPath, modelPaths }) {
-  const items = publicModelDeliveryItems(modelPaths?.length ? modelPaths : [modelPath]);
+  const maxBytes = discordAttachmentLimitBytes(interaction);
+  console.log(
+    `Discord model delivery limit: ${formatBytes(maxBytes)} ` +
+    `(interaction=${formatBytes(Number(interaction?.attachmentSizeLimit) || 0)}, fallback=${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)})`
+  );
+  const items = publicModelDeliveryItems(modelPaths?.length ? modelPaths : [modelPath], maxBytes)
+    .map(item => ({ ...item, maxBytes }));
 
   if (MODEL_DELIVERY_MODE !== "dm") {
     const channelMessage = await sendModelDeliveryParts(
