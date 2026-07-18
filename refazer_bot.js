@@ -5907,6 +5907,14 @@ async function fetchCatalogDetailsSafe(itemId) {
   }
 }
 
+async function fetchCatalogItemDetailsSafe(itemId) {
+  try {
+    return await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/catalog/items/${encodeURIComponent(itemId)}/details`);
+  } catch {
+    return {};
+  }
+}
+
 function buildSniperCandidate(item, details = {}, category = "all", categoryVerified = false) {
   const id = catalogItemId(item);
   const breakdown = sniperScoreBreakdown(item, details);
@@ -6344,8 +6352,11 @@ async function classifyStealTarget(rawId) {
   if (!catalogId) return { kind: "asset", catalogId: null, details: null };
 
   try {
-    const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
-    const assetTypeId = Number(details.AssetTypeId || 0);
+    let details = await fetchCatalogItemDetailsSafe(catalogId);
+    if (!Object.keys(details).length) {
+      details = await fetchCatalogDetailsSafe(catalogId);
+    }
+    const assetTypeId = Number(details.assetType || details.AssetTypeId || 0);
     return {
       kind: isClassicClothingAssetType(assetTypeId) ? "clothing" : "asset",
       catalogId,
@@ -7963,6 +7974,14 @@ async function generateTextureOnlyWithHyper3d({ modelPath, imagePath, texture, r
       optimizeGlbForRoblox(outputModelPath, textureTone, textureAdjustments, ROBLOX_MAX_TEXTURE_SIZE, "AUTO", 75);
       ensureModelFitsDiscord(outputModelPath, textureTone, textureAdjustments);
     }
+  }
+
+  const hasPbrModel = modelPaths.some(file => /pbr/i.test(path.basename(file || "")));
+  const hasRobloxBasicModel = modelPaths.some(file => /(shaded|roblox|basic)/i.test(path.basename(file || "")));
+  if (texture !== "none" && hasPbrModel && !hasRobloxBasicModel) {
+    const pbrPath = modelPaths.find(file => /pbr/i.test(path.basename(file || ""))) || modelPaths[0];
+    const robloxPath = createRobloxBasicModelCopy(pbrPath, textureTone, textureAdjustments);
+    if (robloxPath) modelPaths.push(robloxPath);
   }
 
   return {
