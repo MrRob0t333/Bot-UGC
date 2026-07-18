@@ -5434,9 +5434,10 @@ async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
 
       const res = await fetch(url, { ...options, headers });
 
-      if (res.status === 401 && cookieIndex < cookies.length - 1) {
+      if ((res.status === 401 || res.status === 403) && cookieIndex < cookies.length - 1) {
         lastStatus = res.status;
         lastText = await res.text().catch(() => "");
+        console.warn(`Roblox request returned ${res.status} with cookie ${cookieIndex + 1}/${cookies.length}; trying next cookie.`);
         continue;
       }
 
