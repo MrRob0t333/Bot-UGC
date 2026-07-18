@@ -5466,6 +5466,41 @@ async function fetchRobloxJson(url) {
   return JSON.parse(text);
 }
 
+async function fetchRobloxAssetDeliveryV2(assetId) {
+  const url = `https://assetdelivery.roblox.com/v2/asset/?id=${encodeURIComponent(assetId)}`;
+  const formats = ["source", "rbxm", "rbxmx", ""];
+  let lastStatus = 0;
+  let lastText = "";
+
+  for (const format of formats) {
+    const extraHeaders = format ? { "Roblox-AssetFormat": format } : {};
+    const res = await fetchRobloxWithRetry(url, { headers: robloxHeaders(extraHeaders) });
+    const text = await res.text();
+
+    if (res.ok) {
+      console.log(`Roblox assetdelivery v2 accepted ${assetId} with format=${format || "default"}`);
+      return JSON.parse(text);
+    }
+
+    lastStatus = res.status;
+    lastText = text;
+
+    if (![400, 401, 403, 415].includes(res.status)) {
+      throw new Error(`Roblox assetdelivery v2 failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+  }
+
+  if (lastStatus === 401 || lastStatus === 403) {
+    markRobloxAuthProblem({
+      status: lastStatus,
+      url,
+      message: `Roblox denied assetdelivery v2 access with every asset format: ${lastText.slice(0, 180)}`,
+    });
+  }
+
+  throw new Error(`Roblox request failed (${lastStatus}): ${lastText.slice(0, 300)}`);
+}
+
 async function fetchRobloxPublicJson(url) {
   await waitForRobloxPublicSlot();
 
@@ -6256,7 +6291,7 @@ async function fetchRobloxAssetSource(assetId) {
     return { buffer, contentType };
   }
 
-  const delivery = await fetchRobloxJson(`https://assetdelivery.roblox.com/v2/asset/?id=${assetId}`);
+  const delivery = await fetchRobloxAssetDeliveryV2(assetId);
   const location = (delivery.locations || []).find(item => item.assetFormat === "source")?.location
     || delivery.locations?.[0]?.location;
 
@@ -7776,7 +7811,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
 }
 
 async function pollHyper3dTask(subscriptionKey, onProgress) {
-  let lastStatusKey = "";
+  let lastProgressKey = "";
 
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const json = await hyper3dRequest("/status", {
@@ -7789,12 +7824,18 @@ async function pollHyper3dTask(subscriptionKey, onProgress) {
     const statuses = jobs.map(job => job.status || "Waiting");
     const allDone = statuses.length > 0 && statuses.every(status => status === "Done");
     const anyFailed = statuses.some(status => status === "Failed");
-    const statusKey = statuses.join(",");
+    const status = allDone ? "success" : anyFailed ? "failed" : statuses.includes("Generating") ? "running" : "waiting";
+    const progress = allDone
+      ? 100
+      : anyFailed
+        ? 100
+        : statuses.includes("Generating")
+          ? Math.min(95, 10 + Math.floor(attempt * 1.5))
+          : Math.min(10, attempt);
+    const progressKey = `${status}:${progress}`;
 
-    if (onProgress && statusKey !== lastStatusKey) {
-      lastStatusKey = statusKey;
-      const status = allDone ? "success" : anyFailed ? "failed" : statuses.includes("Generating") ? "running" : "waiting";
-      const progress = allDone ? 100 : anyFailed ? 100 : statuses.includes("Generating") ? Math.min(95, 10 + attempt) : Math.min(10, attempt);
+    if (onProgress && progressKey !== lastProgressKey && (attempt % 2 === 0 || allDone || anyFailed || progress >= 95)) {
+      lastProgressKey = progressKey;
       await onProgress({ status, progress });
     }
 
