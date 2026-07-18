@@ -8545,8 +8545,14 @@ function loadPendingMultiviewActions() {
     const raw = JSON.parse(fs.readFileSync(PENDING_MULTIVIEW_PATH, "utf8"));
     const now = Date.now();
     for (const [id, action] of Object.entries(raw || {})) {
-      if (!action || action.used) continue;
+      if (!action) continue;
+      if (action.used && !action.inFlight) continue;
       if (now - Number(action.createdAt || 0) > PENDING_MULTIVIEW_TTL_MS) continue;
+      if (action.inFlight) {
+        action.used = false;
+        action.inFlight = false;
+        action.recoveredAfterRestart = true;
+      }
       pendingMultiviewActions.set(id, action);
     }
     persistPendingMultiviewActions();
@@ -8741,6 +8747,8 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   }
 
   action.used = true;
+  action.inFlight = true;
+  action.startedAt = Date.now();
   action.waitingTextureDecision = false;
   setPendingMultiviewAction(actionId, action);
   console.log(
@@ -8815,6 +8823,10 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     }
   } catch (err) {
     console.error(err);
+    action.used = false;
+    action.inFlight = false;
+    action.lastError = String(err.message || err).slice(0, 500);
+    setPendingMultiviewAction(actionId, action);
     await interaction.followUp({
       content:
         "## Model Generation Failed\n" +
@@ -8858,6 +8870,10 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     });
   } catch (err) {
     console.error(err);
+    action.used = false;
+    action.inFlight = false;
+    action.lastError = String(err.message || err).slice(0, 500);
+    setPendingMultiviewAction(actionId, action);
     const modelFiles = (model?.modelPaths?.length ? model.modelPaths : [model?.modelPath])
       .filter(Boolean)
       .filter(file => fs.existsSync(file))
@@ -8915,6 +8931,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   }).catch(() => {});
 
   console.log(`[${actionType}] generation delivered action=${actionId} user=${interaction.user.id}`);
+  action.inFlight = false;
   deletePendingMultiviewAction(actionId);
 }
 
