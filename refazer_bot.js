@@ -5430,11 +5430,8 @@ async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
       lastStatus = res.status;
       lastText = await res.text().catch(() => "");
       retryDelay = retryDelayFromResponse(res, attempt);
-      robloxRateLimitedUntil = Date.now() + Math.max(retryDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
-      throw new Error(
-        "Roblox is rate-limiting clothing downloads right now. Wait a few minutes and try again. " +
-        `Last response (${lastStatus}): ${lastText.slice(0, 300)}`
-      );
+      robloxRateLimitedUntil = Date.now() + retryDelay;
+      break;
     }
 
     if (retryDelay && attempt < attempts - 1) {
@@ -5443,7 +5440,7 @@ async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
   }
 
   throw new Error(
-    "Roblox is rate-limiting clothing downloads right now. Wait a few minutes and try again. " +
+    "Roblox is rate-limiting requests right now. Wait a few minutes and try again. " +
     `Last response (${lastStatus}): ${lastText.slice(0, 300)}`
   );
 }
