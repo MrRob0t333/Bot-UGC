@@ -5257,6 +5257,23 @@ async function downloadBuffer(url) {
 }
 
 async function downloadRobloxAsset(assetId) {
+  assertRobloxSafeModeAvailable();
+
+  const url = `https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`;
+  const headers = {};
+  if (ROBLOSECURITY) {
+    headers.Cookie = `.ROBLOSECURITY=${ROBLOSECURITY}`;
+  }
+
+  const res = await fetch(url, { headers });
+  if (res.ok) {
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  if (res.status === 404) {
+    throw new Error("Nao consegui processar esse item. Talvez seja bundle, cabeca dinamica, emote, corpo ou roupa 3D ainda nao suportado.");
+  }
+
   const source = await fetchRobloxAssetSource(assetId);
   return source.buffer;
 }
