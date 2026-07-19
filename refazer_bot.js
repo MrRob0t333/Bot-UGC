@@ -123,10 +123,13 @@ const REFAZER_MOCK_IA = process.env.REFAZER_MOCK_IA === "true";
 const VIEW_CACHE_DIR = path.join(__dirname, "cache", "views");
 const VIEW_CACHE_MAX_AGE_MS = Number(process.env.REFAZER_VIEW_CACHE_DAYS || 14) * 24 * 60 * 60 * 1000;
 const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SIZE || 2048);
-const DISCORD_SAFE_ATTACHMENT_MB = Number(cleanEnv(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB, "7.5"));
+const DISCORD_SAFE_ATTACHMENT_MB = Number(cleanEnv(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB, "50"));
 const DISCORD_MAX_ATTACHMENT_BYTES =
-  Math.max(1, Number.isFinite(DISCORD_SAFE_ATTACHMENT_MB) ? DISCORD_SAFE_ATTACHMENT_MB : 7.5) * 1024 * 1024;
+  Math.max(1, Number.isFinite(DISCORD_SAFE_ATTACHMENT_MB) ? DISCORD_SAFE_ATTACHMENT_MB : 50) * 1024 * 1024;
 const ROBLOX_SAFE_TRIANGLE_LIMIT = Number(process.env.REFAZER_DEFAULT_TRIANGLES || 3900);
+const GUIDED_THREAD_FREE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_FREE_CLOSE_HOURS || 24);
+const GUIDED_THREAD_PREMIUM_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_PREMIUM_CLOSE_HOURS || 168);
+const GUIDED_THREAD_ELITE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_ELITE_CLOSE_HOURS || 336);
 
 const DEFAULT_RENDER_SETTINGS = {
   lighting: "studio",
@@ -5255,6 +5258,10 @@ function hasRole(interaction, roleId) {
   return interaction.member.roles.cache.has(roleId);
 }
 
+function memberHasRole(member, roleId) {
+  return Boolean(roleId && member?.roles?.cache?.has(roleId));
+}
+
 function userIsPremium(interaction) {
   return hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE);
 }
@@ -8727,11 +8734,12 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
 }
 
 const guidedModelSessions = new Map();
+const guidedModelCloseTimers = new Map();
 const GUIDED_MODEL_VIEW_STEPS = [
-  { view: "frente", label: "Front", prompt: "Step 1 of 4\nSend a front photo." },
-  { view: "direita", label: "Right", prompt: "Step 2 of 4\nSend a right-side photo." },
-  { view: "esquerda", label: "Left", prompt: "Step 3 of 4\nSend a left-side photo." },
-  { view: "costas", label: "Back", prompt: "Step 4 of 4\nSend a back photo." },
+  { view: "frente", label: "Front", prompt: "Step 1 of 4", instruction: "Send the **front** photo." },
+  { view: "direita", label: "Right", prompt: "Step 2 of 4", instruction: "Send the **right-side** photo." },
+  { view: "esquerda", label: "Left", prompt: "Step 3 of 4", instruction: "Send the **left-side** photo." },
+  { view: "costas", label: "Back", prompt: "Step 4 of 4", instruction: "Send the **back** photo." },
 ];
 
 const GUIDED_MODEL_TYPE_LABELS = {
@@ -8791,6 +8799,23 @@ function guidedModelQualityButtons(threadId) {
         .setLabel(`Max +${brlToWalletTokens(modelQualityConfig("ultra").priceExtraBrl)} Credits`)
         .setStyle(ButtonStyle.Success)
     ),
+    guidedModelThreadControls(threadId),
+  ];
+}
+
+function guidedModelAlphaButtons(threadId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_alpha:${threadId}:off`)
+        .setLabel("Standard")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_alpha:${threadId}:on`)
+        .setLabel("Alpha-aware")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+    guidedModelThreadControls(threadId),
   ];
 }
 
@@ -8805,6 +8830,65 @@ function guidedModelConfirmButtons(threadId) {
       .setLabel("Change a photo")
       .setStyle(ButtonStyle.Secondary)
   );
+}
+
+function guidedModelThreadControls(threadId, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`guided3d_close:${threadId}`)
+      .setLabel("Close request")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled)
+  );
+}
+
+function guidedModelPlanCloseHours(interaction) {
+  const plan = userRemakePlan(interaction);
+  if (plan === "elite") return GUIDED_THREAD_ELITE_CLOSE_HOURS;
+  if (plan === "premium") return GUIDED_THREAD_PREMIUM_CLOSE_HOURS;
+  return GUIDED_THREAD_FREE_CLOSE_HOURS;
+}
+
+function formatHoursDuration(hours) {
+  const value = Number(hours) || 0;
+  if (value >= 24 && value % 24 === 0) {
+    const days = value / 24;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  return `${value} hour${value === 1 ? "" : "s"}`;
+}
+
+function guidedThreadAutoArchiveDuration(closeHours) {
+  const hours = Number(closeHours) || 24;
+  if (hours >= 168) return 10080;
+  if (hours >= 72) return 4320;
+  if (hours >= 24) return 1440;
+  return 60;
+}
+
+function clearGuidedThreadCloseTimer(threadId) {
+  const timer = guidedModelCloseTimers.get(threadId);
+  if (timer) clearTimeout(timer);
+  guidedModelCloseTimers.delete(threadId);
+}
+
+function scheduleGuidedThreadClose(session) {
+  clearGuidedThreadCloseTimer(session.threadId);
+  const closeMs = Math.max(1, Number(session.closeHours || GUIDED_THREAD_FREE_CLOSE_HOURS)) * 60 * 60 * 1000;
+  const timer = setTimeout(async () => {
+    try {
+      const thread = await client.channels.fetch(session.threadId).catch(() => null);
+      if (!thread?.setArchived) return;
+      await thread.send("## Request Archived\nThis request was archived automatically after the support window ended.").catch(() => {});
+      await thread.setArchived(true, "Guided model request auto-archive");
+    } catch (err) {
+      console.warn("Could not auto-archive guided model thread:", err.message || err);
+    } finally {
+      guidedModelSessions.delete(session.threadId);
+      guidedModelCloseTimers.delete(session.threadId);
+    }
+  }, closeMs);
+  guidedModelCloseTimers.set(session.threadId, timer);
 }
 
 function guidedModelReplaceButtons(threadId) {
@@ -8901,12 +8985,14 @@ async function sendGuidedModelPhotoPrompt(channel, session) {
   const step = guidedModelCurrentStep(session);
   await channel.send(
     [
-      `## ${step.label} Reference`,
+      `# ${step.label} Reference`,
       `**${step.prompt}**`,
+      step.instruction,
       "",
+      "## Photo rules",
       "> Keep the object centered, clear and fully visible.",
       "> Do not crop important parts.",
-      "> Use the same object, same style and same lighting when possible.",
+      "> Use the same object, angle style and lighting when possible.",
     ].join("\n")
   );
 }
@@ -8936,6 +9022,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       "Your references are ready.\n\n" +
       `**Object type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
       `**Quality:** ${qualityConfig.label}\n` +
+      `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
       `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
       "## Before Generating\n" +
@@ -8944,7 +9031,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       "> If everything is correct, click **Yes, create it**.\n\n" +
       "**No Service Credits are charged until the final model is delivered.**",
     files,
-    components: [guidedModelConfirmButtons(session.threadId)],
+    components: [guidedModelConfirmButtons(session.threadId), guidedModelThreadControls(session.threadId)],
   });
 }
 
@@ -8999,8 +9086,8 @@ async function handleGuidedModelPhotoMessage(message, session) {
   session.updatedAt = Date.now();
 
   await message.channel.send(
-    `**${publicViewName(view)} accepted.**\n` +
-    "Let's continue."
+    `## ${publicViewName(view)} Accepted\n` +
+    "Reference saved. Let's continue."
   );
 
   if (guidedModelCompleted(session)) {
@@ -9322,6 +9409,22 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
       : "## Delivered\nYour final model was delivered in this channel because your DMs are closed.",
     flags: 64,
   }).catch(() => {});
+
+  if (action.guidedThreadId) {
+    const session = guidedModelSessionForThread(action.guidedThreadId);
+    if (session) {
+      session.status = "delivered";
+      session.updatedAt = Date.now();
+      await interaction.channel?.send({
+        content:
+          "# Request Complete\n" +
+          "Your final model has been delivered.\n\n" +
+          "> Need support? Keep this thread open and message the team here.\n" +
+          "> All done? Click **Close request** to archive this thread.",
+        components: [guidedModelThreadControls(action.guidedThreadId)],
+      }).catch(() => {});
+    }
+  }
 
   console.log(`[${actionType}] generation delivered action=${actionId} user=${interaction.user.id}`);
   action.inFlight = false;
@@ -9700,11 +9803,14 @@ client.on("interactionCreate", async interaction => {
 
       let thread;
       const threadName = `Model of ${interaction.user.username}`.slice(0, 90);
+      const closeHours = guidedModelPlanCloseHours(interaction);
+      const autoArchiveDuration = guidedThreadAutoArchiveDuration(closeHours);
       try {
         thread = await interaction.channel.threads.create({
           name: threadName,
           type: ChannelType.PrivateThread,
           invitable: false,
+          autoArchiveDuration,
           reason: `Guided model request by ${interaction.user.tag}`,
         });
       } catch (err) {
@@ -9712,6 +9818,7 @@ client.on("interactionCreate", async interaction => {
         thread = await interaction.channel.threads.create({
           name: threadName,
           type: ChannelType.PublicThread,
+          autoArchiveDuration,
           reason: `Guided model request by ${interaction.user.tag}`,
         });
       }
@@ -9728,18 +9835,62 @@ client.on("interactionCreate", async interaction => {
         tempDir,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        closeHours,
       });
+      scheduleGuidedThreadClose(guidedModelSessions.get(thread.id));
 
       await thread.send({
         content:
           "# 3D Model Request\n" +
           `Welcome ${interaction.user}.\n\n` +
-          "I will guide you step by step. You will send one photo at a time, review everything, and only then start generation.\n\n" +
-          "## First Step\n" +
+          "This private request thread keeps your references and final delivery organized.\n\n" +
+          "## How this works\n" +
+          "> Choose the model type.\n" +
+          "> Choose the quality level.\n" +
+          "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
+          "> Review everything before generation starts.\n\n" +
+          `**Thread window:** ${formatHoursDuration(closeHours)}. You can close it earlier with **Close request**.\n\n` +
+          "## First step\n" +
           "Choose what type of item you want to create:",
-        components: guidedModelTypeButtons(thread.id),
+        components: [...guidedModelTypeButtons(thread.id), guidedModelThreadControls(thread.id)],
       });
       await interaction.editReply(`I created your private request thread: ${thread}`);
+      return;
+    }
+
+    if (kind === "guided3d_close") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request is already closed or expired.", flags: 64 });
+        return;
+      }
+      const canClose = session.userId === interaction.user.id || memberHasRole(interaction.member, ADMIN_ROLE);
+      if (!canClose) {
+        await interaction.reply({ content: "Only the request owner or the team can close this thread.", flags: 64 });
+        return;
+      }
+      if (session.status === "generating") {
+        await interaction.reply({
+          content: "This request is generating right now. You can close the thread after the final model is delivered.",
+          flags: 64,
+        });
+        return;
+      }
+
+      session.status = "closed";
+      session.updatedAt = Date.now();
+      clearGuidedThreadCloseTimer(actionId);
+      guidedModelSessions.delete(actionId);
+
+      await interaction.update({
+        content:
+          "# Request Closed\n" +
+          "This model request was closed. You can start a new one whenever you need.",
+        components: [guidedModelThreadControls(actionId, true)],
+      }).catch(async () => {
+        await interaction.reply({ content: "Request closed.", flags: 64 }).catch(() => {});
+      });
+      await interaction.channel?.setArchived?.(true, `Guided model request closed by ${interaction.user.tag}`).catch(() => {});
       return;
     }
 
@@ -9763,9 +9914,9 @@ client.on("interactionCreate", async interaction => {
           "# Quality Level\n" +
           `**Type selected:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType]}\n\n` +
           "Choose how much detail you want for this model.\n\n" +
-          "**Standard** is the best value.\n" +
-          "**Sharper** is better for small details.\n" +
-          "**Max** is for the best possible result when the references are good.",
+          "> **Standard** is the best value.\n" +
+          "> **Sharper** is better for small details.\n" +
+          "> **Max** is for the strongest detail pass when the references are clean.",
         components: guidedModelQualityButtons(actionId),
       });
       return;
@@ -9783,18 +9934,46 @@ client.on("interactionCreate", async interaction => {
       }
 
       session.modelQuality = normalizeModelQuality(extra || "medium");
-      session.status = "collecting";
-      session.stepIndex = 0;
-      session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
+      session.status = "choosing_alpha";
       session.updatedAt = Date.now();
       const qualityConfig = modelQualityConfig(session.modelQuality);
 
       await interaction.update({
         content:
-          "# References\n" +
+          "# Alpha Option\n" +
           `**Quality selected:** ${qualityConfig.label}\n\n` +
-          "Now send the four references one by one. The bot will ask for each side in order.",
-        components: [],
+          "Choose how the AI should treat transparency and cutout details.\n\n" +
+          "> **Standard** is recommended for most solid objects.\n" +
+          "> **Alpha-aware** can help with transparent/cutout references, thin parts, stickers, hair gaps or floating details.\n\n" +
+          "**Tip:** if the object is simple and fully solid, use **Standard**.",
+        components: guidedModelAlphaButtons(actionId),
+      });
+      return;
+    }
+
+    if (kind === "guided3d_alpha") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can use these buttons.", flags: 64 });
+        return;
+      }
+
+      session.useAlpha = extra === "on";
+      session.status = "collecting";
+      session.stepIndex = 0;
+      session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
+      session.updatedAt = Date.now();
+
+      await interaction.update({
+        content:
+          "# References\n" +
+          `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
+          "Send the four references one by one. I will ask for each side in order.",
+        components: [guidedModelThreadControls(actionId)],
       });
       await sendGuidedModelPhotoPrompt(interaction.channel, session);
       return;
@@ -9873,7 +10052,7 @@ client.on("interactionCreate", async interaction => {
         tempDir: session.tempDir,
         textureTone: "normal",
         textureAdjustments: DEFAULT_TEXTURE_ADJUSTMENTS,
-        useAlpha: HYPER3D_USE_ORIGINAL_ALPHA,
+        useAlpha: Boolean(session.useAlpha),
         modelQuality: normalizeModelQuality(session.modelQuality || "medium"),
         advancedTexture: "none",
         textureSource: "none",
@@ -9881,6 +10060,7 @@ client.on("interactionCreate", async interaction => {
         waitingTextureDecision: false,
         priceMode: "guided",
         serviceKey: "multiview",
+        guidedThreadId: session.threadId,
       });
       const action = pendingMultiviewActions.get(generationActionId);
       await startPendingMultiviewGeneration(interaction, generationActionId, action, { updateMode: "review" });
