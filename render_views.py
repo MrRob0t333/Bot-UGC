@@ -154,7 +154,7 @@ light_positions = [
 lighting_presets = {
     "studio": {
         "energy": 420,
-        "top": 350,
+        "top": 280,
         "bottom": 450,
         "size": 18,
         "world": 0.42,
@@ -167,7 +167,7 @@ lighting_presets = {
     },
     "soft": {
         "energy": 380,
-        "top": 420,
+        "top": 300,
         "bottom": 380,
         "size": 26,
         "world": 0.62,
@@ -192,11 +192,11 @@ lighting_presets = {
         },
     },
     "flat": {
-        "energy": 500,
-        "top": 500,
-        "bottom": 500,
-        "size": 34,
-        "world": 0.78,
+        "energy": 520,
+        "top": 240,
+        "bottom": 520,
+        "size": 40,
+        "world": 0.72,
         "weights": {
             "Front_Light": 1.00,
             "Back_Light": 1.00,

@@ -132,13 +132,14 @@ const GUIDED_THREAD_PREMIUM_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THRE
 const GUIDED_THREAD_ELITE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_ELITE_CLOSE_HOURS || 336);
 
 const DEFAULT_RENDER_SETTINGS = {
-  lighting: "studio",
+  lighting: "flat",
   pov: "normal",
   ior: 1,
   roughness: 1,
   exposure: 0.15,
   lightPower: 1,
 };
+const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v2";
 const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "normal").toLowerCase();
 const TEXTURE_TONES = {
   normal: {
@@ -6886,7 +6887,7 @@ function renderSettingsCacheKey(settings) {
   const normalized = normalizeRenderSettings(settings);
   return crypto
     .createHash("sha1")
-    .update(JSON.stringify(normalized))
+    .update(JSON.stringify({ version: VIEW_RENDER_CACHE_VERSION, settings: normalized }))
     .digest("hex")
     .slice(0, 12);
 }
