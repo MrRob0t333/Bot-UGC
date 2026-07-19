@@ -21,6 +21,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
 } = require("discord.js");
 
 function cleanEnv(value, fallback = "") {
@@ -129,6 +130,7 @@ const ROBLOX_SAFE_TRIANGLE_LIMIT = Number(process.env.REFAZER_DEFAULT_TRIANGLES 
 
 const DEFAULT_RENDER_SETTINGS = {
   lighting: "studio",
+  pov: "normal",
   ior: 1,
   roughness: 1,
   exposure: 0.15,
@@ -547,6 +549,18 @@ const commands = [
           { name: "Soft bright", value: "soft" },
           { name: "Dramatic", value: "dramatic" },
           { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("render_pov")
+        .setDescription("Default /views camera POV/framing")
+        .setRequired(false)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Close inspection", value: "close" },
+          { name: "Wide full item", value: "wide" },
+          { name: "Top-down tilt", value: "top_down" }
         )
     )
     .addNumberOption(o =>
@@ -972,6 +986,19 @@ const commands = [
           { name: "Flat inspection", value: "flat" }
         )
     )
+    .addStringOption(o =>
+      o
+        .setName("pov")
+        .setDescription("Camera POV/framing for this render")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Normal", value: "normal" },
+          { name: "Close inspection", value: "close" },
+          { name: "Wide full item", value: "wide" },
+          { name: "Top-down tilt", value: "top_down" }
+        )
+    )
     .addNumberOption(o =>
       o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
     )
@@ -1002,6 +1029,18 @@ const commands = [
           { name: "Soft bright", value: "soft" },
           { name: "Dramatic", value: "dramatic" },
           { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("pov")
+        .setDescription("Camera POV/framing")
+        .setRequired(true)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Close inspection", value: "close" },
+          { name: "Wide full item", value: "wide" },
+          { name: "Top-down tilt", value: "top_down" }
         )
     )
     .addNumberOption(o =>
@@ -1037,6 +1076,19 @@ const commands = [
           { name: "Flat inspection", value: "flat" }
         )
     )
+    .addStringOption(o =>
+      o
+        .setName("pov")
+        .setDescription("Camera POV/framing for this render batch")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Normal", value: "normal" },
+          { name: "Close inspection", value: "close" },
+          { name: "Wide full item", value: "wide" },
+          { name: "Top-down tilt", value: "top_down" }
+        )
+    )
     .addNumberOption(o =>
       o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
     )
@@ -1068,6 +1120,19 @@ const commands = [
           { name: "Soft bright", value: "soft" },
           { name: "Dramatic", value: "dramatic" },
           { name: "Flat inspection", value: "flat" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("pov")
+        .setDescription("Camera POV/framing for this render")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Normal", value: "normal" },
+          { name: "Close inspection", value: "close" },
+          { name: "Wide full item", value: "wide" },
+          { name: "Top-down tilt", value: "top_down" }
         )
     )
     .addNumberOption(o =>
@@ -1654,6 +1719,17 @@ const commands = [
         .setName("channel")
         .setDescription("Channel where the bot should post")
         .setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_post_model_starter")
+    .setDescription("Admin: posts the simple 3D model creation button")
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("Channel where the bot should post")
+        .setRequired(false)
     )
     .toJSON(),
 
@@ -2934,11 +3010,11 @@ function updateWalletPreferences(userId, updates) {
     user.advancedTexturePrompt = updates.advancedTexturePrompt;
   }
   if (updates.renderSettings) {
-    user.renderSettings = {
+    user.renderSettings = normalizeRenderSettings({
       ...DEFAULT_RENDER_SETTINGS,
       ...(user.renderSettings || {}),
       ...updates.renderSettings,
-    };
+    });
   }
   writeWalletDb(db);
   return {
@@ -3038,9 +3114,13 @@ function normalizeRenderSettings(settings = {}) {
   const lighting = ["studio", "soft", "dramatic", "flat"].includes(settings.lighting)
     ? settings.lighting
     : DEFAULT_RENDER_SETTINGS.lighting;
+  const pov = ["normal", "close", "wide", "top_down"].includes(settings.pov)
+    ? settings.pov
+    : DEFAULT_RENDER_SETTINGS.pov;
 
   return {
     lighting,
+    pov,
     ior: clampNumber(settings.ior, 1, 2.5, DEFAULT_RENDER_SETTINGS.ior),
     roughness: clampNumber(settings.roughness, 0, 1, DEFAULT_RENDER_SETTINGS.roughness),
     exposure: clampNumber(settings.exposure, -1, 1, DEFAULT_RENDER_SETTINGS.exposure),
@@ -3052,10 +3132,12 @@ function renderSettingsForInteraction(interaction) {
   const prefs = walletPreferences(interaction.user.id);
   const base = normalizeRenderSettings(prefs.renderSettings);
   const lighting = interaction.options.getString("lighting");
+  const pov = interaction.options.getString("pov");
 
   return normalizeRenderSettings({
     ...base,
     lighting: lighting && lighting !== "default" ? lighting : base.lighting,
+    pov: pov && pov !== "default" ? pov : base.pov,
     ior: interaction.options.getNumber("ior") ?? base.ior,
     roughness: interaction.options.getNumber("roughness") ?? base.roughness,
     exposure: interaction.options.getNumber("exposure") ?? base.exposure,
@@ -3066,6 +3148,7 @@ function renderSettingsForInteraction(interaction) {
 function renderSettingsSummary(settings) {
   return [
     `Lighting: ${settings.lighting}`,
+    `POV: ${settings.pov}`,
     `IOR: ${settings.ior}`,
     `Roughness: ${settings.roughness}`,
     `Exposure: ${settings.exposure}`,
@@ -8638,6 +8721,248 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
   );
 }
 
+const guidedModelSessions = new Map();
+const GUIDED_MODEL_VIEW_STEPS = [
+  { view: "frente", label: "Front", prompt: "Step 1 of 4\nSend a front photo." },
+  { view: "direita", label: "Right", prompt: "Step 2 of 4\nSend a right-side photo." },
+  { view: "esquerda", label: "Left", prompt: "Step 3 of 4\nSend a left-side photo." },
+  { view: "costas", label: "Back", prompt: "Step 4 of 4\nSend a back photo." },
+];
+
+const GUIDED_MODEL_TYPE_LABELS = {
+  person: "Face/person",
+  character: "Character",
+  object: "Pet or object",
+  other: "Other",
+};
+
+function guidedModelStartButton() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("guided3d_start")
+      .setLabel("Create my 3D model")
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
+function guidedModelTypeButtons(threadId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_type:${threadId}:person`)
+        .setLabel("Face/person")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_type:${threadId}:character`)
+        .setLabel("Character")
+        .setStyle(ButtonStyle.Primary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_type:${threadId}:object`)
+        .setLabel("Pet or object")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_type:${threadId}:other`)
+        .setLabel("Other")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+function guidedModelConfirmButtons(threadId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`guided3d_generate:${threadId}`)
+      .setLabel("Yes, create it")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`guided3d_change:${threadId}`)
+      .setLabel("Change a photo")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function guidedModelReplaceButtons(threadId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_replace:${threadId}:frente`)
+        .setLabel("Front")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_replace:${threadId}:direita`)
+        .setLabel("Right")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_replace:${threadId}:esquerda`)
+        .setLabel("Left")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_replace:${threadId}:costas`)
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Primary)
+    ),
+  ];
+}
+
+function guidedModelSessionForThread(threadId) {
+  return guidedModelSessions.get(threadId) || null;
+}
+
+function guidedModelCurrentStep(session) {
+  return GUIDED_MODEL_VIEW_STEPS.find(step => step.view === session.awaitingView)
+    || GUIDED_MODEL_VIEW_STEPS[session.stepIndex || 0]
+    || GUIDED_MODEL_VIEW_STEPS[0];
+}
+
+function parseImageDimensions(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 32) return null;
+
+  if (buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), type: "png" };
+  }
+
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset < buffer.length - 9) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2) break;
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5), type: "jpg" };
+      }
+      offset += 2 + length;
+    }
+  }
+
+  if (buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") {
+    const chunk = buffer.slice(12, 16).toString("ascii");
+    if (chunk === "VP8X" && buffer.length >= 30) {
+      const width = 1 + buffer.readUIntLE(24, 3);
+      const height = 1 + buffer.readUIntLE(27, 3);
+      return { width, height, type: "webp" };
+    }
+  }
+
+  return null;
+}
+
+function validateGuidedModelImage(buffer) {
+  if (!buffer || buffer.length < 20 * 1024) {
+    return { ok: false, level: "red", reason: "I could not identify the image clearly. Try a clearer photo." };
+  }
+
+  const dimensions = parseImageDimensions(buffer);
+  if (!dimensions) {
+    return { ok: false, level: "red", reason: "Send a PNG, JPG or WEBP image." };
+  }
+
+  if (dimensions.width < 384 || dimensions.height < 384) {
+    return { ok: false, level: "yellow", reason: "The image is too small. Send a larger photo." };
+  }
+
+  if (dimensions.width / dimensions.height > 3 || dimensions.height / dimensions.width > 3) {
+    return { ok: false, level: "yellow", reason: "The crop is too wide or too tall. Send a centered photo." };
+  }
+
+  return { ok: true, dimensions };
+}
+
+async function sendGuidedModelPhotoPrompt(channel, session) {
+  const step = guidedModelCurrentStep(session);
+  await channel.send(
+    `${step.prompt}\n\nKeep the object centered and visible.`
+  );
+}
+
+function guidedModelCompleted(session) {
+  return MULTIVIEW_VIEW_ORDER.every(view => session.viewPaths?.[view]);
+}
+
+async function sendGuidedModelSummary(channel, session, interactionLike) {
+  const quote = calculatePrice(interactionLike, {
+    mode: "multiview",
+    texture: "standard",
+    triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+    enhancement: "none",
+    modelQuality: "medium",
+    advancedTexture: "none",
+  });
+
+  session.quoteAmount = quote.walletAmount;
+  const files = multiviewReviewAttachments(session.viewPaths);
+
+  await channel.send({
+    content:
+      "## Ready to create\n" +
+      `Cost: **${formatTokenAmount(quote.walletAmount)}**\n\n` +
+      "Review the four photos. If they look right, click **Yes, create it**.",
+    files,
+    components: [guidedModelConfirmButtons(session.threadId)],
+  });
+}
+
+async function handleGuidedModelPhotoMessage(message, session) {
+  if (message.author.id !== session.userId) return true;
+  if (session.status !== "collecting") return false;
+
+  const attachment = message.attachments.find(item => String(item.contentType || "").startsWith("image/"))
+    || message.attachments.first();
+
+  if (!attachment) {
+    await message.channel.send("Send the photo as an image attachment.");
+    return true;
+  }
+
+  const view = session.awaitingView || guidedModelCurrentStep(session).view;
+  const tempDir = session.tempDir;
+  const inputDir = path.join(tempDir, "guided_inputs");
+  fs.mkdirSync(inputDir, { recursive: true });
+
+  const ext = path.extname(attachment.name || "") || ".png";
+  const outputPath = path.join(inputDir, `${view}${ext}`);
+  const res = await fetch(attachment.url);
+  if (!res.ok) {
+    await message.channel.send("I could not download that image. Try sending it again.");
+    return true;
+  }
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const validation = validateGuidedModelImage(buffer);
+  if (!validation.ok) {
+    await message.channel.send(`${validation.level === "yellow" ? "Almost!" : "Try again."} ${validation.reason}`);
+    return true;
+  }
+
+  fs.writeFileSync(outputPath, buffer);
+  session.viewPaths ||= {};
+  session.viewPaths[view] = outputPath;
+  session.awaitingView = null;
+
+  const currentIndex = GUIDED_MODEL_VIEW_STEPS.findIndex(step => step.view === view);
+  session.stepIndex = Math.max(session.stepIndex || 0, currentIndex + 1);
+  session.updatedAt = Date.now();
+
+  await message.channel.send("Looks good. Let's continue.");
+
+  if (guidedModelCompleted(session)) {
+    session.status = "review";
+    const member = await message.guild.members.fetch(session.userId).catch(() => null);
+    await sendGuidedModelSummary(message.channel, session, { user: message.author, member, guild: message.guild });
+    return true;
+  }
+
+  const nextStep = GUIDED_MODEL_VIEW_STEPS.find(step => !session.viewPaths[step.view]);
+  session.awaitingView = nextStep.view;
+  await sendGuidedModelPhotoPrompt(message.channel, session);
+  return true;
+}
+
 async function sendModelDeliveryParts(sendPayload, { content, items }) {
   let firstMessage = null;
   const failures = [];
@@ -9287,6 +9612,19 @@ client.on("guildMemberAdd", async member => {
 
 client.on("messageCreate", async message => {
   if (!message.guild || message.author?.bot) return;
+
+  const guidedSession = guidedModelSessionForThread(message.channelId);
+  if (guidedSession) {
+    try {
+      const handled = await handleGuidedModelPhotoMessage(message, guidedSession);
+      if (handled) return;
+    } catch (err) {
+      console.error("Guided model photo handling failed:", err);
+      await message.channel.send("Something went wrong with that photo. Send it again.").catch(() => {});
+      return;
+    }
+  }
+
   if (!CLEAN_CHANNEL_IDS.has(message.channelId)) return;
 
   await message.delete().catch(err => {
@@ -9299,6 +9637,170 @@ client.on("messageCreate", async message => {
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
     const [kind, actionId, extra] = String(interaction.customId || "").split(":");
+    if (kind === "guided3d_start") {
+      await interaction.deferReply({ flags: 64 });
+
+      if (!interaction.channel?.threads?.create) {
+        await interaction.editReply("I cannot create a request thread in this channel.");
+        return;
+      }
+
+      let thread;
+      const threadName = `Model of ${interaction.user.username}`.slice(0, 90);
+      try {
+        thread = await interaction.channel.threads.create({
+          name: threadName,
+          type: ChannelType.PrivateThread,
+          invitable: false,
+          reason: `Guided model request by ${interaction.user.tag}`,
+        });
+      } catch (err) {
+        console.warn("Could not create private guided model thread, trying public thread:", err.message || err);
+        thread = await interaction.channel.threads.create({
+          name: threadName,
+          type: ChannelType.PublicThread,
+          reason: `Guided model request by ${interaction.user.tag}`,
+        });
+      }
+
+      await thread.members?.add?.(interaction.user.id).catch(() => {});
+      const tempDir = path.join(__dirname, "temp", "refazer", `guided-${thread.id}`);
+      guidedModelSessions.set(thread.id, {
+        threadId: thread.id,
+        parentChannelId: interaction.channelId,
+        userId: interaction.user.id,
+        status: "choosing_type",
+        stepIndex: 0,
+        viewPaths: {},
+        tempDir,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      await thread.send({
+        content:
+          `Hi ${interaction.user}.\n\n` +
+          "What do you want to turn into a 3D model?",
+        components: guidedModelTypeButtons(thread.id),
+      });
+      await interaction.editReply(`I created your private request thread: ${thread}`);
+      return;
+    }
+
+    if (kind === "guided3d_type") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can use these buttons.", flags: 64 });
+        return;
+      }
+
+      session.objectType = GUIDED_MODEL_TYPE_LABELS[extra] ? extra : "other";
+      session.status = "collecting";
+      session.stepIndex = 0;
+      session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
+      session.updatedAt = Date.now();
+
+      await interaction.update({
+        content:
+          `Type selected: **${GUIDED_MODEL_TYPE_LABELS[session.objectType]}**\n\n` +
+          "Now send the photos one by one.",
+        components: [],
+      });
+      await sendGuidedModelPhotoPrompt(interaction.channel, session);
+      return;
+    }
+
+    if (kind === "guided3d_change") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can change the photos.", flags: 64 });
+        return;
+      }
+
+      await interaction.reply({
+        content: "Which photo do you want to change?",
+        components: guidedModelReplaceButtons(actionId),
+        flags: 64,
+      });
+      return;
+    }
+
+    if (kind === "guided3d_replace") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can change the photos.", flags: 64 });
+        return;
+      }
+      if (!MULTIVIEW_VIEW_ORDER.includes(extra)) {
+        await interaction.reply({ content: "Invalid photo side.", flags: 64 });
+        return;
+      }
+
+      delete session.viewPaths[extra];
+      session.status = "collecting";
+      session.awaitingView = extra;
+      session.updatedAt = Date.now();
+
+      await interaction.update({
+        content: `Send a new **${publicViewName(extra)}** photo in this thread.`,
+        components: [],
+      });
+      await sendGuidedModelPhotoPrompt(interaction.channel, session);
+      return;
+    }
+
+    if (kind === "guided3d_generate") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can generate it.", flags: 64 });
+        return;
+      }
+      if (!guidedModelCompleted(session)) {
+        await interaction.reply({ content: "Send all four photos before generating.", flags: 64 });
+        return;
+      }
+
+      session.status = "generating";
+      session.updatedAt = Date.now();
+      const generationActionId = createPendingMultiviewAction({
+        userId: interaction.user.id,
+        viewPaths: session.viewPaths,
+        texture: "standard",
+        enhancement: "none",
+        triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+        tempDir: session.tempDir,
+        textureTone: "normal",
+        textureAdjustments: DEFAULT_TEXTURE_ADJUSTMENTS,
+        useAlpha: HYPER3D_USE_ORIGINAL_ALPHA,
+        modelQuality: "medium",
+        advancedTexture: "none",
+        textureSource: "none",
+        advancedTexturePrompted: true,
+        waitingTextureDecision: false,
+        priceMode: "guided",
+        serviceKey: "multiview",
+      });
+      const action = pendingMultiviewActions.get(generationActionId);
+      await startPendingMultiviewGeneration(interaction, generationActionId, action, { updateMode: "review" });
+      return;
+    }
+
     if (kind === "multiview_texture_offer") {
       const action = pendingMultiviewActions.get(actionId);
       if (!action) {
@@ -9522,6 +10024,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_guide",
     "admin_post_terms",
     "admin_post_info",
+    "admin_post_model_starter",
     "admin_bulk_views",
     "admin_views_full",
     "admin_roblox_status",
@@ -9594,6 +10097,7 @@ client.on("interactionCreate", async interaction => {
       const textureValue = interaction.options.getNumber("texture_value");
       const renderUpdates = {};
       const renderLighting = interaction.options.getString("render_lighting");
+      const renderPov = interaction.options.getString("render_pov");
       const renderIor = interaction.options.getNumber("render_ior");
       const renderRoughness = interaction.options.getNumber("render_roughness");
       const renderExposure = interaction.options.getNumber("render_exposure");
@@ -9601,6 +10105,7 @@ client.on("interactionCreate", async interaction => {
       const advancedTexturePrompt = interaction.options.getString("advanced_texture_prompt");
 
       if (renderLighting) renderUpdates.lighting = renderLighting;
+      if (renderPov) renderUpdates.pov = renderPov;
       if (renderIor !== null) renderUpdates.ior = renderIor;
       if (renderRoughness !== null) renderUpdates.roughness = renderRoughness;
       if (renderExposure !== null) renderUpdates.exposure = renderExposure;
@@ -9616,7 +10121,7 @@ client.on("interactionCreate", async interaction => {
             value: textureValue ?? walletPreferences(interaction.user.id).textureAdjustments.value,
           }
           : null,
-        renderSettings: Object.keys(renderUpdates).length ? normalizeRenderSettings(renderUpdates) : null,
+        renderSettings: Object.keys(renderUpdates).length ? renderUpdates : null,
         advancedTexturePrompt: advancedTexturePrompt ? advancedTexturePrompt === "show" : undefined,
       });
       const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
@@ -9659,6 +10164,7 @@ client.on("interactionCreate", async interaction => {
       "admin_post_guide",
       "admin_post_terms",
       "admin_post_info",
+      "admin_post_model_starter",
       "admin_bulk_views",
       "admin_views_full",
       "admin_roblox_status",
@@ -10395,6 +10901,33 @@ client.on("interactionCreate", async interaction => {
           `## Official Message Published\n` +
           `**Type:** ${type.replace(/_/g, " ")}\n` +
           `**Channel:** ${channel}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_post_model_starter") {
+      const channel = interaction.options.getChannel("channel") || interaction.channel;
+
+      if (!channel?.isTextBased?.()) {
+        await interaction.reply({
+          content: "## Channel Not Supported\nChoose a text channel where the bot can send messages.",
+          flags: 64,
+        });
+        return;
+      }
+
+      await channel.send({
+        content:
+          "# Create Your 3D Model\n" +
+          "Click the button below and I will guide you step by step.\n\n" +
+          "You will send one photo at a time: **Front**, **Right**, **Left** and **Back**.\n" +
+          "You only pay after the final model is delivered.",
+        components: [guidedModelStartButton()],
+      });
+
+      await interaction.reply({
+        content: `## Starter Published\n**Channel:** ${channel}`,
         flags: 64,
       });
       return;

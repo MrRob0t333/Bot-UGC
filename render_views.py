@@ -9,6 +9,7 @@ settings_path = args[3] if len(args) > 3 else ""
 
 DEFAULT_RENDER_SETTINGS = {
     "lighting": "studio",
+    "pov": "normal",
     "ior": 1.0,
     "roughness": 1.0,
     "exposure": 0.15,
@@ -35,6 +36,8 @@ def load_render_settings(path):
 
     if settings.get("lighting") not in {"studio", "soft", "dramatic", "flat"}:
         settings["lighting"] = DEFAULT_RENDER_SETTINGS["lighting"]
+    if settings.get("pov") not in {"normal", "close", "wide", "top_down"}:
+        settings["pov"] = DEFAULT_RENDER_SETTINGS["pov"]
 
     settings["ior"] = clamp(settings.get("ior"), 1.0, 2.5, DEFAULT_RENDER_SETTINGS["ior"])
     settings["roughness"] = clamp(settings.get("roughness"), 0.0, 1.0, DEFAULT_RENDER_SETTINGS["roughness"])
@@ -124,7 +127,15 @@ cam = bpy.data.objects.new("Camera", cam_data)
 bpy.context.collection.objects.link(cam)
 bpy.context.scene.camera = cam
 cam.data.type = "ORTHO"
-cam.data.ortho_scale = size * 1.35
+
+pov_presets = {
+    "normal": {"scale": 1.35, "distance": 2.2, "z": 0.0},
+    "close": {"scale": 1.05, "distance": 1.9, "z": 0.0},
+    "wide": {"scale": 1.65, "distance": 2.6, "z": 0.0},
+    "top_down": {"scale": 1.35, "distance": 2.25, "z": 0.35},
+}
+pov = pov_presets.get(render_settings["pov"], pov_presets["normal"])
+cam.data.ortho_scale = size * pov["scale"]
 
 # =========================
 # Iluminação uniforme 360°
@@ -224,8 +235,11 @@ except Exception:
     pass
 
 def look_at(camera, direction):
-    direction = Vector(direction).normalized()
-    distance = size * 2.2
+    direction = Vector(direction)
+    if render_settings["pov"] == "top_down" and abs(direction.z) < 0.01:
+        direction.z += pov["z"]
+    direction = direction.normalized()
+    distance = size * pov["distance"]
     camera.location = direction * distance
     target = Vector((0, 0, 0))
     direction_to_target = target - camera.location
