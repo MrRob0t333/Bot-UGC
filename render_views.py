@@ -153,32 +153,56 @@ light_positions = [
 
 lighting_presets = {
     "studio": {
-        "energy": 450,
+        "energy": 420,
         "top": 350,
-        "bottom": 550,
+        "bottom": 450,
         "size": 18,
-        "world": 0.50,
+        "world": 0.42,
+        "weights": {
+            "Front_Light": 1.15,
+            "Back_Light": 0.70,
+            "Left_Light": 0.85,
+            "Right_Light": 0.85,
+        },
     },
     "soft": {
-        "energy": 520,
-        "top": 460,
-        "bottom": 520,
+        "energy": 380,
+        "top": 420,
+        "bottom": 380,
         "size": 26,
-        "world": 0.58,
+        "world": 0.62,
+        "weights": {
+            "Front_Light": 1.00,
+            "Back_Light": 0.85,
+            "Left_Light": 0.95,
+            "Right_Light": 0.95,
+        },
     },
     "dramatic": {
-        "energy": 270,
-        "top": 680,
-        "bottom": 130,
-        "size": 10,
-        "world": 0.32,
+        "energy": 520,
+        "top": 760,
+        "bottom": 40,
+        "size": 7,
+        "world": 0.12,
+        "weights": {
+            "Front_Light": 1.35,
+            "Back_Light": 0.12,
+            "Left_Light": 0.18,
+            "Right_Light": 1.10,
+        },
     },
     "flat": {
-        "energy": 620,
-        "top": 620,
-        "bottom": 620,
-        "size": 30,
-        "world": 0.65,
+        "energy": 500,
+        "top": 500,
+        "bottom": 500,
+        "size": 34,
+        "world": 0.78,
+        "weights": {
+            "Front_Light": 1.00,
+            "Back_Light": 1.00,
+            "Left_Light": 1.00,
+            "Right_Light": 1.00,
+        },
     },
 }
 preset = lighting_presets[render_settings["lighting"]]
@@ -191,8 +215,8 @@ for name, location in light_positions:
 
     light.location = location
 
-    # Luz muito mais suave
-    light.data.energy = preset["energy"] * light_power
+    light_weight = preset.get("weights", {}).get(name, 1.0)
+    light.data.energy = preset["energy"] * light_weight * light_power
 
     # Área muito maior = sombras suaves
     light.data.size = preset["size"]
