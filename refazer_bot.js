@@ -184,6 +184,11 @@ const MODEL_QUALITY_CONFIG = {
     hyper3dQuality: "high",
     priceExtraBrl: Number(process.env.REFAZER_MODEL_QUALITY_HIGH_EXTRA_BRL || 1),
   },
+  ultra: {
+    label: "Max Detail",
+    hyper3dQuality: cleanEnv(process.env.HYPER3D_ULTRA_QUALITY_VALUE || "high"),
+    priceExtraBrl: Number(process.env.REFAZER_MODEL_QUALITY_ULTRA_EXTRA_BRL || 2),
+  },
 };
 
 const ADVANCED_TEXTURE_CONFIG = {
@@ -8770,6 +8775,25 @@ function guidedModelTypeButtons(threadId) {
   ];
 }
 
+function guidedModelQualityButtons(threadId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_quality:${threadId}:medium`)
+        .setLabel("Standard")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_quality:${threadId}:high`)
+        .setLabel(`Sharper +${brlToWalletTokens(modelQualityConfig("high").priceExtraBrl)} Credits`)
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_quality:${threadId}:ultra`)
+        .setLabel(`Max +${brlToWalletTokens(modelQualityConfig("ultra").priceExtraBrl)} Credits`)
+        .setStyle(ButtonStyle.Success)
+    ),
+  ];
+}
+
 function guidedModelConfirmButtons(threadId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -8876,7 +8900,14 @@ function validateGuidedModelImage(buffer) {
 async function sendGuidedModelPhotoPrompt(channel, session) {
   const step = guidedModelCurrentStep(session);
   await channel.send(
-    `${step.prompt}\n\nKeep the object centered and visible.`
+    [
+      `## ${step.label} Reference`,
+      `**${step.prompt}**`,
+      "",
+      "> Keep the object centered, clear and fully visible.",
+      "> Do not crop important parts.",
+      "> Use the same object, same style and same lighting when possible.",
+    ].join("\n")
   );
 }
 
@@ -8885,12 +8916,14 @@ function guidedModelCompleted(session) {
 }
 
 async function sendGuidedModelSummary(channel, session, interactionLike) {
+  const modelQuality = normalizeModelQuality(session.modelQuality || "medium");
+  const qualityConfig = modelQualityConfig(modelQuality);
   const quote = calculatePrice(interactionLike, {
     mode: "multiview",
     texture: "standard",
     triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
     enhancement: "none",
-    modelQuality: "medium",
+    modelQuality,
     advancedTexture: "none",
   });
 
@@ -8899,9 +8932,17 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
 
   await channel.send({
     content:
-      "## Ready to create\n" +
-      `Cost: **${formatTokenAmount(quote.walletAmount)}**\n\n` +
-      "Review the four photos. If they look right, click **Yes, create it**.",
+      "# Model Review\n" +
+      "Your references are ready.\n\n" +
+      `**Object type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
+      `**Quality:** ${qualityConfig.label}\n` +
+      `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
+      `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+      "## Before Generating\n" +
+      "> Check each side carefully.\n" +
+      "> If one image is wrong, click **Change a photo**.\n" +
+      "> If everything is correct, click **Yes, create it**.\n\n" +
+      "**No Service Credits are charged until the final model is delivered.**",
     files,
     components: [guidedModelConfirmButtons(session.threadId)],
   });
@@ -8915,7 +8956,10 @@ async function handleGuidedModelPhotoMessage(message, session) {
     || message.attachments.first();
 
   if (!attachment) {
-    await message.channel.send("Send the photo as an image attachment.");
+    await message.channel.send(
+      "## Image Missing\n" +
+      "Please upload the photo as an image attachment using Discord's upload button, then send it here."
+    );
     return true;
   }
 
@@ -8928,14 +8972,20 @@ async function handleGuidedModelPhotoMessage(message, session) {
   const outputPath = path.join(inputDir, `${view}${ext}`);
   const res = await fetch(attachment.url);
   if (!res.ok) {
-    await message.channel.send("I could not download that image. Try sending it again.");
+    await message.channel.send(
+      "## Image Download Failed\n" +
+      "I could not read that image. Please upload it again."
+    );
     return true;
   }
 
   const buffer = Buffer.from(await res.arrayBuffer());
   const validation = validateGuidedModelImage(buffer);
   if (!validation.ok) {
-    await message.channel.send(`${validation.level === "yellow" ? "Almost!" : "Try again."} ${validation.reason}`);
+    await message.channel.send(
+      `## ${validation.level === "yellow" ? "Almost There" : "Image Not Accepted"}\n` +
+      `${validation.reason}`
+    );
     return true;
   }
 
@@ -8948,7 +8998,10 @@ async function handleGuidedModelPhotoMessage(message, session) {
   session.stepIndex = Math.max(session.stepIndex || 0, currentIndex + 1);
   session.updatedAt = Date.now();
 
-  await message.channel.send("Looks good. Let's continue.");
+  await message.channel.send(
+    `**${publicViewName(view)} accepted.**\n` +
+    "Let's continue."
+  );
 
   if (guidedModelCompleted(session)) {
     session.status = "review";
@@ -9679,8 +9732,11 @@ client.on("interactionCreate", async interaction => {
 
       await thread.send({
         content:
-          `Hi ${interaction.user}.\n\n` +
-          "What do you want to turn into a 3D model?",
+          "# 3D Model Request\n" +
+          `Welcome ${interaction.user}.\n\n` +
+          "I will guide you step by step. You will send one photo at a time, review everything, and only then start generation.\n\n" +
+          "## First Step\n" +
+          "Choose what type of item you want to create:",
         components: guidedModelTypeButtons(thread.id),
       });
       await interaction.editReply(`I created your private request thread: ${thread}`);
@@ -9699,15 +9755,45 @@ client.on("interactionCreate", async interaction => {
       }
 
       session.objectType = GUIDED_MODEL_TYPE_LABELS[extra] ? extra : "other";
-      session.status = "collecting";
-      session.stepIndex = 0;
-      session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
+      session.status = "choosing_quality";
       session.updatedAt = Date.now();
 
       await interaction.update({
         content:
-          `Type selected: **${GUIDED_MODEL_TYPE_LABELS[session.objectType]}**\n\n` +
-          "Now send the photos one by one.",
+          "# Quality Level\n" +
+          `**Type selected:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType]}\n\n` +
+          "Choose how much detail you want for this model.\n\n" +
+          "**Standard** is the best value.\n" +
+          "**Sharper** is better for small details.\n" +
+          "**Max** is for the best possible result when the references are good.",
+        components: guidedModelQualityButtons(actionId),
+      });
+      return;
+    }
+
+    if (kind === "guided3d_quality") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can use these buttons.", flags: 64 });
+        return;
+      }
+
+      session.modelQuality = normalizeModelQuality(extra || "medium");
+      session.status = "collecting";
+      session.stepIndex = 0;
+      session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
+      session.updatedAt = Date.now();
+      const qualityConfig = modelQualityConfig(session.modelQuality);
+
+      await interaction.update({
+        content:
+          "# References\n" +
+          `**Quality selected:** ${qualityConfig.label}\n\n` +
+          "Now send the four references one by one. The bot will ask for each side in order.",
         components: [],
       });
       await sendGuidedModelPhotoPrompt(interaction.channel, session);
@@ -9788,7 +9874,7 @@ client.on("interactionCreate", async interaction => {
         textureTone: "normal",
         textureAdjustments: DEFAULT_TEXTURE_ADJUSTMENTS,
         useAlpha: HYPER3D_USE_ORIGINAL_ALPHA,
-        modelQuality: "medium",
+        modelQuality: normalizeModelQuality(session.modelQuality || "medium"),
         advancedTexture: "none",
         textureSource: "none",
         advancedTexturePrompted: true,
@@ -10920,9 +11006,14 @@ client.on("interactionCreate", async interaction => {
       await channel.send({
         content:
           "# Create Your 3D Model\n" +
-          "Click the button below and I will guide you step by step.\n\n" +
-          "You will send one photo at a time: **Front**, **Right**, **Left** and **Back**.\n" +
-          "You only pay after the final model is delivered.",
+          "**Generate a 3D model from your images directly inside Discord.**\n\n" +
+          "## How It Works\n" +
+          "> Click the button below.\n" +
+          "> Choose the model type and quality.\n" +
+          "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
+          "> Review your references before generation starts.\n\n" +
+          "## Payment\n" +
+          "**No Service Credits are charged until the final model is delivered.**",
         components: [guidedModelStartButton()],
       });
 
