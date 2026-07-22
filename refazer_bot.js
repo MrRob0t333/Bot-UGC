@@ -176,6 +176,10 @@ const AI_MODEL_LAUNCH_PROMO_ENABLED = cleanEnv(process.env.REFAZER_AI_MODEL_PROM
 const AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_LIMIT || 3);
 const AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_FIRST_PRICE_BRL || 15);
 const AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_REGULAR_PRICE_BRL || 20);
+const AI_MODEL_LAUNCH_PROMO_DISCOUNT_ROLE = cleanEnv(process.env.REFAZER_AI_MODEL_PROMO_DISCOUNT_ROLE, "1529274490289258608");
+const AI_MODEL_LAUNCH_PROMO_ROLE_PRICE_BRL = Number(process.env.REFAZER_AI_MODEL_PROMO_ROLE_PRICE_BRL || 16);
+const AI_MODEL_INCLUDED_REFERENCE_ROUNDS = Number(process.env.REFAZER_AI_MODEL_INCLUDED_REFERENCE_ROUNDS || 1);
+const AI_MODEL_EXTRA_REFERENCE_REGEN_BRL = Number(process.env.REFAZER_AI_MODEL_EXTRA_REFERENCE_REGEN_BRL || 1);
 
 const MODEL_QUALITY_CONFIG = {
   medium: {
@@ -367,11 +371,13 @@ const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", 
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Service Credits";
 const WALLET_MIN_PURCHASE = Number(process.env.REFAZER_WALLET_MIN_PURCHASE || 300);
+const GIFT_CODE_DEFAULT_EXPIRATION_DAYS = Number(process.env.REFAZER_GIFT_CODE_DEFAULT_EXPIRATION_DAYS || 7);
+const GIFT_CODE_MAX_EXPIRATION_DAYS = Number(process.env.REFAZER_GIFT_CODE_MAX_EXPIRATION_DAYS || 30);
 const PURCHASE_EXPIRATION_MINUTES = Number(process.env.REFAZER_PURCHASE_EXPIRATION_MINUTES || 30);
 const PURCHASE_EXPIRATION_MS = PURCHASE_EXPIRATION_MINUTES > 0
   ? PURCHASE_EXPIRATION_MINUTES * 60 * 1000
   : 0;
-const SERVICE_CREDITS_NOTE = "Service Credits are non-transferable, non-withdrawable and redeemable only for Velvet digital services.";
+const SERVICE_CREDITS_NOTE = "Service Credits are non-withdrawable, non-resellable and redeemable only for Velvet digital services. Gift codes, when available, are recipient-restricted and cannot be exchanged for cash, Robux or external value.";
 const VELVET_EMOJIS = {
   shield: "<:escudo:1524645193817788516>",
   coin: "<a:token:1524645150788157440>",
@@ -389,7 +395,10 @@ const DISABLED_STORED_VALUE_COMMANDS = new Set([
   "admin_withdrawals",
   "admin_withdrawal",
 ]);
-const IMAGE_GENERATION_PRICE = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE || 100);
+const IMAGE_GENERATION_PRICE_BRL = Number(process.env.REFAZER_IMAGE_GENERATION_PRICE_BRL || 1);
+const IMAGE_GENERATION_PRICE = Number(
+  process.env.REFAZER_IMAGE_GENERATION_PRICE || brlToWalletTokens(IMAGE_GENERATION_PRICE_BRL)
+);
 const PROMPT_MODEL_PRICE = Number(process.env.REFAZER_PROMPT_MODEL_PRICE || 1100);
 const SERVICE_CREDIT_SCOPES = {
   all: "All services",
@@ -1572,6 +1581,41 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("gift_create")
+    .setDescription("Creates a restricted Service Credits gift for one user")
+    .addUserOption(o =>
+      o.setName("recipient").setDescription("User who can redeem this gift").setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("amount").setDescription("Service Credits amount").setRequired(true).setMinValue(1)
+    )
+    .addIntegerOption(o =>
+      o
+        .setName("expires_days")
+        .setDescription(`Expiration in days. Default ${GIFT_CODE_DEFAULT_EXPIRATION_DAYS}, max ${GIFT_CODE_MAX_EXPIRATION_DAYS}`)
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(GIFT_CODE_MAX_EXPIRATION_DAYS)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("gift_redeem")
+    .setDescription("Redeems a Service Credits gift code sent to you")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Gift code").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("gift_history")
+    .setDescription("Shows your recent Service Credits history")
+    .addIntegerOption(o =>
+      o.setName("limit").setDescription("How many entries to show").setRequired(false).setMinValue(1).setMaxValue(25)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("admin_code_create")
     .setDescription("Admin: creates a limited Service Credits promo code")
     .addStringOption(o =>
@@ -1605,6 +1649,28 @@ const commands = [
   new SlashCommandBuilder()
     .setName("admin_codes")
     .setDescription("Admin: lists active and recent promo codes")
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_gift_cancel")
+    .setDescription("Admin: cancels an active gift code and refunds the sender")
+    .addStringOption(o =>
+      o.setName("code").setDescription("Gift code").setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("reason").setDescription("Team note").setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_credit_history")
+    .setDescription("Admin: shows a user's recent Service Credits history")
+    .addUserOption(o =>
+      o.setName("user").setDescription("User").setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("limit").setDescription("How many entries to show").setRequired(false).setMinValue(1).setMaxValue(25)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1740,6 +1806,11 @@ const commands = [
         .setDescription("Channel where the bot should post")
         .setRequired(false)
     )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("generate3d")
+    .setDescription("Starts the guided 3D model request flow")
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -2164,19 +2235,28 @@ function aiModelLaunchPromoFor(interaction) {
 
   const used = aiModelPromoUsage(interaction.user.id);
   const remainingFirstSlots = Math.max(AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT - used, 0);
+  const roleDiscountActive =
+    remainingFirstSlots <= 0 &&
+    AI_MODEL_LAUNCH_PROMO_DISCOUNT_ROLE &&
+    hasRole(interaction, AI_MODEL_LAUNCH_PROMO_DISCOUNT_ROLE);
   const priceBrl = remainingFirstSlots > 0
     ? AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL
-    : AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL;
+    : roleDiscountActive
+      ? AI_MODEL_LAUNCH_PROMO_ROLE_PRICE_BRL
+      : AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL;
 
   return {
     used,
     remainingFirstSlots,
     firstLimit: AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT,
+    roleDiscountActive,
     priceBrl,
     walletAmount: brlToWalletTokens(priceBrl),
     label: remainingFirstSlots > 0
       ? `Launch promo (${used + 1}/${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT})`
-      : "Launch promo",
+      : roleDiscountActive
+        ? "Launch promo role discount"
+        : "Launch promo",
   };
 }
 
@@ -2201,7 +2281,9 @@ function applyAiModelLaunchPromo(interaction, quote) {
       `${promo.label}: ${formatWalletAmount(promo.priceBrl)}`,
       promo.remainingFirstSlots > 0
         ? `First ${promo.firstLimit} AI models: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL)} each`
-        : `Promo price after first ${promo.firstLimit}: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each`,
+        : promo.roleDiscountActive
+          ? `Special role price after first ${promo.firstLimit}: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_ROLE_PRICE_BRL)} each`
+          : `Promo price after first ${promo.firstLimit}: ${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each`,
       ...(quote.promoExtraLines || []),
     ],
   };
@@ -2667,6 +2749,7 @@ function emptyWalletDb() {
     withdrawalRequests: [],
     affiliateWithdrawals: [],
     promoCodes: {},
+    giftCodes: {},
     clothingTemplateActions: {},
     transactions: [],
   };
@@ -2724,6 +2807,11 @@ function normalizePromoCode(code) {
 function promoCodeList(db) {
   db.promoCodes ||= {};
   return db.promoCodes;
+}
+
+function giftCodeList(db) {
+  db.giftCodes ||= {};
+  return db.giftCodes;
 }
 
 function clothingTemplateActionList(db) {
@@ -2967,6 +3055,144 @@ function redeemPromoCode({ userId, code }) {
 
   writeWalletDb(db);
   return { ok: true, promo, balance: user.balance, serviceCredits: user.serviceCredits || [] };
+}
+
+function generateGiftCode(db) {
+  const gifts = giftCodeList(db);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = `GIFT-${crypto.randomBytes(3).toString("hex").toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    if (!gifts[code]) return code;
+  }
+  return `GIFT-${Date.now().toString(36).toUpperCase()}`;
+}
+
+function giftExpirationDate(days) {
+  const safeDays = clampNumber(days, 1, GIFT_CODE_MAX_EXPIRATION_DAYS, GIFT_CODE_DEFAULT_EXPIRATION_DAYS);
+  return new Date(Date.now() + safeDays * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function expireGiftCode(db, gift, actorId = "system") {
+  if (!gift || gift.status !== "active") return false;
+  if (!gift.expiresAt || Date.parse(gift.expiresAt) > Date.now()) return false;
+
+  const sender = walletUser(db, gift.senderId);
+  sender.balance += gift.amount;
+  gift.status = "expired";
+  gift.refundedAt = new Date().toISOString();
+  gift.resolvedBy = actorId;
+
+  walletTransaction(db, {
+    userId: gift.senderId,
+    type: "gift_expired_refund",
+    amount: gift.amount,
+    actorId,
+    reason: `Gift code ${gift.code} expired and was refunded`,
+    meta: { code: gift.code, recipientId: gift.recipientId },
+  });
+  return true;
+}
+
+function createGiftCode({ senderId, recipientId, amount, expiresDays }) {
+  const db = readWalletDb();
+  const sender = walletUser(db, senderId);
+
+  if (sender.balance < amount) {
+    return { ok: false, reason: "Insufficient Service Credits.", balance: sender.balance };
+  }
+
+  const gifts = giftCodeList(db);
+  const code = generateGiftCode(db);
+  const gift = {
+    code,
+    senderId,
+    recipientId,
+    amount,
+    status: "active",
+    createdAt: new Date().toISOString(),
+    expiresAt: giftExpirationDate(expiresDays),
+    redeemedAt: null,
+    canceledAt: null,
+    refundedAt: null,
+  };
+
+  sender.balance -= amount;
+  gifts[code] = gift;
+
+  walletTransaction(db, {
+    userId: senderId,
+    type: "gift_created",
+    amount: -amount,
+    actorId: senderId,
+    reason: `Gift code ${code} created for ${recipientId}`,
+    meta: { code, recipientId },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, gift, balance: sender.balance };
+}
+
+function redeemGiftCode({ userId, code }) {
+  const normalized = normalizePromoCode(code);
+  const db = readWalletDb();
+  const gifts = giftCodeList(db);
+  const gift = gifts[normalized];
+
+  if (!gift) return { ok: false, reason: "Gift code not found." };
+  if (gift.status !== "active") return { ok: false, reason: `This gift code is ${gift.status}.` };
+  if (expireGiftCode(db, gift, userId)) {
+    writeWalletDb(db);
+    return { ok: false, reason: "This gift code expired and was refunded to the sender." };
+  }
+  if (gift.recipientId !== userId) {
+    return { ok: false, reason: "This gift code belongs to another user." };
+  }
+
+  const user = walletUser(db, userId);
+  user.balance += gift.amount;
+  gift.status = "redeemed";
+  gift.redeemedAt = new Date().toISOString();
+
+  walletTransaction(db, {
+    userId,
+    type: "gift_redeemed",
+    amount: gift.amount,
+    actorId: userId,
+    reason: `Gift code ${normalized} redeemed`,
+    meta: { code: normalized, senderId: gift.senderId },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, gift, balance: user.balance };
+}
+
+function cancelGiftCode({ code, actorId, reason = "" }) {
+  const normalized = normalizePromoCode(code);
+  const db = readWalletDb();
+  const gifts = giftCodeList(db);
+  const gift = gifts[normalized];
+
+  if (!gift) return { ok: false, reason: "Gift code not found." };
+  if (gift.status !== "active") return { ok: false, reason: `This gift code is already ${gift.status}.` };
+
+  const sender = walletUser(db, gift.senderId);
+  sender.balance += gift.amount;
+  gift.status = "canceled";
+  gift.canceledAt = new Date().toISOString();
+  gift.refundedAt = new Date().toISOString();
+  gift.resolvedBy = actorId;
+  gift.reason = reason;
+
+  walletTransaction(db, {
+    userId: gift.senderId,
+    type: "gift_canceled_refund",
+    amount: gift.amount,
+    actorId,
+    reason: reason || `Gift code ${normalized} canceled`,
+    meta: { code: normalized, recipientId: gift.recipientId },
+  });
+
+  writeWalletDb(db);
+  return { ok: true, gift, balance: sender.balance };
 }
 
 function walletBalance(userId) {
@@ -4670,6 +4896,42 @@ function formatBalanceMessage({ balance, serviceCredits = "" }) {
     "",
     "Need more? Use `/buy` to purchase a service credit package.",
   ].filter(Boolean).join("\n");
+}
+
+function formatTransactionAmount(amount) {
+  const number = Number(amount || 0);
+  const prefix = number > 0 ? "+" : "";
+  return `${prefix}${formatTokenAmount(number)}`;
+}
+
+function formatTransactionLine(transaction) {
+  const parsedDate = transaction.createdAt ? new Date(transaction.createdAt) : null;
+  const date = parsedDate && Number.isFinite(parsedDate.getTime())
+    ? parsedDate.toISOString().slice(0, 16).replace("T", " ")
+    : "unknown date";
+  const code = transaction.meta?.code ? ` | \`${transaction.meta.code}\`` : "";
+  const reason = transaction.reason ? ` | ${transaction.reason}` : "";
+  return `\`${date} UTC\` | **${formatTransactionAmount(transaction.amount)}** | ${transaction.type}${code}${reason}`;
+}
+
+function formatCreditHistoryMessage({ userId, transactions, title = "Credit History" }) {
+  return [
+    `# ${title}`,
+    `**User:** <@${userId}>`,
+    SERVICE_CREDITS_NOTE,
+    "",
+    transactions.length
+      ? transactions.map(formatTransactionLine).join("\n")
+      : "No credit history found yet.",
+  ].join("\n");
+}
+
+function creditHistoryForUser(userId, limit = 15) {
+  const db = readWalletDb();
+  return db.transactions
+    .filter(transaction => transaction.userId === userId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, clampNumber(limit, 1, 25, 15));
 }
 
 function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
@@ -8754,7 +9016,7 @@ function guidedModelStartButton() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("guided3d_start")
-      .setLabel("Create my 3D model")
+      .setLabel("Start 3D Model Request")
       .setStyle(ButtonStyle.Success)
   );
 }
@@ -8987,13 +9249,14 @@ async function sendGuidedModelPhotoPrompt(channel, session) {
   await channel.send(
     [
       `# ${step.label} Reference`,
-      `**${step.prompt}**`,
+      `## ${step.prompt}`,
       step.instruction,
       "",
-      "## Photo rules",
-      "> Keep the object centered, clear and fully visible.",
-      "> Do not crop important parts.",
-      "> Use the same object, angle style and lighting when possible.",
+      "**Reference checklist**",
+      "> Keep the object centered, sharp and fully visible.",
+      "> Do not crop important parts, outlines, hair, chains, logos or small details.",
+      "> Use matching lighting and distance when possible.",
+      "> If this side is wrong, the final 3D model can also come out wrong.",
     ].join("\n")
   );
 }
@@ -9020,16 +9283,20 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
   await channel.send({
     content:
       "# Model Review\n" +
-      "Your references are ready.\n\n" +
+      "**Your references are ready. Review everything before the AI starts.**\n\n" +
       `**Object type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
       `**Quality:** ${qualityConfig.label}\n` +
       `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
       `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+      "## Included\n" +
+      `> ${AI_MODEL_INCLUDED_REFERENCE_ROUNDS} reference setup/review round included in this model price.\n` +
+      `> Extra reference regeneration, when available, starts at ${formatWalletAmount(AI_MODEL_EXTRA_REFERENCE_REGEN_BRL)}.\n\n` +
       "## Before Generating\n" +
       "> Check each side carefully.\n" +
       "> If one image is wrong, click **Change a photo**.\n" +
-      "> If everything is correct, click **Yes, create it**.\n\n" +
+      "> If everything is correct, click **Yes, create it**.\n" +
+      "> Cash refunds are not available after a correctly delivered digital service. If the model fails to deliver, no Service Credits are deducted.\n\n" +
       "**No Service Credits are charged until the final model is delivered.**",
     files,
     components: [guidedModelConfirmButtons(session.threadId), guidedModelThreadControls(session.threadId)],
@@ -9088,7 +9355,7 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   await message.channel.send(
     `## ${publicViewName(view)} Accepted\n` +
-    "Reference saved. Let's continue."
+    "Reference saved. I will keep the order locked so the AI receives the correct side."
   );
 
   if (guidedModelCompleted(session)) {
@@ -9559,12 +9826,16 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
     "`/buy` - Purchase a service credit package",
     "`/subscribe` - Subscribe to Basic, Premium, Elite or Lifetime plans",
     "`/settings` - Choose your payment currency and preferences",
+    "`/gift_create` - Create a restricted gift code for one user",
+    "`/gift_redeem` - Redeem a gift code sent to you",
+    "`/gift_history` - View your recent Service Credits history",
     "",
     "## 📦 Copy Services",
     "`/steal` - Copy UGC asset files or classic clothing templates automatically",
     "`/bulk_steal_clothing` - Copy multiple clothing templates in bulk",
     "",
     "## 🎨 Model Services",
+    "`/generate3d` - Guided 3D model request with private thread and review buttons",
     "`/price` - Preview the price before ordering",
     "`/remake` - Remake a UGC from an item ID",
     "`/image_model` - Generate a model from one reference image",
@@ -9843,16 +10114,19 @@ client.on("interactionCreate", async interaction => {
       await thread.send({
         content:
           "# 3D Model Request\n" +
-          `Welcome ${interaction.user}.\n\n` +
-          "This private request thread keeps your references and final delivery organized.\n\n" +
-          "## How this works\n" +
+          `Welcome ${interaction.user}. This private thread keeps your references, review and delivery organized.\n\n` +
+          "## Process\n" +
           "> Choose the model type.\n" +
-          "> Choose the quality level.\n" +
+          "> Choose the detail level.\n" +
+          "> Choose whether alpha/cutout awareness should be used.\n" +
           "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
           "> Review everything before generation starts.\n\n" +
+          "## Important\n" +
+          "> The AI follows the images you approve. Wrong side, cropped image or missing detail can affect the final model.\n" +
+          "> Service Credits are charged only after a final model is delivered.\n\n" +
           `**Thread window:** ${formatHoursDuration(closeHours)}. You can close it earlier with **Close request**.\n\n` +
-          "## First step\n" +
-          "Choose what type of item you want to create:",
+          "## Step 1\n" +
+          "Choose the closest model type:",
         components: [...guidedModelTypeButtons(thread.id), guidedModelThreadControls(thread.id)],
       });
       await interaction.editReply(`I created your private request thread: ${thread}`);
@@ -9914,10 +10188,10 @@ client.on("interactionCreate", async interaction => {
         content:
           "# Quality Level\n" +
           `**Type selected:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType]}\n\n` +
-          "Choose how much detail you want for this model.\n\n" +
-          "> **Standard** is the best value.\n" +
-          "> **Sharper** is better for small details.\n" +
-          "> **Max** is for the strongest detail pass when the references are clean.",
+          "Choose how strongly the AI should focus on details.\n\n" +
+          "> **Standard** is the safest value for most UGC-style models.\n" +
+          "> **Sharper** is recommended for small accessories, symbols, hair pieces and details.\n" +
+          "> **Max** is for the strongest detail pass when the references are clean and consistent.",
         components: guidedModelQualityButtons(actionId),
       });
       return;
@@ -9943,9 +10217,9 @@ client.on("interactionCreate", async interaction => {
         content:
           "# Alpha Option\n" +
           `**Quality selected:** ${qualityConfig.label}\n\n` +
-          "Choose how the AI should treat transparency and cutout details.\n\n" +
+          "Choose how the AI should treat transparent/cutout details.\n\n" +
           "> **Standard** is recommended for most solid objects.\n" +
-          "> **Alpha-aware** can help with transparent/cutout references, thin parts, stickers, hair gaps or floating details.\n\n" +
+          "> **Alpha-aware** can help with transparent PNGs, hair gaps, floating pieces, stickers, hearts and thin details.\n\n" +
           "**Tip:** if the object is simple and fully solid, use **Standard**.",
         components: guidedModelAlphaButtons(actionId),
       });
@@ -9973,7 +10247,8 @@ client.on("interactionCreate", async interaction => {
         content:
           "# References\n" +
           `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
-          "Send the four references one by one. I will ask for each side in order.",
+          "Send the four references one by one. I will ask for each side in order.\n\n" +
+          "**Do not send all sides in one message.** This keeps the order clean and prevents wrong-side generations.",
         components: [guidedModelThreadControls(actionId)],
       });
       await sendGuidedModelPhotoPrompt(interaction.channel, session);
@@ -10270,6 +10545,9 @@ client.on("interactionCreate", async interaction => {
     "affiliate_withdraw",
     "subscribe",
     "code_redeem",
+    "gift_create",
+    "gift_redeem",
+    "gift_history",
     "velvet_transferir",
     "velvet_sacar",
     "velvet_admin_add",
@@ -10283,6 +10561,8 @@ client.on("interactionCreate", async interaction => {
     "admin_code_create",
     "admin_code_disable",
     "admin_codes",
+    "admin_gift_cancel",
+    "admin_credit_history",
     "admin_remove",
     "admin_purchases",
     "admin_purchase",
@@ -10305,6 +10585,7 @@ client.on("interactionCreate", async interaction => {
     "bulk_remake",
     "remake",
     "price",
+    "generate3d",
     "generate_image",
     "enhance_images",
     "image_model",
@@ -10423,6 +10704,8 @@ client.on("interactionCreate", async interaction => {
       "admin_code_create",
       "admin_code_disable",
       "admin_codes",
+      "admin_gift_cancel",
+      "admin_credit_history",
       "admin_remove",
       "admin_purchases",
       "admin_purchase",
@@ -10961,6 +11244,81 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (interaction.commandName === "gift_create") {
+      const recipient = interaction.options.getUser("recipient");
+      const amount = interaction.options.getInteger("amount");
+      const expiresDays = interaction.options.getInteger("expires_days") || GIFT_CODE_DEFAULT_EXPIRATION_DAYS;
+
+      if (!recipient || recipient.bot || recipient.id === interaction.user.id) {
+        await interaction.reply({
+          content: "## Gift Not Created\nChoose another real user as the recipient.",
+          flags: 64,
+        });
+        return;
+      }
+
+      const created = createGiftCode({
+        senderId: interaction.user.id,
+        recipientId: recipient.id,
+        amount,
+        expiresDays,
+      });
+
+      if (!created.ok) {
+        await interaction.reply({
+          content:
+            "## Gift Not Created\n" +
+            `${created.reason}\n\n` +
+            `**Available balance:** ${formatTokenAmount(created.balance || walletBalance(interaction.user.id))}`,
+          flags: 64,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content:
+          "# Service Credits Gift Created\n" +
+          `${SERVICE_CREDITS_NOTE}\n\n` +
+          `**Recipient:** ${recipient}\n` +
+          `**Amount:** ${formatTokenAmount(created.gift.amount)}\n` +
+          `**Gift code:** \`${created.gift.code}\`\n` +
+          `**Expires:** ${created.gift.expiresAt}\n` +
+          `**Your remaining balance:** ${formatTokenAmount(created.balance)}\n\n` +
+          "Only the selected recipient can redeem this gift with `/gift_redeem`.",
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "gift_redeem") {
+      const code = interaction.options.getString("code");
+      const redeemed = redeemGiftCode({ userId: interaction.user.id, code });
+
+      await interaction.reply({
+        content: redeemed.ok
+          ? "# Gift Redeemed\n" +
+            `${SERVICE_CREDITS_NOTE}\n\n` +
+            `**Code:** \`${redeemed.gift.code}\`\n` +
+            `**Added:** ${formatTokenAmount(redeemed.gift.amount)}\n` +
+            `**New balance:** ${formatTokenAmount(redeemed.balance)}`
+          : `## Gift Not Redeemed\n${redeemed.reason}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "gift_history") {
+      const limit = interaction.options.getInteger("limit") || 15;
+      await interaction.reply({
+        content: formatCreditHistoryMessage({
+          userId: interaction.user.id,
+          transactions: creditHistoryForUser(interaction.user.id, limit),
+        }),
+        flags: 64,
+      });
+      return;
+    }
+
     if (interaction.commandName === "admin_code_create") {
       const code = interaction.options.getString("code");
       const amount = interaction.options.getInteger("amount");
@@ -11022,6 +11380,40 @@ client.on("interactionCreate", async interaction => {
             ),
           ].join("\n")
           : "## Promo Codes\nNo codes created yet.",
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_gift_cancel") {
+      const code = interaction.options.getString("code");
+      const reason = interaction.options.getString("reason") || "";
+      const canceled = cancelGiftCode({ code, actorId: interaction.user.id, reason });
+
+      await interaction.reply({
+        content: canceled.ok
+          ? "## Gift Code Canceled\n" +
+            `**Code:** \`${canceled.gift.code}\`\n` +
+            `**Sender:** <@${canceled.gift.senderId}>\n` +
+            `**Recipient:** <@${canceled.gift.recipientId}>\n` +
+            `**Refunded:** ${formatTokenAmount(canceled.gift.amount)}\n` +
+            `**Sender balance:** ${formatTokenAmount(canceled.balance)}`
+          : `## Gift Not Canceled\n${canceled.reason}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_credit_history") {
+      const target = interaction.options.getUser("user");
+      const limit = interaction.options.getInteger("limit") || 15;
+
+      await interaction.reply({
+        content: formatCreditHistoryMessage({
+          userId: target.id,
+          transactions: creditHistoryForUser(target.id, limit),
+          title: "Admin Credit History",
+        }),
         flags: 64,
       });
       return;
@@ -11173,6 +11565,26 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (interaction.commandName === "generate3d") {
+      await interaction.reply({
+        content:
+          "# Start a 3D Model Request\n" +
+          "**Use this guided flow if you want the easiest way to create a model.**\n\n" +
+          "## What is included\n" +
+          "> Send **Front**, **Right**, **Left** and **Back** references.\n" +
+          "> Choose the model type, detail level and alpha option.\n" +
+          "> Review all images before the AI starts.\n" +
+          "> Your final model is delivered only after generation succeeds.\n\n" +
+          "## Payment\n" +
+          "> No Service Credits are charged until the final model is delivered.\n" +
+          "> If your images are wrong and you approve them anyway, the final result may also be wrong.\n\n" +
+          "Click below to open your private request thread.",
+        components: [guidedModelStartButton()],
+        flags: 64,
+      });
+      return;
+    }
+
     if (interaction.commandName === "admin_post_model_starter") {
       const channel = interaction.options.getChannel("channel") || interaction.channel;
 
@@ -11187,12 +11599,16 @@ client.on("interactionCreate", async interaction => {
       await channel.send({
         content:
           "# Create Your 3D Model\n" +
-          "**Generate a 3D model from your images directly inside Discord.**\n\n" +
-          "## How It Works\n" +
-          "> Click the button below.\n" +
-          "> Choose the model type and quality.\n" +
+          "**Generate a 3D model from images directly inside Discord.**\n\n" +
+          "## How it works\n" +
+          "> Click **Start 3D Model Request**.\n" +
+          "> Choose type, quality and alpha option.\n" +
           "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
-          "> Review your references before generation starts.\n\n" +
+          "> Review the references before generation starts.\n\n" +
+          "## Launch offer\n" +
+          `> First ${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT} delivered AI models: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL)} each**.\n` +
+          `> After that: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each**.\n` +
+          `> Special role price: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_ROLE_PRICE_BRL)} each** after the first ${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT}.\n\n` +
           "## Payment\n" +
           "**No Service Credits are charged until the final model is delivered.**",
         components: [guidedModelStartButton()],
