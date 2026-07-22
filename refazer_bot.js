@@ -9562,6 +9562,52 @@ async function prepareGuidedModelReferences(channel, session, interactionLike) {
   return true;
 }
 
+async function sendGuidedAdminReferencePreview(message, session, view, sourcePath) {
+  if (!memberHasRole(message.member, ADMIN_ROLE)) return;
+  if (!["economy", "ai"].includes(session.enhancement)) return;
+
+  const modeLabel = (IMAGE_ENHANCEMENTS[session.enhancement] || IMAGE_ENHANCEMENTS.none).label;
+  const previewMessage = await message.channel.send(
+    `## Admin Preview: ${publicViewName(view)}\n` +
+    `Preparing a test preview with **${modeLabel}**. This admin-only preview does not replace the final review flow.`
+  );
+
+  try {
+    const previewDir = path.join(session.tempDir, "guided_admin_previews");
+    fs.mkdirSync(previewDir, { recursive: true });
+    let previewPath = sourcePath;
+
+    if (session.enhancement === "economy") {
+      previewPath = await enhanceImageLocally({
+        imagePath: sourcePath,
+        outputPath: path.join(previewDir, `${view}_admin_clean.png`),
+      });
+    } else if (session.enhancement === "ai") {
+      previewPath = await enhanceImageWithOpenAI({
+        imagePath: sourcePath,
+        outputPath: path.join(previewDir, `${view}_admin_ai.png`),
+        prompt: guidedAiEnhancementPrompt({
+          objectType: session.objectType || "other",
+          view,
+        }),
+      });
+    }
+
+    await previewMessage.edit({
+      content:
+        `## Admin Preview Ready: ${publicViewName(view)}\n` +
+        "Use this only to inspect the image enhancement behavior. The customer review still happens after all four sides and balance check.",
+      files: [new AttachmentBuilder(previewPath, { name: `${view}_admin_preview.png` })],
+    }).catch(() => {});
+  } catch (err) {
+    console.warn(`Guided admin preview failed for ${view}:`, err.message || err);
+    await previewMessage.edit(
+      `## Admin Preview Failed: ${publicViewName(view)}\n` +
+      `\`${String(err.message || err).slice(0, 600)}\``
+    ).catch(() => {});
+  }
+}
+
 async function handleGuidedModelPhotoMessage(message, session) {
   if (message.author.id !== session.userId) return true;
   if (session.status !== "collecting") return false;
@@ -9609,6 +9655,8 @@ async function handleGuidedModelPhotoMessage(message, session) {
   session.originalViewPaths[view] = outputPath;
   session.viewPaths[view] = outputPath;
   session.awaitingView = null;
+
+  await sendGuidedAdminReferencePreview(message, session, view, outputPath);
 
   const currentIndex = GUIDED_MODEL_VIEW_STEPS.findIndex(step => step.view === view);
   session.stepIndex = Math.max(session.stepIndex || 0, currentIndex + 1);
