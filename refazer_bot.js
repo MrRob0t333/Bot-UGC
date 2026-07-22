@@ -9082,6 +9082,22 @@ function guidedModelAlphaButtons(threadId) {
   ];
 }
 
+function guidedModelEnhancementButtons(threadId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`guided3d_enhancement:${threadId}:none`)
+        .setLabel("Use originals")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`guided3d_enhancement:${threadId}:economy`)
+        .setLabel("Clean references")
+        .setStyle(ButtonStyle.Primary)
+    ),
+    guidedModelThreadControls(threadId),
+  ];
+}
+
 function guidedModelConfirmButtons(threadId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -9272,7 +9288,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
     mode: "multiview",
     texture: "standard",
     triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
-    enhancement: "none",
+    enhancement: session.enhancement || "none",
     modelQuality,
     advancedTexture: "none",
   });
@@ -9286,6 +9302,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       "**Your references are ready. Review everything before the AI starts.**\n\n" +
       `**Object type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
       `**Quality:** ${qualityConfig.label}\n` +
+      `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement || "none"] || IMAGE_ENHANCEMENTS.none).label}\n` +
       `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
       `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
@@ -9345,8 +9362,27 @@ async function handleGuidedModelPhotoMessage(message, session) {
   }
 
   fs.writeFileSync(outputPath, buffer);
+  let finalPath = outputPath;
+  if (session.enhancement === "economy") {
+    try {
+      const cleanedDir = path.join(tempDir, "guided_clean_refs");
+      fs.mkdirSync(cleanedDir, { recursive: true });
+      finalPath = await enhanceImageLocally({
+        imagePath: outputPath,
+        outputPath: path.join(cleanedDir, `${view}_clean.png`),
+      });
+    } catch (err) {
+      console.warn(`Guided local cleanup failed for ${view}:`, err.message || err);
+      await message.channel.send(
+        `## ${publicViewName(view)} Cleanup Skipped\n` +
+        "I saved the original reference because the local cleanup failed."
+      );
+    }
+  }
   session.viewPaths ||= {};
-  session.viewPaths[view] = outputPath;
+  session.originalViewPaths ||= {};
+  session.originalViewPaths[view] = outputPath;
+  session.viewPaths[view] = finalPath;
   session.awaitingView = null;
 
   const currentIndex = GUIDED_MODEL_VIEW_STEPS.findIndex(step => step.view === view);
@@ -9355,7 +9391,7 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   await message.channel.send(
     `## ${publicViewName(view)} Accepted\n` +
-    "Reference saved. I will keep the order locked so the AI receives the correct side."
+    `Reference saved${session.enhancement === "economy" ? " and cleaned" : ""}. I will keep the order locked so the AI receives the correct side.`
   );
 
   if (guidedModelCompleted(session)) {
@@ -10104,6 +10140,8 @@ client.on("interactionCreate", async interaction => {
         status: "choosing_type",
         stepIndex: 0,
         viewPaths: {},
+        originalViewPaths: {},
+        enhancement: "none",
         tempDir,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -10238,6 +10276,34 @@ client.on("interactionCreate", async interaction => {
       }
 
       session.useAlpha = extra === "on";
+      session.status = "choosing_enhancement";
+      session.updatedAt = Date.now();
+
+      await interaction.update({
+        content:
+          "# Reference Prep\n" +
+          `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
+          "Choose how the bot should prepare your images before the model generation.\n\n" +
+          "> **Use originals** keeps your files exactly as sent.\n" +
+          "> **Clean references** applies a safe local cleanup for clarity and sharper readable references. It does not use generative AI, so it is safer for shape preservation.\n\n" +
+          "**Recommended:** use **Clean references** when screenshots are dark, compressed or slightly blurry.",
+        components: guidedModelEnhancementButtons(actionId),
+      });
+      return;
+    }
+
+    if (kind === "guided3d_enhancement") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can use these buttons.", flags: 64 });
+        return;
+      }
+
+      session.enhancement = extra === "economy" ? "economy" : "none";
       session.status = "collecting";
       session.stepIndex = 0;
       session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
@@ -10246,7 +10312,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.update({
         content:
           "# References\n" +
-          `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
+          `**Reference prep:** ${session.enhancement === "economy" ? "Clean references" : "Use originals"}\n\n` +
           "Send the four references one by one. I will ask for each side in order.\n\n" +
           "**Do not send all sides in one message.** This keeps the order clean and prevents wrong-side generations.",
         components: [guidedModelThreadControls(actionId)],
@@ -10323,7 +10389,7 @@ client.on("interactionCreate", async interaction => {
         userId: interaction.user.id,
         viewPaths: session.viewPaths,
         texture: "standard",
-        enhancement: "none",
+        enhancement: session.enhancement || "none",
         triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
         tempDir: session.tempDir,
         textureTone: "normal",
