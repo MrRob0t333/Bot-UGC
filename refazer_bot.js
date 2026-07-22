@@ -80,6 +80,10 @@ const NANO_BANANA_PRO_ENDPOINT = cleanEnv(process.env.NANO_BANANA_PRO_ENDPOINT);
 const NANO_BANANA_PRO_API_KEY = cleanEnv(process.env.NANO_BANANA_PRO_API_KEY);
 const GEMINI_API_KEY = cleanEnv(process.env.GEMINI_API_KEY);
 const GEMINI_API_BASE = cleanEnv(process.env.GEMINI_API_BASE, "https://generativelanguage.googleapis.com/v1beta");
+const OPENAI_API_KEY = cleanEnv(process.env.OPENAI_API_KEY);
+const OPENAI_IMAGE_MODEL = cleanEnv(process.env.OPENAI_IMAGE_MODEL, "gpt-image-1-mini");
+const OPENAI_IMAGE_QUALITY = cleanEnv(process.env.OPENAI_IMAGE_QUALITY, "high");
+const OPENAI_IMAGE_SIZE = cleanEnv(process.env.OPENAI_IMAGE_SIZE, "1024x1024");
 const TRIPO_AI_ENDPOINT = cleanEnv(process.env.TRIPO_AI_ENDPOINT);
 const TRIPO_AI_API_KEY = cleanEnv(process.env.TRIPO_AI_API_KEY);
 const TRIPO_API_KEY = cleanEnv(process.env.TRIPO_API_KEY || TRIPO_AI_API_KEY);
@@ -337,6 +341,12 @@ const IMAGE_ENHANCEMENTS = {
     model: null,
     priceExtra: 3,
     estimatedCostBrl: 0,
+  },
+  ai: {
+    label: "AI reference enhancement",
+    model: "openai-image",
+    priceExtra: Number(process.env.REFAZER_GUIDED_AI_ENHANCE_EXTRA_BRL || 0),
+    estimatedCostBrl: Number(process.env.REFAZER_API_COST_ENHANCEMENT_AI_BRL || 1),
   },
   standard: {
     label: "Standard",
@@ -5436,6 +5446,7 @@ function formatOfficialInfoMessage(kind) {
 
 function imageEnhancementIsReady(enhancement) {
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
+  if (enhancement === "ai") return Boolean(OPENAI_API_KEY);
   return enhancementConfig.model === null || Boolean(GEMINI_API_KEY || NANO_BANANA_PRO_ENDPOINT);
 }
 
@@ -7592,6 +7603,118 @@ async function enhanceImageWithGeminiFallbacks({ imagePath, outputPath, model })
   throw new Error(`All image enhancement attempts failed. ${errors.join(" | ")}`);
 }
 
+function guidedAiEnhancementPrompt({ objectType, view }) {
+  const side = publicViewName(view).toLowerCase();
+  const baseRules = [
+    "Edit the provided image as a conservative 3D-model reference cleanup.",
+    "Return only the edited image.",
+    "Preserve the exact object identity, outline, silhouette, proportions, camera angle, pose, colors, material categories, style, background and lighting direction.",
+    "Keep every visible part in the same position and do not invent hidden areas.",
+    "Do not add, remove, replace, restyle, reinterpret, crop, rotate, mirror, warp or redesign any element.",
+    "Improve only reference readability: sharper edges, clearer small details, cleaner texture readability, less compression blur and better separation between dark shapes.",
+    "Keep the image suitable as a faithful multiview input for generating a Roblox-ready 3D model.",
+  ];
+
+  if (objectType === "person") {
+    return [
+      ...baseRules,
+      "This is a floating head or head accessory reference, not a full-body portrait.",
+      "Preserve the exact face, expression, skin tone, hair shape, hair placement and accessories.",
+      "Do not add a neck, shoulders, body, clothes, new facial features, new hair, makeup, jewelry or realistic redesigns.",
+      side.includes("back")
+        ? "For the back view, keep it as a true back view. Do not reveal eyes, mouth or a front-facing face."
+        : "Keep the same visible face angle. Do not beautify, age, gender-swap or change facial structure.",
+    ].join(" ");
+  }
+
+  if (objectType === "character") {
+    return [
+      ...baseRules,
+      "This is a stylized character or avatar item reference.",
+      "Keep the same cartoon or game-style look. Do not make it photorealistic.",
+      "Sharpen readable features, seams, symbols and material detail while preserving the original geometry and colors.",
+    ].join(" ");
+  }
+
+  return [
+    ...baseRules,
+    "This is a wearable accessory or product-style asset, not a human character.",
+    "Keep the exact cartoon or stylized look when present. Do not make it realistic unless the original already is realistic.",
+    "Enhance material readability with subtle depth, edge clarity and ambient-occlusion-like separation without changing the shape.",
+    side.includes("back")
+      ? "For the back view, keep it as a true back view. Do not convert it into a front view."
+      : "",
+  ].filter(Boolean).join(" ");
+}
+
+async function enhanceImageWithOpenAI({ imagePath, outputPath, prompt }) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
+
+  const finalOutputPath = outputPath.replace(/\.[^.]+$/i, ".png");
+  const imageBuffer = fs.readFileSync(imagePath);
+  const form = new FormData();
+  form.append("model", OPENAI_IMAGE_MODEL);
+  form.append("prompt", prompt);
+  form.append("image", new Blob([imageBuffer], { type: getImageContentType(imagePath) }), path.basename(imagePath));
+  form.append("size", OPENAI_IMAGE_SIZE);
+  form.append("quality", OPENAI_IMAGE_QUALITY);
+  form.append("response_format", "b64_json");
+
+  let res = await fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: form,
+  });
+
+  let text = await res.text();
+  if (!res.ok && /response_format|unknown parameter|unsupported/i.test(text)) {
+    const retryForm = new FormData();
+    retryForm.append("model", OPENAI_IMAGE_MODEL);
+    retryForm.append("prompt", prompt);
+    retryForm.append("image", new Blob([imageBuffer], { type: getImageContentType(imagePath) }), path.basename(imagePath));
+    retryForm.append("size", OPENAI_IMAGE_SIZE);
+    retryForm.append("quality", OPENAI_IMAGE_QUALITY);
+
+    res = await fetch("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: retryForm,
+    });
+    text = await res.text();
+  }
+
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!res.ok) {
+    throw new Error(`OpenAI image enhancement failed (${res.status}): ${text || res.statusText}`);
+  }
+
+  const item = json?.data?.[0];
+  if (item?.b64_json) {
+    fs.writeFileSync(finalOutputPath, Buffer.from(item.b64_json, "base64"));
+    return finalOutputPath;
+  }
+
+  if (item?.url) {
+    const imageRes = await fetch(item.url);
+    if (!imageRes.ok) throw new Error(`OpenAI image URL download failed (${imageRes.status})`);
+    fs.writeFileSync(finalOutputPath, Buffer.from(await imageRes.arrayBuffer()));
+    return finalOutputPath;
+  }
+
+  fs.writeFileSync(finalOutputPath.replace(/\.png$/i, ".openai.json"), JSON.stringify(json, null, 2));
+  throw new Error("OpenAI did not return an enhanced image.");
+}
+
 async function enhanceImageLocally({ imagePath, outputPath }) {
   const finalOutputPath = outputPath.replace(/\.[^.]+$/i, ".png");
   const scriptPath = path.join(path.dirname(finalOutputPath), "local_image_enhance.py");
@@ -9083,19 +9206,27 @@ function guidedModelAlphaButtons(threadId) {
 }
 
 function guidedModelEnhancementButtons(threadId) {
-  return [
-    new ActionRowBuilder().addComponents(
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`guided3d_enhancement:${threadId}:none`)
+      .setLabel("Use originals")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`guided3d_enhancement:${threadId}:economy`)
+      .setLabel("Clean references")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  if (OPENAI_API_KEY) {
+    row.addComponents(
       new ButtonBuilder()
-        .setCustomId(`guided3d_enhancement:${threadId}:none`)
-        .setLabel("Use originals")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`guided3d_enhancement:${threadId}:economy`)
-        .setLabel("Clean references")
-        .setStyle(ButtonStyle.Primary)
-    ),
-    guidedModelThreadControls(threadId),
-  ];
+        .setCustomId(`guided3d_enhancement:${threadId}:ai`)
+        .setLabel("AI enhance")
+        .setStyle(ButtonStyle.Success)
+    );
+  }
+
+  return [row, guidedModelThreadControls(threadId)];
 }
 
 function guidedModelConfirmButtons(threadId) {
@@ -9363,6 +9494,7 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   fs.writeFileSync(outputPath, buffer);
   let finalPath = outputPath;
+  let prepLabel = "";
   if (session.enhancement === "economy") {
     try {
       const cleanedDir = path.join(tempDir, "guided_clean_refs");
@@ -9371,12 +9503,41 @@ async function handleGuidedModelPhotoMessage(message, session) {
         imagePath: outputPath,
         outputPath: path.join(cleanedDir, `${view}_clean.png`),
       });
+      prepLabel = " and cleaned";
     } catch (err) {
       console.warn(`Guided local cleanup failed for ${view}:`, err.message || err);
       await message.channel.send(
         `## ${publicViewName(view)} Cleanup Skipped\n` +
         "I saved the original reference because the local cleanup failed."
       );
+    }
+  } else if (session.enhancement === "ai") {
+    const progressMessage = await message.channel.send(
+      `## ${publicViewName(view)} AI Enhancement\n` +
+      "Improving this reference while preserving the same shape, angle and colors..."
+    );
+    try {
+      const aiDir = path.join(tempDir, "guided_ai_refs");
+      fs.mkdirSync(aiDir, { recursive: true });
+      finalPath = await enhanceImageWithOpenAI({
+        imagePath: outputPath,
+        outputPath: path.join(aiDir, `${view}_ai.png`),
+        prompt: guidedAiEnhancementPrompt({
+          objectType: session.objectType || "other",
+          view,
+        }),
+      });
+      prepLabel = " and AI-enhanced";
+      await progressMessage.edit(
+        `## ${publicViewName(view)} AI Enhancement Ready\n` +
+        "The enhanced reference was saved for review."
+      ).catch(() => {});
+    } catch (err) {
+      console.warn(`Guided AI enhancement failed for ${view}:`, err.message || err);
+      await progressMessage.edit(
+        `## ${publicViewName(view)} AI Enhancement Skipped\n` +
+        "The AI provider could not enhance this image safely, so I saved the original reference instead."
+      ).catch(() => {});
     }
   }
   session.viewPaths ||= {};
@@ -9391,7 +9552,7 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   await message.channel.send(
     `## ${publicViewName(view)} Accepted\n` +
-    `Reference saved${session.enhancement === "economy" ? " and cleaned" : ""}. I will keep the order locked so the AI receives the correct side.`
+    `Reference saved${prepLabel}. I will keep the order locked so the AI receives the correct side.`
   );
 
   if (guidedModelCompleted(session)) {
@@ -10285,8 +10446,11 @@ client.on("interactionCreate", async interaction => {
           `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
           "Choose how the bot should prepare your images before the model generation.\n\n" +
           "> **Use originals** keeps your files exactly as sent.\n" +
-          "> **Clean references** applies a safe local cleanup for clarity and sharper readable references. It does not use generative AI, so it is safer for shape preservation.\n\n" +
-          "**Recommended:** use **Clean references** when screenshots are dark, compressed or slightly blurry.",
+          "> **Clean references** applies a safe local cleanup for clarity and sharper readable references. It does not use generative AI, so it is safer for shape preservation.\n" +
+          (OPENAI_API_KEY
+            ? "> **AI enhance** uses a conservative AI cleanup prompt to improve material readability while trying to preserve the exact shape.\n\n"
+            : "\n") +
+          "**Recommended:** use **Clean references** for normal screenshots. Use **AI enhance** only when the image needs stronger texture/detail cleanup.",
         components: guidedModelEnhancementButtons(actionId),
       });
       return;
@@ -10303,7 +10467,15 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      session.enhancement = extra === "economy" ? "economy" : "none";
+      if (extra === "ai" && !OPENAI_API_KEY) {
+        await interaction.reply({
+          content: "AI enhancement is not configured yet. Use **Clean references** or **Use originals**.",
+          flags: 64,
+        });
+        return;
+      }
+
+      session.enhancement = extra === "ai" ? "ai" : extra === "economy" ? "economy" : "none";
       session.status = "collecting";
       session.stepIndex = 0;
       session.awaitingView = GUIDED_MODEL_VIEW_STEPS[0].view;
@@ -10312,7 +10484,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.update({
         content:
           "# References\n" +
-          `**Reference prep:** ${session.enhancement === "economy" ? "Clean references" : "Use originals"}\n\n` +
+          `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement] || IMAGE_ENHANCEMENTS.none).label}\n\n` +
           "Send the four references one by one. I will ask for each side in order.\n\n" +
           "**Do not send all sides in one message.** This keeps the order clean and prevents wrong-side generations.",
         components: [guidedModelThreadControls(actionId)],
