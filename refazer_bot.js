@@ -9242,6 +9242,15 @@ function guidedModelConfirmButtons(threadId) {
   );
 }
 
+function guidedModelPrepareButtons(threadId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`guided3d_prepare:${threadId}`)
+      .setLabel("Check balance and prepare references")
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
 function guidedModelThreadControls(threadId, disabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -9416,7 +9425,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
   const modelQuality = normalizeModelQuality(session.modelQuality || "medium");
   const qualityConfig = modelQualityConfig(modelQuality);
   const quote = calculatePrice(interactionLike, {
-    mode: "multiview",
+    mode: "guided",
     texture: "standard",
     triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
     enhancement: session.enhancement || "none",
@@ -9437,6 +9446,9 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
       `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+      (session.prepWarnings?.length
+        ? "## Prep Notes\n" + session.prepWarnings.map(item => `> ${item}`).join("\n") + "\n\n"
+        : "") +
       "## Included\n" +
       `> ${AI_MODEL_INCLUDED_REFERENCE_ROUNDS} reference setup/review round included in this model price.\n` +
       `> Extra reference regeneration, when available, starts at ${formatWalletAmount(AI_MODEL_EXTRA_REFERENCE_REGEN_BRL)}.\n\n` +
@@ -9449,6 +9461,105 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
     files,
     components: [guidedModelConfirmButtons(session.threadId), guidedModelThreadControls(session.threadId)],
   });
+}
+
+async function prepareGuidedModelReferences(channel, session, interactionLike) {
+  if (!guidedModelCompleted({ ...session, viewPaths: session.originalViewPaths || session.viewPaths })) {
+    await channel.send("## References Missing\nSend all four photos before preparing the model review.");
+    return false;
+  }
+
+  const quote = calculatePrice(interactionLike, {
+    mode: "guided",
+    texture: "standard",
+    triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+    enhancement: session.enhancement || "none",
+    modelQuality: session.modelQuality || "medium",
+    advancedTexture: "none",
+  });
+  const balance = walletAvailableBalance(session.userId, "multiview");
+
+  if (balance < quote.walletAmount) {
+    session.status = "awaiting_balance";
+    session.updatedAt = Date.now();
+    await channel.send({
+      content:
+        formatInsufficientBalanceMessage({
+          service: "Guided 3D model",
+          price: quote.walletAmount,
+          balance,
+        }) +
+        "\n\nAfter adding Service Credits, click the button below to prepare the references.",
+      components: [guidedModelPrepareButtons(session.threadId), guidedModelThreadControls(session.threadId)],
+    });
+    return false;
+  }
+
+  session.status = "preparing";
+  session.updatedAt = Date.now();
+  session.originalViewPaths ||= { ...session.viewPaths };
+  session.viewPaths = { ...session.originalViewPaths };
+  session.prepWarnings = [];
+
+  if (session.enhancement === "none") {
+    session.status = "review";
+    await sendGuidedModelSummary(channel, session, interactionLike);
+    return true;
+  }
+
+  const progressMessage = await channel.send(
+    "# Preparing References\n" +
+    `**Mode:** ${(IMAGE_ENHANCEMENTS[session.enhancement] || IMAGE_ENHANCEMENTS.none).label}\n\n` +
+    "I will prepare all four images now and attach the final versions for review before model generation."
+  );
+
+  for (const step of GUIDED_MODEL_VIEW_STEPS) {
+    const view = step.view;
+    const sourcePath = session.originalViewPaths[view];
+    if (!sourcePath) continue;
+
+    try {
+      await progressMessage.edit(
+        "# Preparing References\n" +
+        `**Current side:** ${publicViewName(view)}\n` +
+        `**Mode:** ${(IMAGE_ENHANCEMENTS[session.enhancement] || IMAGE_ENHANCEMENTS.none).label}`
+      ).catch(() => {});
+
+      if (session.enhancement === "economy") {
+        const cleanedDir = path.join(session.tempDir, "guided_clean_refs");
+        fs.mkdirSync(cleanedDir, { recursive: true });
+        session.viewPaths[view] = await enhanceImageLocally({
+          imagePath: sourcePath,
+          outputPath: path.join(cleanedDir, `${view}_clean.png`),
+        });
+      } else if (session.enhancement === "ai") {
+        const aiDir = path.join(session.tempDir, "guided_ai_refs");
+        fs.mkdirSync(aiDir, { recursive: true });
+        session.viewPaths[view] = await enhanceImageWithOpenAI({
+          imagePath: sourcePath,
+          outputPath: path.join(aiDir, `${view}_ai.png`),
+          prompt: guidedAiEnhancementPrompt({
+            objectType: session.objectType || "other",
+            view,
+          }),
+        });
+      }
+    } catch (err) {
+      console.warn(`Guided reference prep failed for ${view}:`, err.message || err);
+      session.viewPaths[view] = sourcePath;
+      session.prepWarnings.push(`${publicViewName(view)} used the original image because prep failed.`);
+    }
+  }
+
+  await progressMessage.edit(
+    "# References Prepared\n" +
+    "The final reference images are attached below for review."
+  ).catch(() => {});
+
+  session.status = "review";
+  session.updatedAt = Date.now();
+  await sendGuidedModelSummary(channel, session, interactionLike);
+  return true;
 }
 
 async function handleGuidedModelPhotoMessage(message, session) {
@@ -9493,57 +9604,10 @@ async function handleGuidedModelPhotoMessage(message, session) {
   }
 
   fs.writeFileSync(outputPath, buffer);
-  let finalPath = outputPath;
-  let prepLabel = "";
-  if (session.enhancement === "economy") {
-    try {
-      const cleanedDir = path.join(tempDir, "guided_clean_refs");
-      fs.mkdirSync(cleanedDir, { recursive: true });
-      finalPath = await enhanceImageLocally({
-        imagePath: outputPath,
-        outputPath: path.join(cleanedDir, `${view}_clean.png`),
-      });
-      prepLabel = " and cleaned";
-    } catch (err) {
-      console.warn(`Guided local cleanup failed for ${view}:`, err.message || err);
-      await message.channel.send(
-        `## ${publicViewName(view)} Cleanup Skipped\n` +
-        "I saved the original reference because the local cleanup failed."
-      );
-    }
-  } else if (session.enhancement === "ai") {
-    const progressMessage = await message.channel.send(
-      `## ${publicViewName(view)} AI Enhancement\n` +
-      "Improving this reference while preserving the same shape, angle and colors..."
-    );
-    try {
-      const aiDir = path.join(tempDir, "guided_ai_refs");
-      fs.mkdirSync(aiDir, { recursive: true });
-      finalPath = await enhanceImageWithOpenAI({
-        imagePath: outputPath,
-        outputPath: path.join(aiDir, `${view}_ai.png`),
-        prompt: guidedAiEnhancementPrompt({
-          objectType: session.objectType || "other",
-          view,
-        }),
-      });
-      prepLabel = " and AI-enhanced";
-      await progressMessage.edit(
-        `## ${publicViewName(view)} AI Enhancement Ready\n` +
-        "The enhanced reference was saved for review."
-      ).catch(() => {});
-    } catch (err) {
-      console.warn(`Guided AI enhancement failed for ${view}:`, err.message || err);
-      await progressMessage.edit(
-        `## ${publicViewName(view)} AI Enhancement Skipped\n` +
-        "The AI provider could not enhance this image safely, so I saved the original reference instead."
-      ).catch(() => {});
-    }
-  }
   session.viewPaths ||= {};
   session.originalViewPaths ||= {};
   session.originalViewPaths[view] = outputPath;
-  session.viewPaths[view] = finalPath;
+  session.viewPaths[view] = outputPath;
   session.awaitingView = null;
 
   const currentIndex = GUIDED_MODEL_VIEW_STEPS.findIndex(step => step.view === view);
@@ -9552,13 +9616,12 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   await message.channel.send(
     `## ${publicViewName(view)} Accepted\n` +
-    `Reference saved${prepLabel}. I will keep the order locked so the AI receives the correct side.`
+    "Reference saved. I will prepare the final review images after all four sides are uploaded."
   );
 
   if (guidedModelCompleted(session)) {
-    session.status = "review";
     const member = await message.guild.members.fetch(session.userId).catch(() => null);
-    await sendGuidedModelSummary(message.channel, session, { user: message.author, member, guild: message.guild });
+    await prepareGuidedModelReferences(message.channel, session, { user: message.author, member, guild: message.guild });
     return true;
   }
 
@@ -10512,6 +10575,31 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
+    if (kind === "guided3d_prepare") {
+      const session = guidedModelSessionForThread(actionId);
+      if (!session) {
+        await interaction.reply({ content: "This request expired. Click **Create my 3D model** again.", flags: 64 });
+        return;
+      }
+      if (session.userId !== interaction.user.id) {
+        await interaction.reply({ content: "Only the user who started this request can prepare the references.", flags: 64 });
+        return;
+      }
+      if (session.status === "preparing") {
+        await interaction.reply({ content: "The references are already being prepared.", flags: 64 });
+        return;
+      }
+
+      await interaction.deferUpdate().catch(() => {});
+      const member = await interaction.guild.members.fetch(session.userId).catch(() => interaction.member);
+      await prepareGuidedModelReferences(interaction.channel, session, {
+        user: interaction.user,
+        member,
+        guild: interaction.guild,
+      });
+      return;
+    }
+
     if (kind === "guided3d_replace") {
       const session = guidedModelSessionForThread(actionId);
       if (!session) {
@@ -10528,6 +10616,8 @@ client.on("interactionCreate", async interaction => {
       }
 
       delete session.viewPaths[extra];
+      delete session.originalViewPaths[extra];
+      session.prepWarnings = [];
       session.status = "collecting";
       session.awaitingView = extra;
       session.updatedAt = Date.now();
