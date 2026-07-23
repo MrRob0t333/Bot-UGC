@@ -5717,6 +5717,8 @@ const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8)
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
 const SNIPER_MAX_PAGES_WITH_AGE = Number(process.env.REFAZER_SNIPER_MAX_PAGES_WITH_AGE || 12);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 6000);
+const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 900);
+const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 1200);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
 
@@ -5981,6 +5983,7 @@ function robloxPublicUrlVariants(url) {
 async function fetchRobloxPublicJson(url, options = {}) {
   const variants = robloxPublicUrlVariants(url);
   let lastError = null;
+  let lastRateLimitDelay = 0;
 
   for (let index = 0; index < variants.length; index += 1) {
     const targetUrl = variants[index];
@@ -6006,14 +6009,13 @@ async function fetchRobloxPublicJson(url, options = {}) {
 
     if (res.status === 429) {
       const retryDelay = retryDelayFromResponse(res, 0);
-      if (!isMirror) {
-        robloxPublicRateLimitedUntil = Date.now() + Math.max(retryDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
-      }
+      lastRateLimitDelay = Math.max(lastRateLimitDelay, retryDelay);
       lastError = new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
       if (index < variants.length - 1) {
         console.warn(`Roblox public catalog returned 429; trying mirror for ${url}`);
         continue;
       }
+      robloxPublicRateLimitedUntil = Date.now() + Math.max(lastRateLimitDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
       throw lastError;
     }
 
@@ -6566,6 +6568,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     enriched: 0,
     inferred: 0,
     candidates: 0,
+    partial: false,
+    partialReason: "",
   };
 
   const categoriesToTry = sniperSearchCategoriesFor(category);
@@ -6584,8 +6588,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const startedAt = Date.now();
 
   for (const queryVariant of queryVariants) {
-    for (const searchCategory of categoriesToTry) {
+    for (let categoryIndex = 0; categoryIndex < categoriesToTry.length; categoryIndex += 1) {
+      const searchCategory = categoriesToTry[categoryIndex];
       assertSniperDeadline(deadlineAt);
+      if (categoryIndex > 0 && SNIPER_CATEGORY_DELAY_MS > 0) {
+        await wait(SNIPER_CATEGORY_DELAY_MS);
+      }
       const useV2Search = sniperCanUseCatalogV2(searchCategory);
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
       const baseParams = useV2Search
@@ -6629,6 +6637,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
           for (let page = 0; page < maxPages; page += 1) {
             assertSniperDeadline(deadlineAt);
+            if (page > 0 && SNIPER_PAGE_DELAY_MS > 0) {
+              await wait(SNIPER_PAGE_DELAY_MS);
+            }
             const params = new URLSearchParams({ ...baseParams, ...normalizedAttemptParams });
             if (cursor) params.set("Cursor", cursor);
             const endpoint = useV2Search ? "v2" : "v1";
@@ -6651,7 +6662,11 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         } catch (err) {
           lastError = err;
           debugAttempt.error = String(err.message || err).slice(0, 300);
-          if (data.length && (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT")) break;
+          if (data.length && (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT")) {
+            lastSniperDebug.partial = true;
+            lastSniperDebug.partialReason = String(err.message || err).slice(0, 300);
+            break;
+          }
           if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") break;
         }
       }
@@ -6906,6 +6921,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     `Unique rows: ${uniqueRows}`,
     `Qualified pool: ${qualifiedCount}`,
     `Returned: ${returnedCount}`,
+    debug?.partial ? "Status: Partial scan - Roblox rate-limited before the full scan finished" : "Status: Complete scan",
   ].join("\n");
 
   const rows = candidates.map((candidate, index) => {
