@@ -6656,27 +6656,32 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
           data.push(...collected);
           if (collected.length) {
+            lastError = null;
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             if (!aggregateCategoryScan || data.length >= targetRawRows) break;
           }
         } catch (err) {
           lastError = err;
           debugAttempt.error = String(err.message || err).slice(0, 300);
-          if (data.length && (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT")) {
+          if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") {
             lastSniperDebug.partial = true;
             lastSniperDebug.partialReason = String(err.message || err).slice(0, 300);
+          }
+          if (data.length && (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT")) {
             break;
           }
           if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") break;
         }
       }
 
-      if (data.length >= targetRawRows || (!aggregateCategoryScan && data.length) || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
+      const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
+      if (data.length >= targetRawRows || (!aggregateCategoryScan && data.length) || (softFailure && data.length)) {
         break;
       }
     }
 
-    if (data.length >= targetRawRows || data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
+    const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
+    if (data.length >= targetRawRows || data.length || (softFailure && data.length)) {
       break;
     }
   }
