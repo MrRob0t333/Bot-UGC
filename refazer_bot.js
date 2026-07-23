@@ -6319,8 +6319,8 @@ function daysSince(time) {
 }
 
 function defaultSniperMaxAgeDays(window) {
-  if (["today", "yesterday"].includes(window)) return 14;
-  if (["recent", "week"].includes(window)) return 30;
+  // Sales windows mean "sold during this period", not "published during this period".
+  // Keep age filtering opt-in so best-selling older items are not discarded.
   return null;
 }
 
