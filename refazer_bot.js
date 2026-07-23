@@ -6262,7 +6262,6 @@ function sniperCategoryMatches(category, item, details = {}) {
   if (!allowedTypes) return true;
 
   const assetTypeId = catalogAssetTypeId(item, details);
-  if (category === "hair" && assetTypeId === 8 && sniperNameSuggestsCategory(category, item, details)) return true;
   return assetTypeId !== null && allowedTypes.includes(assetTypeId);
 }
 
