@@ -6431,7 +6431,7 @@ async function fetchCatalogItemDetailsSafe(itemId, options = {}) {
   }
 }
 
-function buildSniperCandidate(item, details = {}, category = "all", categoryVerified = false) {
+function buildSniperCandidate(item, details = {}, category = "all", categoryVerified = false, options = {}) {
   const id = catalogItemId(item);
   const breakdown = sniperScoreBreakdown(item, details);
   return {
@@ -6445,6 +6445,7 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
     favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
     sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
     createdAt: catalogItemCreatedAt(item, details),
+    marketplaceRank: Number.isFinite(options.marketplaceRank) ? options.marketplaceRank : null,
     score: breakdown.score,
     reasons: [
       ...breakdown.reasons,
@@ -6645,10 +6646,11 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   const unique = [];
   const seen = new Set();
+  const marketplaceRankById = new Map();
   const uniqueTarget = Number.isFinite(maxAgeDays)
     ? data.length
     : Math.max(limit * 3, SNIPER_DETAIL_LIMIT);
-  for (const item of data) {
+  for (const [index, item] of data.entries()) {
     const id = catalogItemId(item);
     if (!id) {
       lastSniperDebug.rejected.missingId += 1;
@@ -6666,6 +6668,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       continue;
     }
     seen.add(String(id));
+    marketplaceRankById.set(String(id), index + 1);
     unique.push(item);
     if (unique.length >= uniqueTarget) break;
   }
@@ -6711,7 +6714,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       continue;
     }
 
-    const candidate = buildSniperCandidate(item, details, category, canVerify && matches);
+    const candidate = buildSniperCandidate(item, details, category, canVerify && matches, {
+      marketplaceRank: marketplaceRankById.get(String(id)),
+    });
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
     else inferred.push(candidate);
     if (enriched.length + inferred.length >= Math.max(limit, 3)) break;
@@ -6733,7 +6738,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
       if (!sniperAgeMatchesFilter(item, details, maxAgeDays)) continue;
       if (!sniperCategoryMatches(category, item, details)) continue;
-      enriched.push(buildSniperCandidate(item, details, category, true));
+      enriched.push(buildSniperCandidate(item, details, category, true, {
+        marketplaceRank: marketplaceRankById.get(String(id)),
+      }));
       if (enriched.length >= Math.max(limit, 3)) break;
     }
   }
@@ -6743,7 +6750,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
       if (!sniperNameSuggestsCategory(category, item, {})) continue;
-      inferred.push(buildSniperCandidate(item, {}, category, false));
+      const id = catalogItemId(item);
+      inferred.push(buildSniperCandidate(item, {}, category, false, {
+        marketplaceRank: marketplaceRankById.get(String(id)),
+      }));
     }
   }
 
@@ -6751,7 +6761,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     for (const item of unique.slice(0, 5)) {
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
-      const candidate = buildSniperCandidate(item, {}, category, false);
+      const id = catalogItemId(item);
+      const candidate = buildSniperCandidate(item, {}, category, false, {
+        marketplaceRank: marketplaceRankById.get(String(id)),
+      });
       candidate.reasons.push("broad fallback: category not confirmed");
       inferred.push(candidate);
     }
@@ -6764,7 +6777,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   const finalPool = enriched.length ? enriched : inferred;
-  const candidates = finalPool.sort((a, b) => b.score - a.score).slice(0, 15);
+  const candidates = finalPool.sort((a, b) => {
+    const aRank = Number.isFinite(a.marketplaceRank) ? a.marketplaceRank : Number.POSITIVE_INFINITY;
+    const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
+    if (aRank !== bRank) return aRank - bRank;
+    return b.score - a.score;
+  }).slice(0, 15);
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
@@ -6842,7 +6860,11 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     const price = candidate.price === null ? "unknown" : `${candidate.price} Robux`;
     const age = daysSince(parseRobloxDate(candidate.createdAt));
     const ageText = age === null ? "unknown age" : `${age}d old`;
+    const rankText = Number.isFinite(candidate.marketplaceRank)
+      ? `market rank #${candidate.marketplaceRank}`
+      : null;
     const signals = [
+      rankText,
       candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
       candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : null,
       price,
@@ -6853,6 +6875,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
       `**${name}**`,
       `Score: **${candidate.score}/100** | Creator: **${creator}**`,
       [
+        rankText,
         candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
         candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : "sales unavailable",
         price,
