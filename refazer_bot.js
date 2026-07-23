@@ -6646,7 +6646,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const unique = [];
   const seen = new Set();
   const uniqueTarget = Number.isFinite(maxAgeDays)
-    ? Math.max(limit * 12, SNIPER_DETAIL_LIMIT * 4)
+    ? data.length
     : Math.max(limit * 3, SNIPER_DETAIL_LIMIT);
   for (const item of data) {
     const id = catalogItemId(item);
@@ -6675,7 +6675,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const enriched = [];
   const inferred = [];
   const detailsLimit = Number.isFinite(maxAgeDays)
-    ? Math.min(unique.length, Math.max(limit * 12, SNIPER_DETAIL_LIMIT * 4))
+    ? unique.length
     : Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
   for (const item of unique.slice(0, detailsLimit)) {
     if (sniperDeadlineExceeded(deadlineAt)) break;
