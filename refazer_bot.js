@@ -5688,6 +5688,7 @@ const robloxHealth = {
 };
 const sniperCatalogCache = new Map();
 let lastSniperDebug = null;
+const SNIPER_CACHE_VERSION = "typed-v2-no-default-keyword-rank-v2";
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
 const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
 const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 25000);
@@ -6490,7 +6491,7 @@ function assertSniperDeadline(deadlineAt) {
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, deadlineAt = 0 }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
-  const cacheKey = JSON.stringify({ window, category, keyword, minPrice, maxPrice, maxAgeDays });
+  const cacheKey = JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
     lastSniperDebug = {
@@ -6783,7 +6784,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
     if (aRank !== bRank) return aRank - bRank;
     return b.score - a.score;
-  }).slice(0, 15);
+  }).slice(0, Math.max(15, limit * 3));
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
@@ -6805,7 +6806,7 @@ function pickSniperCandidates(candidates, userId, count = 1) {
   const user = walletUser(db, userId);
   const seenIds = new Set(sniperSeenIdsFor(user).map(String));
   const fresh = candidates.filter(candidate => !seenIds.has(String(candidate.id)));
-  const pool = (fresh.length ? fresh : candidates).slice(0, 10);
+  const pool = (fresh.length ? fresh : candidates).slice(0, Math.max(10, count * 3));
   const selected = [];
 
   while (pool.length && selected.length < count) {
