@@ -5711,6 +5711,18 @@ function robloxCatalogSearchLimit(preferWide = false) {
   return "30";
 }
 
+function sniperCanUseCatalogV2(category) {
+  return Array.isArray(SNIPER_CATEGORY_ASSET_TYPES[category]) && SNIPER_CATEGORY_ASSET_TYPES[category].length > 0;
+}
+
+function sniperWindowParamsForSearch(attemptParams, useV2Search) {
+  if (!useV2Search) return attemptParams;
+  const params = {};
+  if (attemptParams.SortType !== undefined) params.sortType = attemptParams.SortType;
+  if (attemptParams.SortAggregation !== undefined) params.sortAggregation = attemptParams.SortAggregation;
+  return params;
+}
+
 function robloxPauseRemainingMs() {
   return Math.max(0, robloxHealth.pausedUntil - Date.now());
 }
@@ -6539,26 +6551,35 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   for (const queryVariant of queryVariants) {
     for (const searchCategory of categoriesToTry) {
       assertSniperDeadline(deadlineAt);
+      const useV2Search = sniperCanUseCatalogV2(searchCategory);
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
-      const baseParams = {
-        CurrencyType: "3",
-        Limit: robloxCatalogSearchLimit(Number.isFinite(maxAgeDays)),
-        salesTypeFilter: "1",
-        ...categoryParams,
-      };
+      const baseParams = useV2Search
+        ? {
+            limit: robloxCatalogSearchLimit(Number.isFinite(maxAgeDays)),
+            salesTypeFilter: "1",
+            assetTypeIds: SNIPER_CATEGORY_ASSET_TYPES[searchCategory].join(","),
+          }
+        : {
+            CurrencyType: "3",
+            Limit: robloxCatalogSearchLimit(Number.isFinite(maxAgeDays)),
+            salesTypeFilter: "1",
+            ...categoryParams,
+          };
 
-      if (queryVariant.keyword) baseParams.Keyword = queryVariant.keyword;
-      if (Number.isFinite(queryVariant.minPrice)) baseParams.pxMin = String(queryVariant.minPrice);
-      if (Number.isFinite(queryVariant.maxPrice)) baseParams.pxMax = String(queryVariant.maxPrice);
-      if (Number.isFinite(queryVariant.minPrice)) baseParams.MinPrice = String(queryVariant.minPrice);
-      if (Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
+      if (queryVariant.keyword) baseParams[useV2Search ? "keyword" : "Keyword"] = queryVariant.keyword;
+      if (Number.isFinite(queryVariant.minPrice)) baseParams[useV2Search ? "minPrice" : "pxMin"] = String(queryVariant.minPrice);
+      if (Number.isFinite(queryVariant.maxPrice)) baseParams[useV2Search ? "maxPrice" : "pxMax"] = String(queryVariant.maxPrice);
+      if (!useV2Search && Number.isFinite(queryVariant.minPrice)) baseParams.MinPrice = String(queryVariant.minPrice);
+      if (!useV2Search && Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
 
       for (const attemptParams of windowAttempts) {
         assertSniperDeadline(deadlineAt);
+        const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
         const debugAttempt = {
           category: searchCategory,
           reason: queryVariant.reason,
-          params: new URLSearchParams({ ...baseParams, ...attemptParams }).toString(),
+          endpoint: useV2Search ? "v2" : "v1",
+          params: new URLSearchParams({ ...baseParams, ...normalizedAttemptParams }).toString(),
           rows: 0,
           pages: 0,
           error: null,
@@ -6571,9 +6592,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
           for (let page = 0; page < maxPages; page += 1) {
             assertSniperDeadline(deadlineAt);
-            const params = new URLSearchParams({ ...baseParams, ...attemptParams });
+            const params = new URLSearchParams({ ...baseParams, ...normalizedAttemptParams });
             if (cursor) params.set("Cursor", cursor);
-            const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`, {
+            const endpoint = useV2Search ? "v2" : "v1";
+            const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/${endpoint}/search/items/details?${params.toString()}`, {
               maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
             });
             const rows = Array.isArray(response.data) ? response.data : [];
