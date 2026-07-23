@@ -12974,7 +12974,7 @@ client.on("interactionCreate", async interaction => {
         const result = await processUGC(id, {
           exportGlb: false,
           render: true,
-          cacheViews: true,
+          cacheViews: !useAiFiveViews,
           renderSettings,
         });
         const files = useAiFiveViews
