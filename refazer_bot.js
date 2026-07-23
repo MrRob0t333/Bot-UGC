@@ -6669,6 +6669,34 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
   ].join("\n");
 }
 
+function splitDiscordMessage(content, limit = 1900) {
+  const chunks = [];
+  let remaining = String(content || "");
+
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf("\n\n", limit);
+    if (splitAt < 400) splitAt = remaining.lastIndexOf("\n", limit);
+    if (splitAt < 400) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+async function sendSniperReport(interaction, report) {
+  const chunks = splitDiscordMessage(report);
+  await interaction.editReply(chunks[0] || "## Market Sniper Report\nNo report content.");
+
+  for (const chunk of chunks.slice(1)) {
+    await interaction.followUp({
+      content: chunk,
+      flags: 64,
+    });
+  }
+}
+
 async function fetchRobloxAssetSource(assetId) {
   const cacheKey = String(assetId);
   const cached = robloxAssetSourceCache.get(cacheKey);
@@ -12125,7 +12153,8 @@ client.on("interactionCreate", async interaction => {
         const selectedCandidates = pickSniperCandidates(candidates, interaction.user.id, resultCount);
         markSniperCandidatesSeen(interaction.user.id, selectedCandidates);
 
-        await interaction.editReply(
+        await sendSniperReport(
+          interaction,
           formatSniperReport({
             candidates: selectedCandidates,
             quote,
