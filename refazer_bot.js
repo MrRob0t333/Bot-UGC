@@ -6797,7 +6797,8 @@ function pickSniperCandidates(candidates, userId, count = 1) {
   const user = walletUser(db, userId);
   const seenIds = new Set(sniperSeenIdsFor(user).map(String));
   const fresh = candidates.filter(candidate => !seenIds.has(String(candidate.id)));
-  const pool = (fresh.length ? fresh : candidates).slice(0, Math.max(10, count * 3));
+  const seenFallback = candidates.filter(candidate => seenIds.has(String(candidate.id)));
+  const pool = [...fresh, ...seenFallback].slice(0, Math.max(10, count * 3));
   const selected = [];
 
   while (pool.length && selected.length < count) {
