@@ -5710,6 +5710,25 @@ const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAI
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
 
+const SNIPER_ACCESSORY_SUBCATEGORIES = [
+  "hats",
+  "hair",
+  "face_accessories",
+  "neck_accessories",
+  "shoulder_accessories",
+  "front_accessories",
+  "back_accessories",
+  "waist_accessories",
+];
+
+function sniperSearchCategoriesFor(category) {
+  if (category === "accessories") return SNIPER_ACCESSORY_SUBCATEGORIES;
+  return [
+    category,
+    ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
+  ].filter((item, index, list) => item && list.indexOf(item) === index);
+}
+
 function isRobloxRateLimitError(err) {
   const message = String(err?.message || err || "");
   return message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
@@ -6529,10 +6548,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     candidates: 0,
   };
 
-  const categoriesToTry = [
-    category,
-    ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
-  ].filter((item, index, list) => item && list.indexOf(item) === index);
+  const categoriesToTry = sniperSearchCategoriesFor(category);
+  const aggregateCategoryScan = categoriesToTry.length > 1 && ["accessories"].includes(category);
+  const targetRawRows = Math.max(limit * 8, 60);
   const queryVariants = [
     { keyword, minPrice, maxPrice, reason: "requested filters" },
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
@@ -6582,7 +6600,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         try {
           const collected = [];
           let cursor = "";
-          const maxPages = Number.isFinite(maxAgeDays) ? Math.max(1, SNIPER_MAX_PAGES_WITH_AGE) : 1;
+          const maxPages = Number.isFinite(maxAgeDays)
+            ? Math.max(1, aggregateCategoryScan ? Math.min(3, SNIPER_MAX_PAGES_WITH_AGE) : SNIPER_MAX_PAGES_WITH_AGE)
+            : 1;
 
           for (let page = 0; page < maxPages; page += 1) {
             assertSniperDeadline(deadlineAt);
@@ -6600,24 +6620,25 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
             if (!cursor || !rows.length) break;
           }
 
-          data = collected;
-          if (data.length) {
+          data.push(...collected);
+          if (collected.length) {
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
-            break;
+            if (!aggregateCategoryScan || data.length >= targetRawRows) break;
           }
         } catch (err) {
           lastError = err;
           debugAttempt.error = String(err.message || err).slice(0, 300);
+          if (data.length && (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT")) break;
           if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") break;
         }
       }
 
-      if (data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
+      if (data.length >= targetRawRows || (!aggregateCategoryScan && data.length) || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
         break;
       }
     }
 
-    if (data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
+    if (data.length >= targetRawRows || data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
       break;
     }
   }
