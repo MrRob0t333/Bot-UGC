@@ -5692,7 +5692,7 @@ const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_
 const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
 const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 15000);
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
-const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 20);
+const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 6000);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
@@ -5700,6 +5700,13 @@ let sniperBusyUntil = 0;
 function isRobloxRateLimitError(err) {
   const message = String(err?.message || err || "");
   return message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
+}
+
+function robloxCatalogSearchLimit() {
+  const requested = Number(SNIPER_SEARCH_LIMIT);
+  if (requested <= 10) return "10";
+  if (requested <= 28) return "28";
+  return "30";
 }
 
 function robloxPauseRemainingMs() {
@@ -6533,7 +6540,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
       const baseParams = {
         CurrencyType: "3",
-        Limit: String(Math.max(10, Math.min(30, SNIPER_SEARCH_LIMIT))),
+        Limit: robloxCatalogSearchLimit(),
         salesTypeFilter: "1",
         ...categoryParams,
       };
