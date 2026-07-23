@@ -929,13 +929,15 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("sniper")
-    .setDescription("Premium market radar for high-potential Roblox items")
+    .setDescription("Admin market radar for recent best-selling Roblox UGC items")
     .addStringOption(o =>
       o
         .setName("window")
         .setDescription("Market window")
         .setRequired(true)
         .addChoices(
+          { name: "Best today", value: "today" },
+          { name: "Best yesterday", value: "yesterday" },
           { name: "Recently published", value: "recent" },
           { name: "Best this week", value: "week" },
           { name: "Best all time", value: "total" }
@@ -976,6 +978,9 @@ const commands = [
     )
     .addIntegerOption(o =>
       o.setName("max_price").setDescription("Maximum Robux price").setRequired(false).setMinValue(1)
+    )
+    .addIntegerOption(o =>
+      o.setName("results").setDescription("How many results to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(10)
     )
     .toJSON(),
 
@@ -5956,6 +5961,14 @@ const SNIPER_CATEGORY_LABELS = {
   collectibles: "Collectibles",
 };
 
+const SNIPER_WINDOW_LABELS = {
+  today: "Best today",
+  yesterday: "Best yesterday",
+  recent: "Recently published",
+  week: "Best this week",
+  total: "Best all time",
+};
+
 const SNIPER_CATEGORY_ASSET_TYPES = {
   accessories: [8, 41, 42, 43, 44, 45, 46, 47],
   hats: [8],
@@ -6071,6 +6084,16 @@ const SNIPER_FORBIDDEN_TYPE_HINTS = [
 ];
 
 const SNIPER_WINDOW_PARAMS = {
+  today: [
+    { SortType: "2", SortAggregation: "1" },
+    { SortType: "1", SortAggregation: "1" },
+    { SortType: "2", SortAggregation: "3" },
+  ],
+  yesterday: [
+    { SortType: "2", SortAggregation: "2" },
+    { SortType: "1", SortAggregation: "2" },
+    { SortType: "2", SortAggregation: "3" },
+  ],
   recent: [
     { SortType: "3" },
     { SortType: "0" },
@@ -6591,7 +6614,7 @@ function markSniperCandidatesSeen(userId, candidates) {
 
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice }) {
   const filters = [
-    `Window: ${window}`,
+    `Window: ${SNIPER_WINDOW_LABELS[window] || window}`,
     `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
     keyword ? `Keyword: ${keyword}` : null,
     Number.isFinite(minPrice) ? `Min price: ${minPrice} Robux` : null,
@@ -6631,13 +6654,15 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     "",
     `## Access`,
     `Plan: **${quote.planLabel}**`,
-    `Usage today: **${quote.usedToday + 1}/${quote.dailyLimit === null ? "unlimited" : quote.dailyLimit}**`,
+    quote.dailyLimit === null
+      ? "Usage today: **unlimited**"
+      : `Usage today: **${quote.usedToday + 1}/${quote.dailyLimit}**`,
     `Price: **${formatTokenAmount(quote.walletAmount)}**`,
     "",
     "## Filters",
     filters,
     "",
-    "## Selected Signal",
+    candidates.length > 1 ? "## Selected Signals" : "## Selected Signal",
     rows || "No strong candidates found for these filters.",
     "",
     "Review each item manually before investing, copying trends, or ordering a remake.",
@@ -12036,37 +12061,31 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "sniper") {
       await interaction.deferReply({ flags: 64 });
 
+      if (!userIsAdmin(interaction)) {
+        await interaction.editReply(
+          "## Admin Only\n" +
+          "This market radar is restricted to the team."
+        );
+        return;
+      }
+
       const window = interaction.options.getString("window");
       const category = interaction.options.getString("category") || "all";
       const keyword = (interaction.options.getString("keyword") || "").trim();
       const minPriceRaw = interaction.options.getInteger("min_price");
       const maxPriceRaw = interaction.options.getInteger("max_price");
+      const resultCount = interaction.options.getInteger("results") || 5;
       const minPrice = Number.isFinite(minPriceRaw) ? minPriceRaw : null;
       const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : null;
-      const quote = calculateSniperPrice(interaction);
+      const quote = {
+        ...calculateSniperPrice(interaction),
+        planLabel: "Admin",
+        dailyLimit: null,
+        walletAmount: 0,
+      };
 
       if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
         await interaction.editReply("## Invalid price range\n`min_price` cannot be higher than `max_price`.");
-        return;
-      }
-
-      if (quote.dailyLimit !== null && quote.usedToday >= quote.dailyLimit) {
-        await interaction.editReply(
-          "## Sniper limit reached\n" +
-          `**Plan:** ${quote.planLabel}\n` +
-          `**Daily limit:** ${quote.dailyLimit}\n\n` +
-          "This tool is intentionally limited because market intelligence is valuable. Try again tomorrow or contact the team for a manual review."
-        );
-        return;
-      }
-
-      const balanceBefore = walletAvailableBalance(interaction.user.id, "sniper");
-      if (balanceBefore < quote.walletAmount) {
-        await interaction.editReply(formatInsufficientBalanceMessage({
-          service: "Market Sniper",
-          price: quote.walletAmount,
-          balance: balanceBefore,
-        }));
         return;
       }
 
@@ -12103,26 +12122,7 @@ client.on("interactionCreate", async interaction => {
           return;
         }
 
-        const selectedCandidates = pickSniperCandidates(candidates, interaction.user.id, 1);
-
-        const debit = removeWalletBalance({
-          userId: interaction.user.id,
-          amount: quote.walletAmount,
-          actorId: client.user.id,
-          reason: "Market sniper report generated",
-          meta: {
-            command: "sniper",
-            serviceKey: "sniper",
-            window,
-            category,
-            keyword,
-            minPrice,
-            maxPrice,
-            resultIds: selectedCandidates.map(item => item.id),
-            priceTokens: quote.walletAmount,
-          },
-        });
-        addSniperUsage(interaction.user.id, 1);
+        const selectedCandidates = pickSniperCandidates(candidates, interaction.user.id, resultCount);
         markSniperCandidatesSeen(interaction.user.id, selectedCandidates);
 
         await interaction.editReply(
@@ -12134,8 +12134,7 @@ client.on("interactionCreate", async interaction => {
             keyword,
             minPrice,
             maxPrice,
-          }) +
-          `\n\n**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`
+          })
         );
       } catch (err) {
         console.error(err);
