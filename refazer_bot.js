@@ -1035,6 +1035,16 @@ const commands = [
           { name: "Top-down tilt", value: "top_down" }
         )
     )
+    .addStringOption(o =>
+      o
+        .setName("angles")
+        .setDescription("Reference angle set. AI 5 views is admin-only.")
+        .setRequired(false)
+        .addChoices(
+          { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
+          { name: "AI 5 views - front/right/back/left/up", value: "ai5" }
+        )
+    )
     .addNumberOption(o =>
       o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
     )
@@ -10313,6 +10323,25 @@ function ugcViewAttachments(renderDir) {
     .filter(Boolean);
 }
 
+function aiFiveViewAttachments(renderDir) {
+  const views = [
+    ["frente", "front"],
+    ["direita", "right"],
+    ["costas", "back"],
+    ["esquerda", "left"],
+    ["up", "up"],
+  ];
+
+  return views
+    .map(([fileName, publicName], index) => {
+      const file = path.join(renderDir, `${fileName}.png`);
+      if (!fs.existsSync(file)) return null;
+      const label = String(index + 1).padStart(2, "0");
+      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+    })
+    .filter(Boolean);
+}
+
 function fullUgcViewAttachments(renderDir) {
   const views = [
     ["front_left", "front-left"],
@@ -12912,14 +12941,34 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "views" || interaction.commandName === "views_custom") {
       const id = interaction.options.getString("id").trim();
       const renderSettings = renderSettingsForInteraction(interaction);
+      const angleSet = interaction.commandName === "views"
+        ? (interaction.options.getString("angles") || "multiview4")
+        : "multiview4";
+      const useAiFiveViews = angleSet === "ai5";
+
+      if (useAiFiveViews && !userIsAdmin(interaction)) {
+        await interaction.reply({
+          content:
+            "## Admin Only\n" +
+            "The 5-view AI reference set is available only to admins right now.\n\n" +
+            "Use the default 4-view set for `/multiview`.",
+          flags: 64,
+        });
+        return;
+      }
+
       await interaction.deferReply();
 
       try {
+        const angleDescription = useAiFiveViews
+          ? "front, right, back, left and up reference images"
+          : "front, right, back and left reference images";
+
         await interaction.editReply(
           "## Rendering UGC Views\n" +
           `**UGC:** \`${id}\`\n\n` +
           `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-          "Preparing front, right, back and left reference images..."
+          `Preparing ${angleDescription}...`
         );
 
         const result = await processUGC(id, {
@@ -12928,7 +12977,9 @@ client.on("interactionCreate", async interaction => {
           cacheViews: true,
           renderSettings,
         });
-        const files = ugcViewAttachments(result.renderDir);
+        const files = useAiFiveViews
+          ? aiFiveViewAttachments(result.renderDir)
+          : ugcViewAttachments(result.renderDir);
 
         await interaction.editReply({
           content:
@@ -12938,7 +12989,9 @@ client.on("interactionCreate", async interaction => {
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
             `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
             (result.cached ? "**Source:** cached render\n\n" : "") +
-            "Use these four images as references for `/multiview`.",
+            (useAiFiveViews
+              ? "Admin 5-view set ready. Use front, right, back and left for `/multiview`; keep the up view as extra AI/reference context."
+              : "Use these four images as references for `/multiview`."),
           files,
         });
       } catch (err) {
