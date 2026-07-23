@@ -5925,7 +5925,16 @@ async function fetchRobloxPublicJson(url, options = {}) {
     const isMirror = index > 0;
 
     if (!isMirror) {
-      await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+      try {
+        await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+      } catch (err) {
+        lastError = err;
+        if (index < variants.length - 1) {
+          console.warn(`Roblox public catalog cooldown active; trying mirror for ${url}`);
+          continue;
+        }
+        throw err;
+      }
     }
 
     const res = await fetch(targetUrl, {
