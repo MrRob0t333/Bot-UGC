@@ -983,7 +983,7 @@ const commands = [
       o.setName("max_age_days").setDescription("Only include items created within this many days").setRequired(false).setMinValue(0).setMaxValue(365)
     )
     .addIntegerOption(o =>
-      o.setName("results").setDescription("How many results to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(10)
+      o.setName("results").setDescription("How many results to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(50)
     )
     .toJSON(),
 
@@ -5701,6 +5701,7 @@ let lastSniperDebug = null;
 const SNIPER_CACHE_VERSION = "typed-v2-manual-keyword-only";
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
 const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
+const SNIPER_CATALOG_CACHE_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_CACHE_ENABLED, "false") === "true";
 const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 25000);
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
@@ -6466,6 +6467,7 @@ function addSniperDebugSample(reason, item, details = {}) {
 }
 
 function getSniperCachedCandidates(cacheKey, ttlMs = SNIPER_CATALOG_CACHE_TTL_MS) {
+  if (!SNIPER_CATALOG_CACHE_ENABLED) return null;
   const cached = sniperCatalogCache.get(cacheKey);
   if (!cached || Date.now() - cached.savedAt > ttlMs) return null;
   return cached.candidates || [];
@@ -6778,7 +6780,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
   lastSniperDebug.elapsedMs = Date.now() - startedAt;
-  if (candidates.length) {
+  if (SNIPER_CATALOG_CACHE_ENABLED && candidates.length) {
     sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
   }
   return candidates;
@@ -12351,7 +12353,8 @@ client.on("interactionCreate", async interaction => {
       const minPriceRaw = interaction.options.getInteger("min_price");
       const maxPriceRaw = interaction.options.getInteger("max_price");
       const maxAgeDaysRaw = interaction.options.getInteger("max_age_days");
-      const resultCount = interaction.options.getInteger("results") || 5;
+      const resultCountRaw = interaction.options.getInteger("results") || 5;
+      const resultCount = Math.max(1, Math.min(50, resultCountRaw));
       const minPrice = Number.isFinite(minPriceRaw) ? minPriceRaw : null;
       const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : null;
       const maxAgeDays = Number.isFinite(maxAgeDaysRaw) ? maxAgeDaysRaw : defaultSniperMaxAgeDays(window);
@@ -12374,7 +12377,11 @@ client.on("interactionCreate", async interaction => {
         );
         return;
       }
-      sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, SNIPER_COMMAND_TIMEOUT_MS));
+      const sniperTimeoutMs = Math.max(
+        SNIPER_COMMAND_TIMEOUT_MS,
+        resultCount > 25 ? 60000 : resultCount > 10 ? 45000 : SNIPER_COMMAND_TIMEOUT_MS
+      );
+      sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, sniperTimeoutMs));
 
       await interaction.editReply(
         "## Market Sniper\n" +
@@ -12392,7 +12399,7 @@ client.on("interactionCreate", async interaction => {
           maxPrice,
           maxAgeDays,
           limit: resultCount,
-          deadlineAt: Date.now() + SNIPER_COMMAND_TIMEOUT_MS,
+          deadlineAt: Date.now() + sniperTimeoutMs,
         });
         console.log(`[sniper] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
           fromCache: lastSniperDebug?.fromCache,
