@@ -985,6 +985,16 @@ const commands = [
     .addIntegerOption(o =>
       o.setName("results").setDescription("How many results to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(50)
     )
+    .addStringOption(o =>
+      o
+        .setName("depth")
+        .setDescription("Scan depth. Deep is slower and more likely to hit Roblox rate limits.")
+        .setRequired(false)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Deep", value: "deep" }
+        )
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -6099,6 +6109,15 @@ const SNIPER_CATEGORY_ASSET_TYPES = {
   clothing: [2, 11, 12, 64, 65, 66, 67, 68, 69, 70, 71, 72],
 };
 
+function sniperCategoryFromAssetType(assetTypeId) {
+  const value = Number(assetTypeId);
+  for (const [category, assetTypes] of Object.entries(SNIPER_CATEGORY_ASSET_TYPES)) {
+    if (category === "accessories" || category === "clothing") continue;
+    if (assetTypes.includes(value)) return category;
+  }
+  return null;
+}
+
 const SNIPER_CATEGORY_FALLBACKS = {
   hats: ["accessories", "all"],
   hair: ["all"],
@@ -6460,6 +6479,7 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
     sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
     createdAt: catalogItemCreatedAt(item, details),
     marketplaceRank: Number.isFinite(options.marketplaceRank) ? options.marketplaceRank : null,
+    sourceCategory: options.sourceCategory || category,
     score: breakdown.score,
     reasons: [
       ...breakdown.reasons,
@@ -6503,14 +6523,14 @@ function assertSniperDeadline(deadlineAt) {
   throw err;
 }
 
-async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, deadlineAt = 0 }) {
+async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", deadlineAt = 0 }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const cacheKey = JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
     lastSniperDebug = {
       fromCache: true,
-      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays },
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
       candidates: cached.length,
     };
     return cached;
@@ -6521,7 +6541,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     lastSniperDebug = {
       fromCache: true,
       staleCache: true,
-      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays },
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
       cooldownSeconds: Math.ceil((robloxPublicRateLimitedUntil - Date.now()) / 1000),
       candidates: staleCached.length,
     };
@@ -6530,7 +6550,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   lastSniperDebug = {
     fromCache: false,
-    request: { window, category, keyword, minPrice, maxPrice, maxAgeDays },
+    request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
     attempts: [],
     rawRows: 0,
     uniqueRows: 0,
@@ -6551,6 +6571,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const categoriesToTry = sniperSearchCategoriesFor(category);
   const aggregateCategoryScan = categoriesToTry.length > 1 && ["accessories"].includes(category);
   const targetRawRows = Math.max(limit * 8, 60);
+  const depthPages = depth === "deep"
+    ? Math.max(1, SNIPER_MAX_PAGES_WITH_AGE)
+    : Math.max(1, Math.min(3, SNIPER_MAX_PAGES_WITH_AGE));
   const queryVariants = [
     { keyword, minPrice, maxPrice, reason: "requested filters" },
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
@@ -6601,8 +6624,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           const collected = [];
           let cursor = "";
           const maxPages = Number.isFinite(maxAgeDays)
-            ? Math.max(1, aggregateCategoryScan ? Math.min(3, SNIPER_MAX_PAGES_WITH_AGE) : SNIPER_MAX_PAGES_WITH_AGE)
-            : 1;
+            ? (aggregateCategoryScan ? depthPages : Math.max(1, SNIPER_MAX_PAGES_WITH_AGE))
+            : (depth === "deep" && aggregateCategoryScan ? 2 : 1);
 
           for (let page = 0; page < maxPages; page += 1) {
             assertSniperDeadline(deadlineAt);
@@ -6730,6 +6753,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
     const candidate = buildSniperCandidate(item, details, category, canVerify && matches, {
       marketplaceRank: marketplaceRankById.get(String(id)),
+      sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, details)) || category : category,
     });
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
     else inferred.push(candidate);
@@ -6754,6 +6778,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (!sniperCategoryMatches(category, item, details)) continue;
       enriched.push(buildSniperCandidate(item, details, category, true, {
         marketplaceRank: marketplaceRankById.get(String(id)),
+        sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, details)) || category : category,
       }));
       if (enriched.length >= Math.max(limit, 3)) break;
     }
@@ -6767,6 +6792,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const id = catalogItemId(item);
       inferred.push(buildSniperCandidate(item, {}, category, false, {
         marketplaceRank: marketplaceRankById.get(String(id)),
+        sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
       }));
     }
   }
@@ -6778,6 +6804,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const id = catalogItemId(item);
       const candidate = buildSniperCandidate(item, {}, category, false, {
         marketplaceRank: marketplaceRankById.get(String(id)),
+        sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
       });
       candidate.reasons.push("broad fallback: category not confirmed");
       inferred.push(candidate);
@@ -6859,15 +6886,27 @@ function markSniperCandidatesSeen(userId, candidates) {
   writeWalletDb(db);
 }
 
-function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays }) {
+function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, debug }) {
+  const returnedCount = candidates.length;
+  const qualifiedCount = Number(debug?.candidates) || 0;
+  const rawRows = Number(debug?.rawRows) || 0;
+  const uniqueRows = Number(debug?.uniqueRows) || 0;
   const filters = [
     `Window: ${SNIPER_WINDOW_LABELS[window] || window}`,
     `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
+    `Depth: ${depth === "deep" ? "Deep" : "Normal"}`,
     keyword ? `Keyword: ${keyword}` : null,
     Number.isFinite(minPrice) ? `Min price: ${minPrice} Robux` : null,
     Number.isFinite(maxPrice) ? `Max price: ${maxPrice} Robux` : null,
     Number.isFinite(maxAgeDays) ? `Max age: ${maxAgeDays} days` : null,
   ].filter(Boolean).join("\n");
+
+  const scanStats = [
+    `Scanned rows: ${rawRows}`,
+    `Unique rows: ${uniqueRows}`,
+    `Qualified pool: ${qualifiedCount}`,
+    `Returned: ${returnedCount}`,
+  ].join("\n");
 
   const rows = candidates.map((candidate, index) => {
     const name = String(candidate.name || `Item ${candidate.id}`).slice(0, 55);
@@ -6877,6 +6916,9 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     const ageText = age === null ? "unknown age" : `${age}d old`;
     const rankText = Number.isFinite(candidate.marketplaceRank)
       ? `market rank #${candidate.marketplaceRank}`
+      : null;
+    const sourceCategoryText = candidate.sourceCategory && candidate.sourceCategory !== category
+      ? SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory
       : null;
     const signals = [
       rankText,
@@ -6890,6 +6932,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
       `**${name}**`,
       `Score: **${candidate.score}/100** | Creator: **${creator}**`,
       [
+        sourceCategoryText ? `subcategory: ${sourceCategoryText}` : null,
         rankText,
         candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
         candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : "sales unavailable",
@@ -6914,6 +6957,9 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     "",
     "## Filters",
     filters,
+    "",
+    "## Scan",
+    scanStats,
     "",
     candidates.length > 1 ? "## Selected Signals" : "## Selected Signal",
     rows || "No strong candidates found for these filters.",
@@ -12377,6 +12423,7 @@ client.on("interactionCreate", async interaction => {
       const maxAgeDaysRaw = interaction.options.getInteger("max_age_days");
       const resultCountRaw = interaction.options.getInteger("results") || 5;
       const resultCount = Math.max(1, Math.min(50, resultCountRaw));
+      const depth = interaction.options.getString("depth") || "normal";
       const minPrice = Number.isFinite(minPriceRaw) ? minPriceRaw : null;
       const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : null;
       const maxAgeDays = Number.isFinite(maxAgeDaysRaw) ? maxAgeDaysRaw : defaultSniperMaxAgeDays(window);
@@ -12401,6 +12448,7 @@ client.on("interactionCreate", async interaction => {
       }
       const sniperTimeoutMs = Math.max(
         SNIPER_COMMAND_TIMEOUT_MS,
+        depth === "deep" ? 60000 : SNIPER_COMMAND_TIMEOUT_MS,
         resultCount > 25 ? 60000 : resultCount > 10 ? 45000 : SNIPER_COMMAND_TIMEOUT_MS
       );
       sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, sniperTimeoutMs));
@@ -12412,7 +12460,7 @@ client.on("interactionCreate", async interaction => {
 
       try {
         const startedAt = Date.now();
-        console.log(`[sniper] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount}`);
+        console.log(`[sniper] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount} depth=${depth}`);
         const candidates = await fetchSniperCandidates({
           window,
           category,
@@ -12421,6 +12469,7 @@ client.on("interactionCreate", async interaction => {
           maxPrice,
           maxAgeDays,
           limit: resultCount,
+          depth,
           deadlineAt: Date.now() + sniperTimeoutMs,
         });
         console.log(`[sniper] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
@@ -12466,6 +12515,8 @@ client.on("interactionCreate", async interaction => {
             minPrice,
             maxPrice,
             maxAgeDays,
+            depth,
+            debug: lastSniperDebug,
           })
         );
       } catch (err) {
