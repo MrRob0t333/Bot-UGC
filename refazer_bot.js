@@ -5688,7 +5688,7 @@ const robloxHealth = {
 };
 const sniperCatalogCache = new Map();
 let lastSniperDebug = null;
-const SNIPER_CACHE_VERSION = "typed-v2-no-default-keyword-rank-v2";
+const SNIPER_CACHE_VERSION = "typed-v2-manual-keyword-only";
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
 const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
 const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 25000);
@@ -6135,23 +6135,6 @@ const SNIPER_CATEGORY_NAME_HINTS = {
   layered_clothing: ["jacket", "sweater", "shorts", "dress", "skirt", "jaqueta", "vestido", "saia"],
 };
 
-const SNIPER_CATEGORY_DEFAULT_KEYWORD = {
-  hats: "hat",
-  hair: "hair",
-  face_accessories: "face",
-  neck_accessories: "neck",
-  shoulder_accessories: "shoulder",
-  front_accessories: "front",
-  back_accessories: "back",
-  waist_accessories: "waist",
-  faces: "face",
-  heads: "head",
-  classic_shirts: "shirt",
-  classic_pants: "pants",
-  tshirts: "tshirt",
-  layered_clothing: "jacket",
-};
-
 const SNIPER_FORBIDDEN_TYPE_HINTS = [
   "emote",
   "animation",
@@ -6538,11 +6521,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     category,
     ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
   ].filter((item, index, list) => item && list.indexOf(item) === index);
-  const shouldUseDefaultKeyword = !sniperCanUseCatalogV2(category);
   const queryVariants = [
-    !keyword && shouldUseDefaultKeyword && SNIPER_CATEGORY_DEFAULT_KEYWORD[category]
-      ? { keyword: SNIPER_CATEGORY_DEFAULT_KEYWORD[category], minPrice, maxPrice, reason: "category keyword" }
-      : null,
     { keyword, minPrice, maxPrice, reason: "requested filters" },
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
   ].filter(Boolean);
