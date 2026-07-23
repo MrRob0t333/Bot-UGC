@@ -5693,6 +5693,7 @@ const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STAL
 const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 15000);
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
+const SNIPER_MAX_PAGES_WITH_AGE = Number(process.env.REFAZER_SNIPER_MAX_PAGES_WITH_AGE || 5);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 6000);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
@@ -5702,7 +5703,8 @@ function isRobloxRateLimitError(err) {
   return message.includes("rate-limiting") || message.includes("Too many requests") || message.includes("(429)");
 }
 
-function robloxCatalogSearchLimit() {
+function robloxCatalogSearchLimit(preferWide = false) {
+  if (preferWide) return "30";
   const requested = Number(SNIPER_SEARCH_LIMIT);
   if (requested <= 10) return "10";
   if (requested <= 28) return "28";
@@ -6260,6 +6262,7 @@ function sniperCategoryMatches(category, item, details = {}) {
   if (!allowedTypes) return true;
 
   const assetTypeId = catalogAssetTypeId(item, details);
+  if (category === "hair" && assetTypeId === 8 && sniperNameSuggestsCategory(category, item, details)) return true;
   return assetTypeId !== null && allowedTypes.includes(assetTypeId);
 }
 
@@ -6540,7 +6543,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
       const baseParams = {
         CurrencyType: "3",
-        Limit: robloxCatalogSearchLimit(),
+        Limit: robloxCatalogSearchLimit(Number.isFinite(maxAgeDays)),
         salesTypeFilter: "1",
         ...categoryParams,
       };
@@ -6553,21 +6556,36 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
       for (const attemptParams of windowAttempts) {
         assertSniperDeadline(deadlineAt);
-        const params = new URLSearchParams({ ...baseParams, ...attemptParams });
         const debugAttempt = {
           category: searchCategory,
           reason: queryVariant.reason,
-          params: params.toString(),
+          params: new URLSearchParams({ ...baseParams, ...attemptParams }).toString(),
           rows: 0,
+          pages: 0,
           error: null,
         };
         lastSniperDebug.attempts.push(debugAttempt);
         try {
-          const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`, {
-            maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
-          });
-          data = Array.isArray(response.data) ? response.data : [];
-          debugAttempt.rows = data.length;
+          const collected = [];
+          let cursor = "";
+          const maxPages = Number.isFinite(maxAgeDays) ? Math.max(1, SNIPER_MAX_PAGES_WITH_AGE) : 1;
+
+          for (let page = 0; page < maxPages; page += 1) {
+            assertSniperDeadline(deadlineAt);
+            const params = new URLSearchParams({ ...baseParams, ...attemptParams });
+            if (cursor) params.set("Cursor", cursor);
+            const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`, {
+              maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
+            });
+            const rows = Array.isArray(response.data) ? response.data : [];
+            collected.push(...rows);
+            debugAttempt.rows = collected.length;
+            debugAttempt.pages = page + 1;
+            cursor = response.nextPageCursor || "";
+            if (!cursor || !rows.length) break;
+          }
+
+          data = collected;
           if (data.length) {
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             break;
@@ -6606,6 +6624,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   const unique = [];
   const seen = new Set();
+  const uniqueTarget = Number.isFinite(maxAgeDays)
+    ? Math.max(limit * 12, SNIPER_DETAIL_LIMIT * 4)
+    : Math.max(limit * 3, SNIPER_DETAIL_LIMIT);
   for (const item of data) {
     const id = catalogItemId(item);
     if (!id) {
@@ -6625,20 +6646,24 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
     seen.add(String(id));
     unique.push(item);
-    if (unique.length >= Math.max(limit * 3, SNIPER_DETAIL_LIMIT)) break;
+    if (unique.length >= uniqueTarget) break;
   }
   lastSniperDebug.uniqueRows = unique.length;
 
   const shouldFetchDetailsForCategory = category && !["all", "collectibles"].includes(category);
   const enriched = [];
   const inferred = [];
-  const detailsLimit = Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
+  const detailsLimit = Number.isFinite(maxAgeDays)
+    ? Math.min(unique.length, Math.max(limit * 12, SNIPER_DETAIL_LIMIT * 4))
+    : Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
   for (const item of unique.slice(0, detailsLimit)) {
     if (sniperDeadlineExceeded(deadlineAt)) break;
     const id = catalogItemId(item);
     const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
-    const economyDetails = shouldFetchDetailsForCategory || Number.isFinite(maxAgeDays) ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
-    const catalogDetails = Number.isFinite(maxAgeDays) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
+    const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
+    const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
+    const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
+    const catalogDetails = Number.isFinite(maxAgeDays) && !hasAgeSignal ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
     const details = { ...economyDetails, ...catalogDetails };
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
@@ -6675,8 +6700,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     for (const item of unique.slice(0, detailsLimit)) {
       if (sniperDeadlineExceeded(deadlineAt)) break;
       const id = catalogItemId(item);
-      const economyDetails = await fetchCatalogDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS });
-      const catalogDetails = Number.isFinite(maxAgeDays)
+      const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
+      const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
+      const economyDetails = !hasCategorySignal
+        ? await fetchCatalogDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
+        : {};
+      const catalogDetails = Number.isFinite(maxAgeDays) && !hasAgeSignal
         ? await fetchCatalogItemDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
         : {};
       const details = { ...economyDetails, ...catalogDetails };
