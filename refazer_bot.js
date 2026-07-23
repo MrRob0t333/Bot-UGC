@@ -5694,6 +5694,7 @@ const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIME
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 20);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 6000);
+const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
 
 function isRobloxRateLimitError(err) {
@@ -5903,25 +5904,61 @@ async function fetchRobloxAssetDeliveryV2(assetId) {
   throw new Error(`Roblox request failed (${lastStatus}): ${lastText.slice(0, 300)}`);
 }
 
+function robloxPublicUrlVariants(url) {
+  const variants = [url];
+  if (!ROBLOX_PUBLIC_MIRROR_ENABLED) return variants;
+
+  const mirrorUrl = url
+    .replace("https://catalog.roblox.com/", "https://catalog.roproxy.com/")
+    .replace("https://economy.roblox.com/", "https://economy.roproxy.com/");
+
+  if (mirrorUrl !== url) variants.push(mirrorUrl);
+  return variants;
+}
+
 async function fetchRobloxPublicJson(url, options = {}) {
-  await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+  const variants = robloxPublicUrlVariants(url);
+  let lastError = null;
 
-  const res = await fetch(url, {
-    headers: robloxHeaders({}, ""),
-  });
-  const text = await res.text();
+  for (let index = 0; index < variants.length; index += 1) {
+    const targetUrl = variants[index];
+    const isMirror = index > 0;
 
-  if (res.status === 429) {
-    const retryDelay = retryDelayFromResponse(res, 0);
-    robloxPublicRateLimitedUntil = Date.now() + Math.max(retryDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
-    throw new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
+    if (!isMirror) {
+      await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+    }
+
+    const res = await fetch(targetUrl, {
+      headers: robloxHeaders({}, ""),
+    });
+    const text = await res.text();
+
+    if (res.status === 429) {
+      const retryDelay = retryDelayFromResponse(res, 0);
+      if (!isMirror) {
+        robloxPublicRateLimitedUntil = Date.now() + Math.max(retryDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
+      }
+      lastError = new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
+      if (index < variants.length - 1) {
+        console.warn(`Roblox public catalog returned 429; trying mirror for ${url}`);
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (!res.ok) {
+      lastError = new Error(`Roblox public catalog request failed (${res.status}): ${text.slice(0, 300)}`);
+      if (index < variants.length - 1) continue;
+      throw lastError;
+    }
+
+    if (isMirror) {
+      console.log(`Roblox public mirror served: ${targetUrl}`);
+    }
+    return JSON.parse(text);
   }
 
-  if (!res.ok) {
-    throw new Error(`Roblox public catalog request failed (${res.status}): ${text.slice(0, 300)}`);
-  }
-
-  return JSON.parse(text);
+  throw lastError || new Error("Roblox public catalog request failed.");
 }
 
 const SNIPER_CATEGORY_PARAMS = {
