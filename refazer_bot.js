@@ -5689,6 +5689,12 @@ const robloxHealth = {
 const sniperCatalogCache = new Map();
 let lastSniperDebug = null;
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
+const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
+const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 15000);
+const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
+const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 20);
+const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 1500);
+let sniperBusyUntil = 0;
 
 function isRobloxRateLimitError(err) {
   const message = String(err?.message || err || "");
@@ -5767,11 +5773,15 @@ async function waitForRobloxSlot() {
   nextRobloxRequestAt = Date.now() + ROBLOX_REQUEST_INTERVAL_MS;
 }
 
-async function waitForRobloxPublicSlot() {
+async function waitForRobloxPublicSlot(maxWaitMs = null) {
   const now = Date.now();
   const waitUntil = Math.max(nextRobloxPublicRequestAt, robloxPublicRateLimitedUntil);
   if (waitUntil > now) {
-    await wait(waitUntil - now);
+    const delay = waitUntil - now;
+    if (Number.isFinite(maxWaitMs) && delay > maxWaitMs) {
+      throw new Error(`Roblox catalog is cooling down for about ${Math.ceil(delay / 1000)}s after rate-limiting.`);
+    }
+    await wait(delay);
   }
 
   nextRobloxPublicRequestAt = Date.now() + Math.max(2000, ROBLOX_REQUEST_INTERVAL_MS);
@@ -5893,8 +5903,8 @@ async function fetchRobloxAssetDeliveryV2(assetId) {
   throw new Error(`Roblox request failed (${lastStatus}): ${lastText.slice(0, 300)}`);
 }
 
-async function fetchRobloxPublicJson(url) {
-  await waitForRobloxPublicSlot();
+async function fetchRobloxPublicJson(url, options = {}) {
+  await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
 
   const res = await fetch(url, {
     headers: robloxHeaders({}, ""),
@@ -6338,17 +6348,17 @@ function sniperScoreBreakdown(item, details = {}) {
   };
 }
 
-async function fetchCatalogDetailsSafe(itemId) {
+async function fetchCatalogDetailsSafe(itemId, options = {}) {
   try {
-    return await fetchRobloxPublicJson(`https://economy.roblox.com/v2/assets/${encodeURIComponent(itemId)}/details`);
+    return await fetchRobloxPublicJson(`https://economy.roblox.com/v2/assets/${encodeURIComponent(itemId)}/details`, options);
   } catch {
     return {};
   }
 }
 
-async function fetchCatalogItemDetailsSafe(itemId) {
+async function fetchCatalogItemDetailsSafe(itemId, options = {}) {
   try {
-    return await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/catalog/items/${encodeURIComponent(itemId)}/details`);
+    return await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/catalog/items/${encodeURIComponent(itemId)}/details`, options);
   } catch {
     return {};
   }
@@ -6393,17 +6403,46 @@ function addSniperDebugSample(reason, item, details = {}) {
   });
 }
 
-async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays }) {
+function getSniperCachedCandidates(cacheKey, ttlMs = SNIPER_CATALOG_CACHE_TTL_MS) {
+  const cached = sniperCatalogCache.get(cacheKey);
+  if (!cached || Date.now() - cached.savedAt > ttlMs) return null;
+  return cached.candidates || [];
+}
+
+function sniperDeadlineExceeded(deadlineAt) {
+  return Number.isFinite(deadlineAt) && deadlineAt > 0 && Date.now() > deadlineAt;
+}
+
+function assertSniperDeadline(deadlineAt) {
+  if (!sniperDeadlineExceeded(deadlineAt)) return;
+  const err = new Error("Sniper scan timed out before Roblox returned enough catalog data.");
+  err.code = "SNIPER_TIMEOUT";
+  throw err;
+}
+
+async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, deadlineAt = 0 }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const cacheKey = JSON.stringify({ window, category, keyword, minPrice, maxPrice, maxAgeDays });
-  const cached = sniperCatalogCache.get(cacheKey);
-  if (cached && Date.now() - cached.savedAt < SNIPER_CATALOG_CACHE_TTL_MS) {
+  const cached = getSniperCachedCandidates(cacheKey);
+  if (cached) {
     lastSniperDebug = {
       fromCache: true,
       request: { window, category, keyword, minPrice, maxPrice, maxAgeDays },
-      candidates: cached.candidates.length,
+      candidates: cached.length,
     };
-    return cached.candidates;
+    return cached;
+  }
+  const staleCached = getSniperCachedCandidates(cacheKey, SNIPER_CATALOG_STALE_CACHE_TTL_MS);
+
+  if (robloxPublicRateLimitedUntil > Date.now() && staleCached?.length) {
+    lastSniperDebug = {
+      fromCache: true,
+      staleCache: true,
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays },
+      cooldownSeconds: Math.ceil((robloxPublicRateLimitedUntil - Date.now()) / 1000),
+      candidates: staleCached.length,
+    };
+    return staleCached;
   }
 
   lastSniperDebug = {
@@ -6440,13 +6479,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   let data = [];
   let lastError = null;
   let searchFallbackReason = "";
+  const startedAt = Date.now();
 
   for (const queryVariant of queryVariants) {
     for (const searchCategory of categoriesToTry) {
+      assertSniperDeadline(deadlineAt);
       const categoryParams = SNIPER_CATEGORY_PARAMS[searchCategory] || SNIPER_CATEGORY_PARAMS.all;
       const baseParams = {
         CurrencyType: "3",
-        Limit: "30",
+        Limit: String(Math.max(10, Math.min(30, SNIPER_SEARCH_LIMIT))),
         salesTypeFilter: "1",
         ...categoryParams,
       };
@@ -6458,6 +6499,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
 
       for (const attemptParams of windowAttempts) {
+        assertSniperDeadline(deadlineAt);
         const params = new URLSearchParams({ ...baseParams, ...attemptParams });
         const debugAttempt = {
           category: searchCategory,
@@ -6468,7 +6510,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         };
         lastSniperDebug.attempts.push(debugAttempt);
         try {
-          const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`);
+          const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/v1/search/items/details?${params.toString()}`, {
+            maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
+          });
           data = Array.isArray(response.data) ? response.data : [];
           debugAttempt.rows = data.length;
           if (data.length) {
@@ -6478,21 +6522,33 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         } catch (err) {
           lastError = err;
           debugAttempt.error = String(err.message || err).slice(0, 300);
-          if (isRobloxRateLimitError(err)) break;
+          if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") break;
         }
       }
 
-      if (data.length || isRobloxRateLimitError(lastError)) {
+      if (data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
         break;
       }
     }
 
-    if (data.length || isRobloxRateLimitError(lastError)) {
+    if (data.length || isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT") {
       break;
     }
   }
 
-  if (!data.length && lastError) throw lastError;
+  if (!data.length && lastError) {
+    if (staleCached?.length) {
+      lastSniperDebug = {
+        ...(lastSniperDebug || {}),
+        fromCache: true,
+        staleCache: true,
+        fallbackError: String(lastError.message || lastError).slice(0, 300),
+        candidates: staleCached.length,
+      };
+      return staleCached;
+    }
+    throw lastError;
+  }
   lastSniperDebug.rawRows = data.length;
 
   const unique = [];
@@ -6516,17 +6572,20 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
     seen.add(String(id));
     unique.push(item);
-    if (unique.length >= 15) break;
+    if (unique.length >= Math.max(limit * 3, SNIPER_DETAIL_LIMIT)) break;
   }
   lastSniperDebug.uniqueRows = unique.length;
 
   const shouldFetchDetailsForCategory = category && !["all", "collectibles"].includes(category);
   const enriched = [];
   const inferred = [];
-  for (const item of unique) {
+  const detailsLimit = Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
+  for (const item of unique.slice(0, detailsLimit)) {
+    if (sniperDeadlineExceeded(deadlineAt)) break;
     const id = catalogItemId(item);
-    const economyDetails = shouldFetchDetailsForCategory || Number.isFinite(maxAgeDays) ? await fetchCatalogDetailsSafe(id) : {};
-    const catalogDetails = Number.isFinite(maxAgeDays) ? await fetchCatalogItemDetailsSafe(id) : {};
+    const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
+    const economyDetails = shouldFetchDetailsForCategory || Number.isFinite(maxAgeDays) ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
+    const catalogDetails = Number.isFinite(maxAgeDays) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
     const details = { ...economyDetails, ...catalogDetails };
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
@@ -6556,19 +6615,23 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const candidate = buildSniperCandidate(item, details, category, canVerify && matches);
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
     else inferred.push(candidate);
+    if (enriched.length + inferred.length >= Math.max(limit, 3)) break;
   }
 
   if (!enriched.length && category !== "all" && category !== "collectibles") {
-    for (const item of unique.slice(0, 15)) {
+    for (const item of unique.slice(0, detailsLimit)) {
+      if (sniperDeadlineExceeded(deadlineAt)) break;
       const id = catalogItemId(item);
-      const details = {
-        ...await fetchCatalogDetailsSafe(id),
-        ...Number.isFinite(maxAgeDays) ? await fetchCatalogItemDetailsSafe(id) : {},
-      };
+      const economyDetails = await fetchCatalogDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS });
+      const catalogDetails = Number.isFinite(maxAgeDays)
+        ? await fetchCatalogItemDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
+        : {};
+      const details = { ...economyDetails, ...catalogDetails };
       if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
       if (!sniperAgeMatchesFilter(item, details, maxAgeDays)) continue;
       if (!sniperCategoryMatches(category, item, details)) continue;
       enriched.push(buildSniperCandidate(item, details, category, true));
+      if (enriched.length >= Math.max(limit, 3)) break;
     }
   }
 
@@ -6602,6 +6665,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
+  lastSniperDebug.elapsedMs = Date.now() - startedAt;
   if (candidates.length) {
     sniperCatalogCache.set(cacheKey, { savedAt: Date.now(), candidates });
   }
@@ -12167,12 +12231,23 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      if (sniperBusyUntil > Date.now()) {
+        await interaction.editReply(
+          "## Market Sniper cooling down\n" +
+          `Try again in about **${Math.ceil((sniperBusyUntil - Date.now()) / 1000)}s**. Roblox catalog searches are rate-sensitive.`
+        );
+        return;
+      }
+      sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, SNIPER_COMMAND_TIMEOUT_MS));
+
       await interaction.editReply(
         "## Market Sniper\n" +
         "Scanning public catalog signals. This can take a moment..."
       );
 
       try {
+        const startedAt = Date.now();
+        console.log(`[sniper] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount}`);
         const candidates = await fetchSniperCandidates({
           window,
           category,
@@ -12180,7 +12255,18 @@ client.on("interactionCreate", async interaction => {
           minPrice,
           maxPrice,
           maxAgeDays,
+          limit: resultCount,
+          deadlineAt: Date.now() + SNIPER_COMMAND_TIMEOUT_MS,
         });
+        console.log(`[sniper] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
+          fromCache: lastSniperDebug?.fromCache,
+          staleCache: lastSniperDebug?.staleCache,
+          rawRows: lastSniperDebug?.rawRows,
+          uniqueRows: lastSniperDebug?.uniqueRows,
+          rejected: lastSniperDebug?.rejected,
+          candidates: lastSniperDebug?.candidates,
+          elapsedMs: lastSniperDebug?.elapsedMs,
+        })}`);
 
         if (!candidates.length) {
           await interaction.editReply(
