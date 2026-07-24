@@ -5707,18 +5707,20 @@ const robloxHealth = {
   lastAt: null,
 };
 const sniperCatalogCache = new Map();
+const sniperInFlightScans = new Map();
 let lastSniperDebug = null;
 const SNIPER_CACHE_VERSION = "typed-v2-manual-keyword-only";
-const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 5 * 60 * 1000);
-const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 60 * 60 * 1000);
-const SNIPER_CATALOG_CACHE_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_CACHE_ENABLED, "false") === "true";
-const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 25000);
+const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 45 * 1000);
+const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 5 * 60 * 1000);
+const SNIPER_CATALOG_CACHE_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_CACHE_ENABLED, "true") !== "false";
+const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIMEOUT_MS || 70000);
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
 const SNIPER_MAX_PAGES_WITH_AGE = Number(process.env.REFAZER_SNIPER_MAX_PAGES_WITH_AGE || 12);
-const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 6000);
-const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 900);
-const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 1200);
+const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 15000);
+const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
+const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
+const SNIPER_QUEUE_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_QUEUE_WAIT_LIMIT_MS || 30000);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
 
@@ -6514,6 +6516,21 @@ function getSniperCachedCandidates(cacheKey, ttlMs = SNIPER_CATALOG_CACHE_TTL_MS
   return cached.candidates || [];
 }
 
+function sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth }) {
+  return JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
+}
+
+async function runSniperScanOnce(scanKey, scanFn) {
+  const existing = sniperInFlightScans.get(scanKey);
+  if (existing) return existing;
+
+  const promise = Promise.resolve()
+    .then(scanFn)
+    .finally(() => sniperInFlightScans.delete(scanKey));
+  sniperInFlightScans.set(scanKey, promise);
+  return promise;
+}
+
 function sniperDeadlineExceeded(deadlineAt) {
   return Number.isFinite(deadlineAt) && deadlineAt > 0 && Date.now() > deadlineAt;
 }
@@ -6527,7 +6544,7 @@ function assertSniperDeadline(deadlineAt) {
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", deadlineAt = 0 }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
-  const cacheKey = JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays });
+  const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
     lastSniperDebug = {
@@ -12460,18 +12477,29 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
-      if (sniperBusyUntil > Date.now()) {
-        await interaction.editReply(
-          "## Market Sniper cooling down\n" +
-          `Try again in about **${Math.ceil((sniperBusyUntil - Date.now()) / 1000)}s**. Roblox catalog searches are rate-sensitive.`
-        );
-        return;
-      }
       const sniperTimeoutMs = Math.max(
         SNIPER_COMMAND_TIMEOUT_MS,
         depth === "deep" ? 60000 : SNIPER_COMMAND_TIMEOUT_MS,
         resultCount > 25 ? 60000 : resultCount > 10 ? 45000 : SNIPER_COMMAND_TIMEOUT_MS
       );
+      const queueWaitMs = Math.max(0, sniperBusyUntil - Date.now());
+
+      if (queueWaitMs > SNIPER_QUEUE_WAIT_LIMIT_MS) {
+        await interaction.editReply(
+          "## Market Sniper cooling down\n" +
+          `Try again in about **${Math.ceil(queueWaitMs / 1000)}s**. Roblox catalog searches are rate-sensitive.`
+        );
+        return;
+      }
+
+      if (queueWaitMs > 0) {
+        await interaction.editReply(
+          "## Market Sniper queued\n" +
+          `Waiting **${Math.ceil(queueWaitMs / 1000)}s** so Roblox does not block the catalog scan.`
+        );
+        await wait(queueWaitMs);
+      }
+
       sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, sniperTimeoutMs));
 
       await interaction.editReply(
@@ -12481,18 +12509,21 @@ client.on("interactionCreate", async interaction => {
 
       try {
         const startedAt = Date.now();
+        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
         console.log(`[sniper] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount} depth=${depth}`);
-        const candidates = await fetchSniperCandidates({
-          window,
-          category,
-          keyword,
-          minPrice,
-          maxPrice,
-          maxAgeDays,
-          limit: resultCount,
-          depth,
-          deadlineAt: Date.now() + sniperTimeoutMs,
-        });
+        const candidates = await runSniperScanOnce(scanKey, () =>
+          fetchSniperCandidates({
+            window,
+            category,
+            keyword,
+            minPrice,
+            maxPrice,
+            maxAgeDays,
+            limit: resultCount,
+            depth,
+            deadlineAt: Date.now() + sniperTimeoutMs,
+          })
+        );
         console.log(`[sniper] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
           fromCache: lastSniperDebug?.fromCache,
           staleCache: lastSniperDebug?.staleCache,
@@ -12542,6 +12573,37 @@ client.on("interactionCreate", async interaction => {
         );
       } catch (err) {
         console.error(err);
+        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
+        const staleCandidates = getSniperCachedCandidates(scanKey, SNIPER_CATALOG_STALE_CACHE_TTL_MS);
+        if (staleCandidates?.length) {
+          lastSniperDebug = {
+            ...(lastSniperDebug || {}),
+            fromCache: true,
+            staleCache: true,
+            partial: true,
+            partialReason: String(err.message || err).slice(0, 300),
+            candidates: staleCandidates.length,
+          };
+          const selectedCandidates = pickSniperCandidates(staleCandidates, interaction.user.id, resultCount);
+          markSniperCandidatesSeen(interaction.user.id, selectedCandidates);
+          await sendSniperReport(
+            interaction,
+            formatSniperReport({
+              candidates: selectedCandidates,
+              quote,
+              window,
+              category,
+              keyword,
+              minPrice,
+              maxPrice,
+              maxAgeDays,
+              depth,
+              debug: lastSniperDebug,
+            })
+          );
+          return;
+        }
+
         await interaction.editReply(
           "## Market Sniper unavailable\n" +
           "No charge was deducted. Roblox may be rate-limiting catalog data right now. Try again later."
