@@ -9397,9 +9397,139 @@ function createPendingMultiviewAction(data) {
     id,
     used: false,
     createdAt: Date.now(),
+    status: "review",
+    chargeStatus: "not_charged",
+    deliveryStatus: "not_delivered",
     ...data,
   });
   return id;
+}
+
+function readPendingProviderTask(action) {
+  const files = [
+    path.join(action?.tempDir || "", "hyper3d_ai", "hyper3d_task.json"),
+    path.join(action?.tempDir || "", "hyper3d_ai", "hyper3d_error.json"),
+  ];
+
+  for (const file of files) {
+    try {
+      if (!file || !fs.existsSync(file)) continue;
+      const json = JSON.parse(fs.readFileSync(file, "utf8"));
+      return {
+        provider: "hyper3d",
+        taskId: json.uuid || json.task_id || null,
+        subscriptionKey: json.subscription_key || null,
+        at: json.at || json.submit_time || null,
+      };
+    } catch {
+      // Best-effort diagnostic only.
+    }
+  }
+
+  return null;
+}
+
+function walletHasDebitForAction(actionId) {
+  if (!actionId) return false;
+
+  try {
+    const db = readWalletDb();
+    return (db.transactions || []).some(entry =>
+      entry?.type === "debit" && entry?.meta?.actionId === actionId
+    );
+  } catch {
+    return false;
+  }
+}
+
+function shouldKeepPendingGenerationAction(action) {
+  return [
+    "interrupted",
+    "generation_failed",
+    "delivery_failed",
+    "insufficient_balance_before_delivery",
+    "delivered_charge_failed",
+    "delivered_charge_review",
+  ].includes(action?.status);
+}
+
+function markPendingGenerationInterrupted(actionId, action) {
+  const delivered = action.deliveryStatus === "delivered" || action.status === "delivered_pending_charge";
+  const charged = action.chargeStatus === "charged" || walletHasDebitForAction(actionId);
+
+  action.inFlight = false;
+  action.recoveredAfterRestart = true;
+  action.recoveredAt = Date.now();
+  action.providerTask = action.providerTask || readPendingProviderTask(action);
+
+  if (charged) {
+    action.used = true;
+    action.status = "charged";
+    action.chargeStatus = "charged";
+    action.deliveryStatus = delivered ? "delivered" : (action.deliveryStatus || "unknown");
+    action.lastError = "Bot restarted after this generation was already charged.";
+    return;
+  }
+
+  if (delivered) {
+    action.used = true;
+    action.status = "delivered_charge_review";
+    action.chargeStatus = "not_charged";
+    action.deliveryStatus = "delivered";
+    action.lastError = "Bot restarted after delivery before Service Credits charge could be confirmed. Manual billing review is needed.";
+    return;
+  }
+
+  action.used = false;
+  action.status = "interrupted";
+  action.chargeStatus = "not_charged";
+  action.deliveryStatus = "not_delivered";
+  action.lastError = "Bot restarted while this generation was in progress. No Service Credits were charged by the bot because no final delivery was confirmed.";
+}
+
+async function notifyInterruptedPendingGeneration(actionId, action) {
+  if (action.restartNoticeSentAt) return;
+
+  const channelId = action.guidedThreadId || action.channelId || action.threadId;
+  if (!channelId) return;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.send) return;
+
+  const taskLine = action.providerTask?.taskId
+    ? `\n**Provider task:** \`${action.providerTask.taskId}\``
+    : "";
+  const delivered = action.deliveryStatus === "delivered";
+  const guidance = delivered
+    ? "The model appears to have been delivered, but no Service Credits charge was confirmed. Please review billing manually before rerunning it."
+    : "You can click **Generate Model** again or contact the team with this Action ID.";
+
+  await channel.send({
+    content:
+      "## Generation Interrupted\n" +
+      "The bot restarted while this model was generating.\n\n" +
+      `**Charge status:** ${action.chargeStatus || "not_charged"}\n` +
+      `**Delivery status:** ${action.deliveryStatus || "unknown"}\n\n` +
+      `${guidance}\n` +
+      `**Action ID:** \`${actionId}\`${taskLine}`,
+  }).catch(() => {});
+
+  action.restartNoticeSentAt = Date.now();
+  setPendingMultiviewAction(actionId, action);
+}
+
+async function recoverInterruptedPendingGenerations() {
+  const interrupted = [];
+
+  for (const [actionId, action] of pendingMultiviewActions.entries()) {
+    if (!action?.recoveredAfterRestart || action.restartNoticeSentAt) continue;
+    if (action.chargeStatus === "charged") continue;
+    interrupted.push([actionId, action]);
+  }
+
+  for (const [actionId, action] of interrupted) {
+    await notifyInterruptedPendingGeneration(actionId, action);
+  }
 }
 
 function persistPendingMultiviewActions() {
@@ -9432,13 +9562,15 @@ function loadPendingMultiviewActions() {
     const now = Date.now();
     for (const [id, action] of Object.entries(raw || {})) {
       if (!action) continue;
-      if (action.used && !action.inFlight) continue;
+      if (action.used && !action.inFlight && !shouldKeepPendingGenerationAction(action)) continue;
       if (now - Number(action.createdAt || 0) > PENDING_MULTIVIEW_TTL_MS) continue;
       if (action.inFlight) {
-        action.used = false;
-        action.inFlight = false;
-        action.recoveredAfterRestart = true;
+        markPendingGenerationInterrupted(id, action);
+        if (action.status === "charged") continue;
       }
+      action.status = action.status || "review";
+      action.chargeStatus = action.chargeStatus || "not_charged";
+      action.deliveryStatus = action.deliveryStatus || "not_delivered";
       pendingMultiviewActions.set(id, action);
     }
     persistPendingMultiviewActions();
@@ -10195,6 +10327,13 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   action.used = true;
   action.inFlight = true;
   action.startedAt = Date.now();
+  action.channelId = action.channelId || interaction.channelId;
+  action.userId = action.userId || interaction.user.id;
+  action.status = "generating";
+  action.chargeStatus = "not_charged";
+  action.deliveryStatus = "not_delivered";
+  action.generationStartedAt = new Date().toISOString();
+  action.providerTask = readPendingProviderTask(action);
   action.waitingTextureDecision = false;
   setPendingMultiviewAction(actionId, action);
   console.log(
@@ -10271,6 +10410,10 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     console.error(err);
     action.used = false;
     action.inFlight = false;
+    action.status = "generation_failed";
+    action.chargeStatus = "not_charged";
+    action.deliveryStatus = "not_delivered";
+    action.providerTask = readPendingProviderTask(action) || action.providerTask || null;
     action.lastError = String(err.message || err).slice(0, 500);
     setPendingMultiviewAction(actionId, action);
     await interaction.followUp({
@@ -10291,8 +10434,32 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     return;
   }
 
+  action.status = "generated";
+  action.generatedAt = new Date().toISOString();
+  action.provider = model.provider || null;
+  action.providerTask = {
+    provider: model.provider || "unknown",
+    taskId: model.taskId || model.baseTaskId || null,
+    subscriptionKey: model.subscriptionKey || model.baseSubscriptionKey || null,
+    consumedCredit: model.consumedCredit || null,
+  };
+  action.modelFiles = (model.modelPaths?.length ? model.modelPaths : [model.modelPath])
+    .filter(Boolean)
+    .map(file => ({
+      name: path.basename(file),
+      size: fs.existsSync(file) ? fs.statSync(file).size : null,
+    }));
+  setPendingMultiviewAction(actionId, action);
+
   const balanceBeforeDelivery = walletAvailableBalance(interaction.user.id, serviceKey);
   if (balanceBeforeDelivery < quote.walletAmount) {
+    action.used = false;
+    action.inFlight = false;
+    action.status = "insufficient_balance_before_delivery";
+    action.chargeStatus = "not_charged";
+    action.deliveryStatus = "not_delivered";
+    action.lastError = "User balance changed before delivery.";
+    setPendingMultiviewAction(actionId, action);
     await interaction.followUp({
       content: formatInsufficientBalanceMessage({
         service: serviceLabel,
@@ -10318,6 +10485,10 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     console.error(err);
     action.used = false;
     action.inFlight = false;
+    action.status = "delivery_failed";
+    action.chargeStatus = "not_charged";
+    action.deliveryStatus = "not_delivered";
+    action.providerTask = action.providerTask || readPendingProviderTask(action);
     action.lastError = String(err.message || err).slice(0, 500);
     setPendingMultiviewAction(actionId, action);
     const modelFiles = (model?.modelPaths?.length ? model.modelPaths : [model?.modelPath])
@@ -10343,13 +10514,61 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     return;
   }
 
+  action.status = "delivered_pending_charge";
+  action.deliveryStatus = "delivered";
+  action.deliveredAt = new Date().toISOString();
+  action.delivery = {
+    deliveredInDm: Boolean(delivery.deliveredInDm),
+    messageId: delivery.message?.id || null,
+    channelId: delivery.message?.channelId || delivery.message?.channel_id || null,
+  };
+  setPendingMultiviewAction(actionId, action);
+
   const debit = removeWalletBalance({
     userId: interaction.user.id,
     amount: quote.walletAmount,
     actorId: client.user.id,
     reason: `${serviceLabel} generated`,
-    meta: { command: `${actionType}_button`, serviceKey, priceBrl: quote.price },
+    meta: { command: `${actionType}_button`, actionId, serviceKey, priceBrl: quote.price },
   });
+
+  if (!debit.ok) {
+    action.used = true;
+    action.inFlight = false;
+    action.status = "delivered_charge_failed";
+    action.chargeStatus = "not_charged";
+    action.chargeFailedAt = new Date().toISOString();
+    action.lastError = `Delivery succeeded but Service Credits could not be deducted. Current balance: ${walletBalance(interaction.user.id)}`;
+    setPendingMultiviewAction(actionId, action);
+
+    await interaction.followUp({
+      content:
+        "## Charge Review Needed\n" +
+        "The model was delivered, but the bot could not deduct Service Credits automatically.\n" +
+        "The team has been notified to review this order manually.",
+      flags: 64,
+    }).catch(() => {});
+
+    if (userIsAdmin(interaction)) {
+      await interaction.followUp({
+        content:
+          "## Admin billing diagnostic\n" +
+          `**Action ID:** \`${actionId}\`\n` +
+          `**Expected charge:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Current balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
+          "**Status:** delivered_charge_failed",
+        flags: 64,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  action.status = "charged";
+  action.chargeStatus = "charged";
+  action.chargedAt = new Date().toISOString();
+  action.chargedAmount = quote.walletAmount;
+  action.balanceAfterCharge = debit.balance;
+  setPendingMultiviewAction(actionId, action);
 
   if (debit.ok && debit.paidWithWallet > 0) {
     creditAffiliateServiceCommission({
@@ -10730,6 +10949,7 @@ client.once("clientReady", async () => {
   console.log(`Model engine active: ${activeModelEngineLabel()}`);
   console.log(`Multiview upload order: ${MULTIVIEW_UPLOAD_ORDER.map(publicViewName).join(", ")}`);
   loadPendingMultiviewActions();
+  await recoverInterruptedPendingGenerations();
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
   startWebhookServer();
