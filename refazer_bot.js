@@ -1116,6 +1116,63 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("model_views")
+    .setDescription("Admin: renders reference images from an uploaded 3D model")
+    .addAttachmentOption(o =>
+      o.setName("model").setDescription("3D model file: GLB, GLTF, OBJ or FBX").setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("angles")
+        .setDescription("Reference angle set")
+        .setRequired(false)
+        .addChoices(
+          { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
+          { name: "5 Blender views - front/right/back/left/top", value: "blender5" },
+          { name: "Full 10 views", value: "full10" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("lighting")
+        .setDescription("Lighting preset")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Flat inspection", value: "flat" },
+          { name: "Studio", value: "studio" },
+          { name: "Soft", value: "soft" },
+          { name: "Dramatic", value: "dramatic" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("pov")
+        .setDescription("Camera framing")
+        .setRequired(false)
+        .addChoices(
+          { name: "Your default", value: "default" },
+          { name: "Normal", value: "normal" },
+          { name: "Close", value: "close" },
+          { name: "Wide", value: "wide" },
+          { name: "Top Down", value: "top_down" }
+        )
+    )
+    .addNumberOption(o =>
+      o.setName("ior").setDescription("Material IOR. 1.00 normal, up to 2.50 glassy").setRequired(false).setMinValue(1).setMaxValue(2.5)
+    )
+    .addNumberOption(o =>
+      o.setName("roughness").setDescription("Material roughness. 0 glossy, 1 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+    )
+    .addNumberOption(o =>
+      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("admin_bulk_views")
     .setDescription("Admin: renders reference views for up to 10 UGC IDs")
     .addStringOption(o =>
@@ -11599,6 +11656,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_model_starter",
     "admin_bulk_views",
     "admin_views_full",
+    "model_views",
     "admin_roblox_status",
     "copiar",
     "steal",
@@ -11742,6 +11800,7 @@ client.on("interactionCreate", async interaction => {
       "admin_post_model_starter",
       "admin_bulk_views",
       "admin_views_full",
+      "model_views",
       "admin_roblox_status",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
@@ -13340,6 +13399,85 @@ client.on("interactionCreate", async interaction => {
         `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
         `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
       ).catch(() => {});
+      return;
+    }
+
+    if (interaction.commandName === "model_views") {
+      const model = interaction.options.getAttachment("model");
+      const renderSettings = renderSettingsForInteraction(interaction);
+      const angleSet = interaction.options.getString("angles") || "multiview4";
+      const ext = path.extname(model?.name || "").toLowerCase();
+      const supportedModelExts = new Set([".glb", ".gltf", ".obj", ".fbx"]);
+
+      if (!model || !supportedModelExts.has(ext)) {
+        await interaction.reply({
+          content: "## Unsupported Model File\nUpload a `.glb`, `.gltf`, `.obj` or `.fbx` file. Prefer `.glb` when possible because it keeps textures packed.",
+          flags: 64,
+        });
+        return;
+      }
+
+      if (Number(model.size || 0) > DISCORD_MAX_ATTACHMENT_BYTES) {
+        await interaction.reply({
+          content:
+            "## Model Too Large\n" +
+            `This file is ${formatBytes(model.size)}. The current safe limit is ${formatBytes(DISCORD_MAX_ATTACHMENT_BYTES)}.`,
+          flags: 64,
+        });
+        return;
+      }
+
+      await interaction.deferReply({ flags: 64 });
+
+      try {
+        const tempDir = path.join(__dirname, "temp", "refazer", `model-views-${interaction.id}`);
+        const inputDir = path.join(tempDir, "input");
+        fs.mkdirSync(inputDir, { recursive: true });
+        const safeBase = path.basename(model.name || `model${ext}`).replace(/[^\w.-]+/g, "_");
+        const modelPath = await downloadAttachmentToFile(model, path.join(inputDir, safeBase));
+
+        await interaction.editReply(
+          "## Rendering Uploaded Model\n" +
+          `**File:** \`${safeBase}\`\n` +
+          `**Angles:** ${angleSet}\n\n` +
+          `**Render settings:**\n${renderSettingsSummary(renderSettings)}`
+        );
+
+        const renderDir = await renderImages(modelPath, "", tempDir, renderSettings);
+        const files = angleSet === "full10"
+          ? fullUgcViewAttachments(renderDir)
+          : angleSet === "blender5"
+            ? aiFiveViewAttachments(renderDir)
+            : ugcViewAttachments(renderDir);
+
+        await interaction.editReply({
+          content:
+            "## Model Views Ready\n" +
+            `**File:** \`${safeBase}\`\n\n` +
+            `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
+            (angleSet === "full10"
+              ? "Full 10-view Blender set ready."
+              : angleSet === "blender5"
+                ? "5-view Blender set ready. Use front, right, back and left for `/multiview`; keep the top view as extra reference context."
+                : "Use these four images as references for `/multiview`."),
+          files,
+        });
+      } catch (err) {
+        console.error(err);
+        await interaction.editReply(
+          "## Model View Rendering Failed\n" +
+          "I could not render this uploaded model. Prefer `.glb` and check whether the file opens correctly in Blender."
+        ).catch(() => {});
+
+        if (userIsAdmin(interaction)) {
+          await interaction.followUp({
+            content:
+              "## Admin diagnostic\n" +
+              `\`\`\`\n${String(err.message || err).slice(0, 1500)}\n\`\`\``,
+            flags: 64,
+          }).catch(() => {});
+        }
+      }
       return;
     }
 

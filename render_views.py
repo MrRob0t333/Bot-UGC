@@ -67,39 +67,64 @@ def load_fixed_texture(path):
 bpy.ops.object.select_all(action="SELECT")
 bpy.ops.object.delete()
 
-bpy.ops.wm.obj_import(filepath=obj_path)
+source_ext = os.path.splitext(obj_path)[1].lower()
+if source_ext == ".obj":
+    bpy.ops.wm.obj_import(filepath=obj_path)
+elif source_ext in {".glb", ".gltf"}:
+    bpy.ops.import_scene.gltf(filepath=obj_path)
+elif source_ext == ".fbx":
+    bpy.ops.import_scene.fbx(filepath=obj_path)
+else:
+    raise RuntimeError(f"Unsupported model format: {source_ext}")
 objs = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
-mat = bpy.data.materials.new("UGC_Material")
-mat.use_nodes = True
-mat.blend_method = "OPAQUE"
+if not objs:
+    raise RuntimeError("No mesh objects found in uploaded model.")
 
-bsdf = mat.node_tree.nodes.get("Principled BSDF")
+override_img = load_fixed_texture(texture_path)
+mat = None
 
-if bsdf:
-    bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
-    bsdf.inputs["Metallic"].default_value = 0
-    bsdf.inputs["Roughness"].default_value = render_settings["roughness"]
-    bsdf.inputs["Alpha"].default_value = 1
+if override_img:
+    mat = bpy.data.materials.new("UGC_Material")
+    mat.use_nodes = True
+    mat.blend_method = "OPAQUE"
 
-    if "IOR" in bsdf.inputs:
-        bsdf.inputs["IOR"].default_value = render_settings["ior"]
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
 
-    if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = clamp((render_settings["ior"] - 1.0) / 1.5, 0.0, 1.0, 0.0)
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
+        bsdf.inputs["Metallic"].default_value = 0
+        bsdf.inputs["Roughness"].default_value = render_settings["roughness"]
+        bsdf.inputs["Alpha"].default_value = 1
 
-    img = load_fixed_texture(texture_path)
+        if "IOR" in bsdf.inputs:
+            bsdf.inputs["IOR"].default_value = render_settings["ior"]
 
-    if img:
+        if "Specular IOR Level" in bsdf.inputs:
+            bsdf.inputs["Specular IOR Level"].default_value = clamp((render_settings["ior"] - 1.0) / 1.5, 0.0, 1.0, 0.0)
+
         tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
-        tex.image = img
+        tex.image = override_img
         tex.extension = "CLIP"
         tex.interpolation = "Closest"
         mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
 
-for obj in objs:
-    obj.data.materials.clear()
-    obj.data.materials.append(mat)
+if mat:
+    for obj in objs:
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+else:
+    for obj in objs:
+        for material in obj.data.materials:
+            if not material or not material.use_nodes:
+                continue
+            bsdf = material.node_tree.nodes.get("Principled BSDF")
+            if not bsdf:
+                continue
+            if "Roughness" in bsdf.inputs:
+                bsdf.inputs["Roughness"].default_value = render_settings["roughness"]
+            if "IOR" in bsdf.inputs:
+                bsdf.inputs["IOR"].default_value = render_settings["ior"]
 
 # Centralizar modelo
 mins = Vector((999999, 999999, 999999))
