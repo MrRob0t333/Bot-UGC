@@ -116,10 +116,14 @@ for obj in objs:
         maxs.z = max(maxs.z, world_pos.z)
 
 center = (mins + maxs) / 2
-size = max((maxs - mins).x, (maxs - mins).y, (maxs - mins).z)
+dims = maxs - mins
+size = max(dims.x, dims.y, dims.z)
 
 for obj in objs:
     obj.location -= center
+
+if size <= 0:
+    size = 1.0
 
 # Camera
 cam_data = bpy.data.cameras.new("Camera")
@@ -142,34 +146,25 @@ cam.data.ortho_scale = size * pov["scale"]
 # mesma força em todos os lados
 # =========================
 
-light_positions = [
-    ("Front_Light",  (0, -6, 2.5)),
-    ("Back_Light",   (0,  6, 2.5)),
-    ("Left_Light",   (-6, 0, 2.5)),
-    ("Right_Light",  (6,  0, 2.5)),
-    ("Bottom_Light", (0,  0, -6)),
-    ("Top_Light",    (0,  0,  6)),
-]
-
 lighting_presets = {
     "studio": {
         "energy": 420,
-        "top": 280,
-        "bottom": 450,
-        "size": 18,
+        "top": 360,
+        "bottom": 390,
+        "size": 2.8,
         "world": 0.42,
         "weights": {
             "Front_Light": 1.15,
-            "Back_Light": 0.70,
-            "Left_Light": 0.85,
-            "Right_Light": 0.85,
+            "Back_Light": 0.80,
+            "Left_Light": 0.95,
+            "Right_Light": 0.95,
         },
     },
     "soft": {
         "energy": 380,
-        "top": 300,
-        "bottom": 380,
-        "size": 26,
+        "top": 360,
+        "bottom": 360,
+        "size": 3.4,
         "world": 0.62,
         "weights": {
             "Front_Light": 1.00,
@@ -182,7 +177,7 @@ lighting_presets = {
         "energy": 520,
         "top": 760,
         "bottom": 40,
-        "size": 7,
+        "size": 1.5,
         "world": 0.12,
         "weights": {
             "Front_Light": 1.35,
@@ -193,9 +188,9 @@ lighting_presets = {
     },
     "flat": {
         "energy": 520,
-        "top": 240,
+        "top": 520,
         "bottom": 520,
-        "size": 40,
+        "size": 4.2,
         "world": 0.72,
         "weights": {
             "Front_Light": 1.00,
@@ -207,19 +202,38 @@ lighting_presets = {
 }
 preset = lighting_presets[render_settings["lighting"]]
 light_power = render_settings["lightPower"]
+light_distance = max(size * 4.5, 6.0)
+top_distance = max(size * 4.0, 6.0)
+side_height = max(size * 0.55, 1.0)
+area_size = max(size * preset["size"], 4.0)
+
+light_positions = [
+    ("Front_Light",  (0, -light_distance, side_height)),
+    ("Back_Light",   (0,  light_distance, side_height)),
+    ("Left_Light",   (-light_distance, 0, side_height)),
+    ("Right_Light",  (light_distance,  0, side_height)),
+    ("Bottom_Light", (0, 0, -top_distance)),
+    ("Top_Light",    (0, 0, top_distance)),
+]
+
+def point_light_at_origin(light):
+    direction_to_target = Vector((0, 0, 0)) - light.location
+    if direction_to_target.length > 0:
+        light.rotation_euler = direction_to_target.to_track_quat("-Z", "Y").to_euler()
 
 for name, location in light_positions:
     data = bpy.data.lights.new(name, type="AREA")
     light = bpy.data.objects.new(name, data)
     bpy.context.collection.objects.link(light)
 
-    light.location = location
+    light.location = Vector(location)
+    point_light_at_origin(light)
 
     light_weight = preset.get("weights", {}).get(name, 1.0)
     light.data.energy = preset["energy"] * light_weight * light_power
 
     # Área muito maior = sombras suaves
-    light.data.size = preset["size"]
+    light.data.size = area_size
 
 # Pequenos ajustes
 bpy.data.objects["Top_Light"].data.energy = preset["top"] * light_power
@@ -279,8 +293,8 @@ views = {
     "front_right.png": (1, -1, 0),
     "back_left.png": (-1, 1, 0),
     "back_right.png": (1, 1, 0),
-    "up.png": (0, 0, 1),
-    "down.png": (0, 0, -1),
+    "up.png": (0, -0.22, 1),
+    "down.png": (0, 0.22, -1),
 }
 
 for filename, direction in views.items():
