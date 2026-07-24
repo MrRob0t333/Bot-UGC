@@ -130,7 +130,9 @@ const ROBLOX_MAX_TEXTURE_SIZE = Number(process.env.REFAZER_ROBLOX_MAX_TEXTURE_SI
 const DISCORD_SAFE_ATTACHMENT_MB = Number(cleanEnv(process.env.REFAZER_DISCORD_MAX_ATTACHMENT_MB, "50"));
 const DISCORD_MAX_ATTACHMENT_BYTES =
   Math.max(1, Number.isFinite(DISCORD_SAFE_ATTACHMENT_MB) ? DISCORD_SAFE_ATTACHMENT_MB : 50) * 1024 * 1024;
+const ROBLOX_MIN_TRIANGLE_LIMIT = 500;
 const ROBLOX_SAFE_TRIANGLE_LIMIT = Number(process.env.REFAZER_DEFAULT_TRIANGLES || 3900);
+const ROBLOX_MAX_TRIANGLE_LIMIT = 3950;
 const GUIDED_THREAD_FREE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_FREE_CLOSE_HOURS || 24);
 const GUIDED_THREAD_PREMIUM_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_PREMIUM_CLOSE_HOURS || 168);
 const GUIDED_THREAD_ELITE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_ELITE_CLOSE_HOURS || 336);
@@ -1849,6 +1851,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName("generate3d")
     .setDescription("Starts the guided 3D model request flow")
+    .addIntegerOption(o =>
+      o
+        .setName("triangles")
+        .setDescription("Roblox triangle target. 500 to 3950. Default: 3900")
+        .setRequired(false)
+        .setMinValue(ROBLOX_MIN_TRIANGLE_LIMIT)
+        .setMaxValue(ROBLOX_MAX_TRIANGLE_LIMIT)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -9657,10 +9667,15 @@ const GUIDED_MODEL_TYPE_LABELS = {
   other: "Other",
 };
 
-function guidedModelStartButton() {
+function normalizeTriangleLimit(value, fallback = ROBLOX_SAFE_TRIANGLE_LIMIT) {
+  return Math.round(clampNumber(value, ROBLOX_MIN_TRIANGLE_LIMIT, ROBLOX_MAX_TRIANGLE_LIMIT, fallback));
+}
+
+function guidedModelStartButton(triangles = ROBLOX_SAFE_TRIANGLE_LIMIT) {
+  const triangleTarget = normalizeTriangleLimit(triangles);
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("guided3d_start")
+      .setCustomId(`guided3d_start:${triangleTarget}`)
       .setLabel("Start 3D Model Request")
       .setStyle(ButtonStyle.Success)
   );
@@ -9946,10 +9961,11 @@ function guidedModelCompleted(session) {
 async function sendGuidedModelSummary(channel, session, interactionLike) {
   const modelQuality = normalizeModelQuality(session.modelQuality || "medium");
   const qualityConfig = modelQualityConfig(modelQuality);
+  const triangles = normalizeTriangleLimit(session.triangles);
   const quote = calculatePrice(interactionLike, {
     mode: "guided",
     texture: "standard",
-    triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+    triangles,
     enhancement: session.enhancement || "none",
     modelQuality,
     advancedTexture: "none",
@@ -9966,7 +9982,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       `**Quality:** ${qualityConfig.label}\n` +
       `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement || "none"] || IMAGE_ENHANCEMENTS.none).label}\n` +
       `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
-      `**Roblox-safe triangles:** ${ROBLOX_SAFE_TRIANGLE_LIMIT}\n` +
+      `**Roblox-safe triangles:** ${triangles}\n` +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
       (session.prepWarnings?.length
         ? "## Prep Notes\n" + session.prepWarnings.map(item => `> ${item}`).join("\n") + "\n\n"
@@ -9991,10 +10007,11 @@ async function prepareGuidedModelReferences(channel, session, interactionLike) {
     return false;
   }
 
+  const triangles = normalizeTriangleLimit(session.triangles);
   const quote = calculatePrice(interactionLike, {
     mode: "guided",
     texture: "standard",
-    triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+    triangles,
     enhancement: session.enhancement || "none",
     modelQuality: session.modelQuality || "medium",
     advancedTexture: "none",
@@ -11004,6 +11021,7 @@ client.on("interactionCreate", async interaction => {
     const [kind, actionId, extra] = String(interaction.customId || "").split(":");
     if (kind === "guided3d_start") {
       await interaction.deferReply({ flags: 64 });
+      const triangles = normalizeTriangleLimit(actionId);
 
       if (!interaction.channel?.threads?.create) {
         await interaction.editReply("I cannot create a request thread in this channel.");
@@ -11043,6 +11061,7 @@ client.on("interactionCreate", async interaction => {
         viewPaths: {},
         originalViewPaths: {},
         enhancement: "none",
+        triangles,
         tempDir,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -11058,6 +11077,7 @@ client.on("interactionCreate", async interaction => {
           "> Choose the model type.\n" +
           "> Choose the detail level.\n" +
           "> Choose whether alpha/cutout awareness should be used.\n" +
+          `> Triangle target: **${triangles}**.\n` +
           "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
           "> Review everything before generation starts.\n\n" +
           "## Important\n" +
@@ -11329,7 +11349,7 @@ client.on("interactionCreate", async interaction => {
         viewPaths: session.viewPaths,
         texture: "standard",
         enhancement: session.enhancement || "none",
-        triangles: ROBLOX_SAFE_TRIANGLE_LIMIT,
+        triangles: normalizeTriangleLimit(session.triangles),
         tempDir: session.tempDir,
         textureTone: "normal",
         textureAdjustments: DEFAULT_TEXTURE_ADJUSTMENTS,
@@ -12571,6 +12591,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "generate3d") {
+      const triangles = normalizeTriangleLimit(interaction.options.getInteger("triangles"));
       await interaction.reply({
         content:
           "# Start a 3D Model Request\n" +
@@ -12578,13 +12599,14 @@ client.on("interactionCreate", async interaction => {
           "## What is included\n" +
           "> Send **Front**, **Right**, **Left** and **Back** references.\n" +
           "> Choose the model type, detail level and alpha option.\n" +
+          `> Triangle target: **${triangles}**.\n` +
           "> Review all images before the AI starts.\n" +
           "> Your final model is delivered only after generation succeeds.\n\n" +
           "## Payment\n" +
           "> No Service Credits are charged until the final model is delivered.\n" +
           "> If your images are wrong and you approve them anyway, the final result may also be wrong.\n\n" +
           "Click below to open your private request thread.",
-        components: [guidedModelStartButton()],
+        components: [guidedModelStartButton(triangles)],
         flags: 64,
       });
       return;
