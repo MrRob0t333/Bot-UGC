@@ -106,6 +106,7 @@ const HYPER3D_GEOMETRY_INSTRUCT_MODE = cleanEnv(process.env.HYPER3D_GEOMETRY_INS
 const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "false") === "true";
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
+const HYPER3D_SITE_LIKE_MODE = cleanEnv(process.env.HYPER3D_SITE_LIKE_MODE, "true") !== "false";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const MODEL_DELIVERY_MODE = cleanEnv(process.env.REFAZER_MODEL_DELIVERY_MODE, "channel").toLowerCase();
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
@@ -986,6 +987,68 @@ const commands = [
     )
     .addIntegerOption(o =>
       o.setName("results").setDescription("How many results to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(50)
+    )
+    .addStringOption(o =>
+      o
+        .setName("depth")
+        .setDescription("Scan depth. Deep is slower and more likely to hit Roblox rate limits.")
+        .setRequired(false)
+        .addChoices(
+          { name: "Normal", value: "normal" },
+          { name: "Deep", value: "deep" }
+        )
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("limited_sniper")
+    .setDescription("Admin radar for best-selling Roblox limited / collectible UGC items")
+    .addStringOption(o =>
+      o
+        .setName("window")
+        .setDescription("Market window")
+        .setRequired(true)
+        .addChoices(
+          { name: "Best today", value: "today" },
+          { name: "Best yesterday", value: "yesterday" },
+          { name: "Recently published", value: "recent" },
+          { name: "Best this week", value: "week" },
+          { name: "Best all time", value: "total" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("category")
+        .setDescription("Limited category")
+        .setRequired(false)
+        .addChoices(
+          { name: "All limiteds", value: "all" },
+          { name: "Collectibles", value: "collectibles" },
+          { name: "Accessories", value: "accessories" },
+          { name: "Hats", value: "hats" },
+          { name: "Hair", value: "hair" },
+          { name: "Face accessories", value: "face_accessories" },
+          { name: "Neck accessories", value: "neck_accessories" },
+          { name: "Shoulder accessories", value: "shoulder_accessories" },
+          { name: "Front accessories", value: "front_accessories" },
+          { name: "Back accessories", value: "back_accessories" },
+          { name: "Waist accessories", value: "waist_accessories" }
+        )
+    )
+    .addStringOption(o =>
+      o.setName("keyword").setDescription("Optional niche keyword, for example horror, vkei, hair").setRequired(false)
+    )
+    .addIntegerOption(o =>
+      o.setName("min_price").setDescription("Minimum Robux price").setRequired(false).setMinValue(0)
+    )
+    .addIntegerOption(o =>
+      o.setName("max_price").setDescription("Maximum Robux price").setRequired(false).setMinValue(1)
+    )
+    .addIntegerOption(o =>
+      o.setName("max_age_days").setDescription("Only include limiteds created within this many days").setRequired(false).setMinValue(0).setMaxValue(365)
+    )
+    .addIntegerOption(o =>
+      o.setName("results").setDescription("How many limiteds to return. Admin only.").setRequired(false).setMinValue(1).setMaxValue(50)
     )
     .addStringOption(o =>
       o
@@ -1916,6 +1979,13 @@ const commands = [
         .setMinValue(ROBLOX_MIN_TRIANGLE_LIMIT)
         .setMaxValue(ROBLOX_MAX_TRIANGLE_LIMIT)
     )
+    .addStringOption(o =>
+      o
+        .setName("prompt")
+        .setDescription("Optional guidance to improve the model. Keep shape-preservation instructions clear")
+        .setRequired(false)
+        .setMaxLength(900)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1994,6 +2064,13 @@ const commands = [
           { name: "Standard", value: "medium" },
           { name: `Sharper Details (+${brlToWalletTokens(modelQualityConfig("high").priceExtraBrl)} ${WALLET_TOKEN_NAME})`, value: "high" }
         )
+    )
+    .addStringOption(o =>
+      o
+        .setName("prompt")
+        .setDescription("Optional guidance for the 3D AI. Example: preserve silhouette, sharp UGC accessory")
+        .setRequired(false)
+        .setMaxLength(900)
     )
     .toJSON(),
 
@@ -5784,6 +5861,8 @@ const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIME
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
 const SNIPER_MAX_PAGES_WITH_AGE = Number(process.env.REFAZER_SNIPER_MAX_PAGES_WITH_AGE || 12);
+const SNIPER_LIMITED_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DETAIL_SCAN_LIMIT || 90);
+const SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT || 180);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 15000);
 const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
 const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
@@ -6410,6 +6489,59 @@ function sniperPriceMatchesFilter(item, details = {}, minPrice = null, maxPrice 
   return true;
 }
 
+function catalogLimitedSignals(item, details = {}) {
+  const restrictions = [
+    ...(item.itemRestrictions || []),
+    ...(item.item?.itemRestrictions || []),
+    ...(details.itemRestrictions || []),
+    ...(details.ItemRestrictions || []),
+  ].map(value => String(value || "").toLowerCase());
+  const collectibleId = item.collectibleItemId
+    || item.item?.collectibleItemId
+    || details.collectibleItemId
+    || details.CollectibleItemId
+    || "";
+  const hasResellers = Boolean(item.hasResellers || item.item?.hasResellers || details.hasResellers || details.HasResellers);
+  const resalePrice = normalizeCatalogNumber(
+    item.lowestResalePrice,
+    item.item?.lowestResalePrice,
+    details.lowestResalePrice,
+    details.LowestResalePrice
+  );
+  const totalQuantity = normalizeCatalogNumber(
+    item.totalQuantity,
+    item.item?.totalQuantity,
+    details.totalQuantity,
+    details.TotalQuantity
+  );
+  const available = normalizeCatalogNumber(
+    item.unitsAvailableForConsumption,
+    item.item?.unitsAvailableForConsumption,
+    details.unitsAvailableForConsumption,
+    details.UnitsAvailableForConsumption
+  );
+  const isCollectible = restrictions.some(value => value.includes("collectible") || value.includes("limited"))
+    || Boolean(collectibleId)
+    || hasResellers
+    || resalePrice > 0
+    || totalQuantity > 0;
+
+  return {
+    isCollectible,
+    restrictions,
+    collectibleId,
+    hasResellers,
+    resalePrice: resalePrice || null,
+    totalQuantity: totalQuantity || null,
+    available: available || null,
+  };
+}
+
+function sniperLimitedMatchesFilter(item, details = {}, limitedOnly = false) {
+  if (!limitedOnly) return true;
+  return catalogLimitedSignals(item, details).isCollectible;
+}
+
 function parseRobloxDate(value) {
   const time = Date.parse(value || "");
   return Number.isFinite(time) ? time : null;
@@ -6538,6 +6670,7 @@ async function fetchCatalogItemDetailsSafe(itemId, options = {}) {
 function buildSniperCandidate(item, details = {}, category = "all", categoryVerified = false, options = {}) {
   const id = catalogItemId(item);
   const breakdown = sniperScoreBreakdown(item, details);
+  const limitedSignals = catalogLimitedSignals(item, details);
   return {
     item,
     details,
@@ -6549,6 +6682,11 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
     favorites: normalizeCatalogNumber(item.favoriteCount, item.favorites, details.FavoritedCount, details.Favorites),
     sales: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold, details.Sales, details.SalesCount),
     createdAt: catalogItemCreatedAt(item, details),
+    limited: limitedSignals.isCollectible,
+    resalePrice: limitedSignals.resalePrice,
+    totalQuantity: limitedSignals.totalQuantity,
+    available: limitedSignals.available,
+    hasResellers: limitedSignals.hasResellers,
     marketplaceRank: Number.isFinite(options.marketplaceRank) ? options.marketplaceRank : null,
     sourceCategory: options.sourceCategory || category,
     score: breakdown.score,
@@ -6583,8 +6721,8 @@ function getSniperCachedCandidates(cacheKey, ttlMs = SNIPER_CATALOG_CACHE_TTL_MS
   return cached.candidates || [];
 }
 
-function sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth }) {
-  return JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
+function sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false }) {
+  return JSON.stringify({ version: SNIPER_CACHE_VERSION, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
 }
 
 async function runSniperScanOnce(scanKey, scanFn) {
@@ -6609,14 +6747,14 @@ function assertSniperDeadline(deadlineAt) {
   throw err;
 }
 
-async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", deadlineAt = 0 }) {
+async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", limitedOnly = false, deadlineAt = 0 }) {
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
-  const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
+  const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
     lastSniperDebug = {
       fromCache: true,
-      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly },
       candidates: cached.length,
     };
     return cached;
@@ -6627,7 +6765,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     lastSniperDebug = {
       fromCache: true,
       staleCache: true,
-      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly },
       cooldownSeconds: Math.ceil((robloxPublicRateLimitedUntil - Date.now()) / 1000),
       candidates: staleCached.length,
     };
@@ -6636,7 +6774,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   lastSniperDebug = {
     fromCache: false,
-    request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth },
+    request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly },
     attempts: [],
     rawRows: 0,
     uniqueRows: 0,
@@ -6644,6 +6782,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       duplicate: 0,
       missingId: 0,
       price: 0,
+      limited: 0,
       category: 0,
       nameHint: 0,
       age: 0,
@@ -6788,8 +6927,17 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   const unique = [];
   const seen = new Set();
   const marketplaceRankById = new Map();
-  const uniqueTarget = Number.isFinite(maxAgeDays)
-    ? data.length
+  const limitedDetailScanLimit = Math.max(
+    limit * 4,
+    Math.min(
+      depth === "deep" ? SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT : SNIPER_LIMITED_DETAIL_SCAN_LIMIT,
+      data.length || SNIPER_LIMITED_DETAIL_SCAN_LIMIT
+    )
+  );
+  const uniqueTarget = limitedOnly
+    ? limitedDetailScanLimit
+    : Number.isFinite(maxAgeDays)
+      ? data.length
     : Math.max(limit * 3, SNIPER_DETAIL_LIMIT);
   for (const [index, item] of data.entries()) {
     const id = catalogItemId(item);
@@ -6815,11 +6963,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
   lastSniperDebug.uniqueRows = unique.length;
 
-  const shouldFetchDetailsForCategory = category && !["all", "collectibles"].includes(category);
+  const shouldFetchDetailsForCategory = limitedOnly || (category && !["all", "collectibles"].includes(category));
   const enriched = [];
   const inferred = [];
-  const detailsLimit = Number.isFinite(maxAgeDays)
-    ? unique.length
+  const detailsLimit = limitedOnly
+    ? Math.min(unique.length, limitedDetailScanLimit)
+    : Number.isFinite(maxAgeDays)
+      ? unique.length
     : Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
   for (const item of unique.slice(0, detailsLimit)) {
     if (sniperDeadlineExceeded(deadlineAt)) break;
@@ -6828,7 +6978,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
     const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
     const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
-    const catalogDetails = Number.isFinite(maxAgeDays) && !hasAgeSignal ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
+    const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
     const details = { ...economyDetails, ...catalogDetails };
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
@@ -6836,6 +6986,11 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) {
       lastSniperDebug.rejected.price += 1;
       addSniperDebugSample("price", item, details);
+      continue;
+    }
+    if (!sniperLimitedMatchesFilter(item, details, limitedOnly)) {
+      lastSniperDebug.rejected.limited += 1;
+      addSniperDebugSample("limited", item, details);
       continue;
     }
     if (!sniperAgeMatchesFilter(item, details, maxAgeDays)) {
@@ -6873,11 +7028,12 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       const economyDetails = !hasCategorySignal
         ? await fetchCatalogDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
         : {};
-      const catalogDetails = Number.isFinite(maxAgeDays) && !hasAgeSignal
+      const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal)
         ? await fetchCatalogItemDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
         : {};
       const details = { ...economyDetails, ...catalogDetails };
       if (!sniperPriceMatchesFilter(item, details, minPrice, maxPrice)) continue;
+      if (!sniperLimitedMatchesFilter(item, details, limitedOnly)) continue;
       if (!sniperAgeMatchesFilter(item, details, maxAgeDays)) continue;
       if (!sniperCategoryMatches(category, item, details)) continue;
       enriched.push(buildSniperCandidate(item, details, category, true, {
@@ -6891,6 +7047,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   if (!enriched.length && !inferred.length) {
     for (const item of unique.slice(0, 10)) {
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
+      if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
       if (!sniperNameSuggestsCategory(category, item, {})) continue;
       const id = catalogItemId(item);
@@ -6904,6 +7061,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   if (!enriched.length && !inferred.length && ["all", "accessories", "clothing", "collectibles"].includes(category)) {
     for (const item of unique.slice(0, 5)) {
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
+      if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
       const id = catalogItemId(item);
       const candidate = buildSniperCandidate(item, {}, category, false, {
@@ -6990,12 +7148,13 @@ function markSniperCandidatesSeen(userId, candidates) {
   writeWalletDb(db);
 }
 
-function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, debug }) {
+function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false, debug }) {
   const returnedCount = candidates.length;
   const qualifiedCount = Number(debug?.candidates) || 0;
   const rawRows = Number(debug?.rawRows) || 0;
   const uniqueRows = Number(debug?.uniqueRows) || 0;
   const filters = [
+    limitedOnly ? "Mode: Limited / collectible only" : null,
     `Window: ${SNIPER_WINDOW_LABELS[window] || window}`,
     `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
     `Depth: ${depth === "deep" ? "Deep" : "Normal"}`,
@@ -7025,6 +7184,13 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     const sourceCategoryText = candidate.sourceCategory && candidate.sourceCategory !== category
       ? SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory
       : null;
+    const limitedText = limitedOnly
+      ? [
+          candidate.resalePrice ? `resale ${candidate.resalePrice} Robux` : null,
+          candidate.available !== null && candidate.totalQuantity !== null ? `${candidate.available}/${candidate.totalQuantity} left` : null,
+          candidate.hasResellers ? "has resellers" : null,
+        ].filter(Boolean).join(" | ")
+      : "";
     const signals = [
       rankText,
       candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
@@ -7039,6 +7205,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
       [
         sourceCategoryText ? `subcategory: ${sourceCategoryText}` : null,
         rankText,
+        limitedText || null,
         candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : null,
         candidate.sales ? `${candidate.sales.toLocaleString("en-US")} sales` : "sales unavailable",
         price,
@@ -7051,7 +7218,9 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
 
   return [
     "# 🎯 Market Sniper Report",
-    "Source: public Roblox catalog search plus public asset signals. This is a review radar, not a profit guarantee.",
+    limitedOnly
+      ? "Source: public Roblox catalog search plus collectible/resale signals. This ranks public limited candidates, not guaranteed profit."
+      : "Source: public Roblox catalog search plus public asset signals. This is a review radar, not a profit guarantee.",
     "",
     `## Access`,
     `Plan: **${quote.planLabel}**`,
@@ -8684,7 +8853,15 @@ async function hyper3dRequest(endpoint, options = {}) {
 
 function hyper3dTriangleTarget(triangles) {
   const requested = Number(triangles) || ROBLOX_SAFE_TRIANGLE_LIMIT;
-  return Math.max(1000, Math.min(3950, requested));
+  const clamped = Math.max(500, Math.min(4000, requested));
+  const presets = [500, 800, 1100, 1400, 1700, 2000, 4000];
+  return presets.reduce((best, value) => {
+    const bestDistance = Math.abs(best - clamped);
+    const valueDistance = Math.abs(value - clamped);
+    if (valueDistance < bestDistance) return value;
+    if (valueDistance === bestDistance && value > best) return value;
+    return best;
+  }, presets[0]);
 }
 
 function shouldSendHyper3dTriangleTarget(triangles) {
@@ -8694,28 +8871,61 @@ function shouldSendHyper3dTriangleTarget(triangles) {
 function appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
   const geometryInstructMode = HYPER3D_GEOMETRY_INSTRUCT_MODE.toLowerCase();
   const qualityConfig = modelQuality ? modelQualityConfig(modelQuality) : { label: HYPER3D_QUALITY, hyper3dQuality: HYPER3D_QUALITY };
+  const sentOptions = {
+    site_like: HYPER3D_SITE_LIKE_MODE,
+    tier: HYPER3D_TIER,
+    geometry_file_format: "glb",
+    material: texture === "none" ? "None" : HYPER3D_MATERIAL,
+    quality: qualityConfig.hyper3dQuality,
+  };
   form.append("tier", HYPER3D_TIER);
   form.append("geometry_file_format", "glb");
   form.append("material", texture === "none" ? "None" : HYPER3D_MATERIAL);
   form.append("quality", qualityConfig.hyper3dQuality);
-  form.append("mesh_mode", HYPER3D_MESH_MODE);
-  if (shouldSendHyper3dTriangleTarget(triangles)) {
-    form.append("quality_override", String(hyper3dTriangleTarget(triangles)));
+
+  if (!HYPER3D_SITE_LIKE_MODE && HYPER3D_MESH_MODE) {
+    form.append("mesh_mode", HYPER3D_MESH_MODE);
+    sentOptions.mesh_mode = HYPER3D_MESH_MODE;
   }
-  form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
-  form.append("hd_texture", "false");
-  form.append("texture_mode", HYPER3D_TEXTURE_MODE);
+  if (shouldSendHyper3dTriangleTarget(triangles)) {
+    const target = hyper3dTriangleTarget(triangles);
+    form.append("quality_override", String(target));
+    sentOptions.quality_override = target;
+  }
+
+  if (!HYPER3D_SITE_LIKE_MODE) {
+    form.append("preview_render", String(HYPER3D_PREVIEW_RENDER));
+    form.append("hd_texture", "false");
+    form.append("texture_mode", HYPER3D_TEXTURE_MODE);
+    form.append("texture_delight", String(HYPER3D_TEXTURE_DELIGHT));
+    sentOptions.preview_render = HYPER3D_PREVIEW_RENDER;
+    sentOptions.hd_texture = false;
+    sentOptions.texture_mode = HYPER3D_TEXTURE_MODE;
+    sentOptions.texture_delight = HYPER3D_TEXTURE_DELIGHT;
+  }
   if (
     HYPER3D_GEOMETRY_INSTRUCT_MODE &&
     !["off", "none", "default", "auto", "false", "0"].includes(geometryInstructMode)
   ) {
     form.append("geometry_instruct_mode", HYPER3D_GEOMETRY_INSTRUCT_MODE);
+    sentOptions.geometry_instruct_mode = HYPER3D_GEOMETRY_INSTRUCT_MODE;
   }
-  form.append("texture_delight", String(HYPER3D_TEXTURE_DELIGHT));
-  form.append("use_original_alpha", String(Boolean(useAlpha)));
 
-  if (prompt) form.append("prompt", prompt);
-  if (HYPER3D_HIGH_PACK) form.append("addons", "HighPack");
+  if (useAlpha || !HYPER3D_SITE_LIKE_MODE) {
+    form.append("use_original_alpha", String(Boolean(useAlpha)));
+    sentOptions.use_original_alpha = Boolean(useAlpha);
+  }
+
+  if (prompt) {
+    form.append("prompt", prompt);
+    sentOptions.prompt = true;
+  }
+  if (HYPER3D_HIGH_PACK) {
+    form.append("addons", "HighPack");
+    sentOptions.addons = ["HighPack"];
+  }
+
+  return sentOptions;
 }
 
 async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "standard", triangles = null, outputDir, useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
@@ -8728,7 +8938,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     form.append("images", imageBlob, path.basename(imagePath));
   }
 
-  appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha, modelQuality });
+  const sentOptions = appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha, modelQuality });
 
   const json = await hyper3dRequest("/rodin", {
     method: "POST",
@@ -8742,7 +8952,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
   console.log(
     `[Hyper3D] task created uuid=${json.uuid} mode=${imagePaths.length ? "image" : "prompt"} ` +
     `images=${imagePaths.length} tier=${HYPER3D_TIER} material=${texture === "none" ? "None" : HYPER3D_MATERIAL} ` +
-    `quality=${qualityConfig.hyper3dQuality} mesh=${HYPER3D_MESH_MODE} triangles=${shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : "auto"} ` +
+    `quality=${qualityConfig.hyper3dQuality} site_like=${HYPER3D_SITE_LIKE_MODE ? "yes" : "no"} mesh=${sentOptions.mesh_mode || "site-default"} triangles=${shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : "auto"} ` +
     `geometry_instruct=${HYPER3D_GEOMETRY_INSTRUCT_MODE || "none"} alpha=${useAlpha ? "yes" : "no"} ` +
     `prompt=${prompt ? "yes" : "no"}`
   );
@@ -8757,15 +8967,7 @@ async function createHyper3dTask({ imagePaths = [], prompt = "", texture = "stan
     texture,
     triangles: shouldSendHyper3dTriangleTarget(triangles) ? hyper3dTriangleTarget(triangles) : null,
     quality_override_enabled: shouldSendHyper3dTriangleTarget(triangles),
-    tier: HYPER3D_TIER,
-    quality: qualityConfig.hyper3dQuality,
-    mesh_mode: HYPER3D_MESH_MODE,
-    material: texture === "none" ? "None" : HYPER3D_MATERIAL,
-    texture_mode: HYPER3D_TEXTURE_MODE,
-    geometry_instruct_mode: HYPER3D_GEOMETRY_INSTRUCT_MODE,
-    texture_delight: HYPER3D_TEXTURE_DELIGHT,
-    use_original_alpha: Boolean(useAlpha),
-    addons: HYPER3D_HIGH_PACK ? ["HighPack"] : [],
+    sent_options: sentOptions,
   }, null, 2));
 
   return {
@@ -9710,6 +9912,7 @@ function disableMultiviewReviewButtons(actionId, generated = false) {
 
 const guidedModelSessions = new Map();
 const guidedModelCloseTimers = new Map();
+const guidedModelStartOptions = new Map();
 const GUIDED_MODEL_VIEW_STEPS = [
   { view: "frente", label: "Front", prompt: "Step 1 of 4", instruction: "Send the **front** photo." },
   { view: "direita", label: "Right", prompt: "Step 2 of 4", instruction: "Send the **right-side** photo." },
@@ -9728,11 +9931,32 @@ function normalizeTriangleLimit(value, fallback = ROBLOX_SAFE_TRIANGLE_LIMIT) {
   return Math.round(clampNumber(value, ROBLOX_MIN_TRIANGLE_LIMIT, ROBLOX_MAX_TRIANGLE_LIMIT, fallback));
 }
 
-function guidedModelStartButton(triangles = ROBLOX_SAFE_TRIANGLE_LIMIT) {
+function normalizeModelGenerationPrompt(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 900);
+}
+
+function modelPromptReviewLine(prompt) {
+  const clean = normalizeModelGenerationPrompt(prompt);
+  if (!clean) return "";
+  return `**Custom prompt:** ${clean.length > 260 ? `${clean.slice(0, 260)}...` : clean}\n`;
+}
+
+function guidedModelStartButton(triangles = ROBLOX_SAFE_TRIANGLE_LIMIT, prompt = "") {
   const triangleTarget = normalizeTriangleLimit(triangles);
+  const cleanPrompt = normalizeModelGenerationPrompt(prompt);
+  const optionId = cleanPrompt ? crypto.randomBytes(5).toString("hex") : "";
+  if (optionId) {
+    guidedModelStartOptions.set(optionId, {
+      prompt: cleanPrompt,
+      createdAt: Date.now(),
+    });
+  }
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`guided3d_start:${triangleTarget}`)
+      .setCustomId(optionId ? `guided3d_start:${triangleTarget}:${optionId}` : `guided3d_start:${triangleTarget}`)
       .setLabel("Start 3D Model Request")
       .setStyle(ButtonStyle.Success)
   );
@@ -10040,6 +10264,7 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
       `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement || "none"] || IMAGE_ENHANCEMENTS.none).label}\n` +
       `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
       `**Roblox-safe triangles:** ${triangles}\n` +
+      modelPromptReviewLine(session.prompt) +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
       (session.prepWarnings?.length
         ? "## Prep Notes\n" + session.prepWarnings.map(item => `> ${item}`).join("\n") + "\n\n"
@@ -10361,6 +10586,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   const serviceKey = action.serviceKey || "multiview";
   const serviceLabel = action.serviceLabel || "Multiview AI model";
   const generationMode = action.generationMode || "multiview";
+  action.prompt = normalizeModelGenerationPrompt(action.prompt);
   action.texture = normalizeTextureOption(action.texture || "standard");
   const generationImagePaths = Array.isArray(action.imagePaths) && action.imagePaths.length
     ? action.imagePaths
@@ -10443,7 +10669,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     if (shouldUseHyper3d()) {
       model = await generateWithOfficialHyper3d({
         imagePaths: generationImagePaths,
-        prompt: "",
+        prompt: action.prompt || "",
         texture: action.texture,
         triangles: action.triangles,
         tempDir: action.tempDir,
@@ -11079,6 +11305,9 @@ client.on("interactionCreate", async interaction => {
     if (kind === "guided3d_start") {
       await interaction.deferReply({ flags: 64 });
       const triangles = normalizeTriangleLimit(actionId);
+      const startOptions = extra ? guidedModelStartOptions.get(extra) : null;
+      if (extra) guidedModelStartOptions.delete(extra);
+      const prompt = normalizeModelGenerationPrompt(startOptions?.prompt);
 
       if (!interaction.channel?.threads?.create) {
         await interaction.editReply("I cannot create a request thread in this channel.");
@@ -11119,6 +11348,7 @@ client.on("interactionCreate", async interaction => {
         originalViewPaths: {},
         enhancement: "none",
         triangles,
+        prompt,
         tempDir,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -11135,6 +11365,7 @@ client.on("interactionCreate", async interaction => {
           "> Choose the detail level.\n" +
           "> Choose whether alpha/cutout awareness should be used.\n" +
           `> Triangle target: **${triangles}**.\n` +
+          (prompt ? "> Custom prompt: enabled.\n" : "") +
           "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
           "> Review everything before generation starts.\n\n" +
           "## Important\n" +
@@ -11407,6 +11638,7 @@ client.on("interactionCreate", async interaction => {
         texture: "standard",
         enhancement: session.enhancement || "none",
         triangles: normalizeTriangleLimit(session.triangles),
+        prompt: session.prompt || "",
         tempDir: session.tempDir,
         textureTone: "normal",
         textureAdjustments: DEFAULT_TEXTURE_ADJUSTMENTS,
@@ -11661,6 +11893,7 @@ client.on("interactionCreate", async interaction => {
     "copiar",
     "steal",
     "sniper",
+    "limited_sniper",
     "bulk_steal_clothing",
     "bulk_steal",
     "views",
@@ -12651,6 +12884,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "generate3d") {
       const triangles = normalizeTriangleLimit(interaction.options.getInteger("triangles"));
+      const prompt = normalizeModelGenerationPrompt(interaction.options.getString("prompt"));
       await interaction.reply({
         content:
           "# Start a 3D Model Request\n" +
@@ -12659,13 +12893,14 @@ client.on("interactionCreate", async interaction => {
           "> Send **Front**, **Right**, **Left** and **Back** references.\n" +
           "> Choose the model type, detail level and alpha option.\n" +
           `> Triangle target: **${triangles}**.\n` +
+          (prompt ? "> Custom prompt: enabled.\n" : "") +
           "> Review all images before the AI starts.\n" +
           "> Your final model is delivered only after generation succeeds.\n\n" +
           "## Payment\n" +
           "> No Service Credits are charged until the final model is delivered.\n" +
           "> If your images are wrong and you approve them anyway, the final result may also be wrong.\n\n" +
           "Click below to open your private request thread.",
-        components: [guidedModelStartButton(triangles)],
+        components: [guidedModelStartButton(triangles, prompt)],
         flags: 64,
       });
       return;
@@ -12743,8 +12978,9 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (interaction.commandName === "sniper") {
+    if (interaction.commandName === "sniper" || interaction.commandName === "limited_sniper") {
       await interaction.deferReply({ flags: 64 });
+      const limitedOnly = interaction.commandName === "limited_sniper";
 
       if (!userIsAdmin(interaction)) {
         await interaction.editReply(
@@ -12755,7 +12991,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       const window = interaction.options.getString("window");
-      const category = interaction.options.getString("category") || "all";
+      const category = interaction.options.getString("category") || (limitedOnly ? "collectibles" : "all");
       const keyword = (interaction.options.getString("keyword") || "").trim();
       const minPriceRaw = interaction.options.getInteger("min_price");
       const maxPriceRaw = interaction.options.getInteger("max_price");
@@ -12804,14 +13040,14 @@ client.on("interactionCreate", async interaction => {
       sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, sniperTimeoutMs));
 
       await interaction.editReply(
-        "## Market Sniper\n" +
+        (limitedOnly ? "## Limited Sniper\n" : "## Market Sniper\n") +
         "Scanning public catalog signals. This can take a moment..."
       );
 
       try {
         const startedAt = Date.now();
-        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
-        console.log(`[sniper] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount} depth=${depth}`);
+        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
+        console.log(`[${limitedOnly ? "limited_sniper" : "sniper"}] start user=${interaction.user.id} window=${window} category=${category} min=${minPrice ?? ""} max=${maxPrice ?? ""} age=${maxAgeDays ?? ""} results=${resultCount} depth=${depth}`);
         const candidates = await runSniperScanOnce(scanKey, () =>
           fetchSniperCandidates({
             window,
@@ -12822,10 +13058,11 @@ client.on("interactionCreate", async interaction => {
             maxAgeDays,
             limit: resultCount,
             depth,
+            limitedOnly,
             deadlineAt: Date.now() + sniperTimeoutMs,
           })
         );
-        console.log(`[sniper] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
+        console.log(`[${limitedOnly ? "limited_sniper" : "sniper"}] candidates=${candidates.length} elapsedMs=${Date.now() - startedAt} debug=${JSON.stringify({
           fromCache: lastSniperDebug?.fromCache,
           staleCache: lastSniperDebug?.staleCache,
           rawRows: lastSniperDebug?.rawRows,
@@ -12869,12 +13106,13 @@ client.on("interactionCreate", async interaction => {
             maxPrice,
             maxAgeDays,
             depth,
+            limitedOnly,
             debug: lastSniperDebug,
           })
         );
       } catch (err) {
         console.error(err);
-        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth });
+        const scanKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
         const staleCandidates = getSniperCachedCandidates(scanKey, SNIPER_CATALOG_STALE_CACHE_TTL_MS);
         if (staleCandidates?.length) {
           lastSniperDebug = {
@@ -12899,6 +13137,7 @@ client.on("interactionCreate", async interaction => {
               maxPrice,
               maxAgeDays,
               depth,
+              limitedOnly,
               debug: lastSniperDebug,
             })
           );
@@ -13972,6 +14211,7 @@ client.on("interactionCreate", async interaction => {
       const textureAdjustments = explicitTextureAdjustmentsForInteraction(interaction, DEFAULT_TEXTURE_ADJUSTMENTS);
       const useAlpha = interaction.options.getBoolean("alpha") ?? HYPER3D_USE_ORIGINAL_ALPHA;
       const modelQuality = normalizeModelQuality(interaction.options.getString("detail_level") || "medium");
+      const prompt = normalizeModelGenerationPrompt(interaction.options.getString("prompt"));
       const qualityConfig = modelQualityConfig(modelQuality);
       const enhancement = "none";
       const advancedTexture = "none";
@@ -14020,6 +14260,7 @@ client.on("interactionCreate", async interaction => {
         textureAdjustments,
         useAlpha,
         modelQuality,
+        prompt,
         advancedTexture,
         textureSource: "none",
         advancedTexturePrompted: true,
@@ -14041,6 +14282,7 @@ client.on("interactionCreate", async interaction => {
           `**Texture tone:** ${textureToneSummary(textureTone)}\n` +
           `**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}\n` +
           `**AI alpha:** ${useAlpha ? "On" : "Off"}\n\n` +
+          modelPromptReviewLine(prompt) +
           `${quote.lines.map(line => `**${line}**`).join("\n")}\n\n` +
           `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
           "### Reference Check\n" +
@@ -14067,6 +14309,7 @@ client.on("interactionCreate", async interaction => {
         interaction.options.getString("model_quality") ||
         "medium"
       );
+      const prompt = normalizeModelGenerationPrompt(interaction.options.getString("prompt"));
       const qualityConfig = modelQualityConfig(modelQuality);
       const advancedTexture = "none";
 
@@ -14148,6 +14391,7 @@ client.on("interactionCreate", async interaction => {
         textureAdjustments,
         useAlpha,
         modelQuality,
+        prompt,
         advancedTexture,
         textureSource: "none",
         advancedTexturePrompted: false,
@@ -14161,6 +14405,7 @@ client.on("interactionCreate", async interaction => {
           `\n**Texture tone:** ${textureToneSummary(textureTone)}` +
           `\n**Texture controls:** ${textureAdjustmentsSummary(textureAdjustments)}` +
           `\n**AI alpha:** ${useAlpha ? "On" : "Off"}` +
+          (prompt ? `\n${modelPromptReviewLine(prompt).trimEnd()}` : "") +
           "\n\n### Reference Check\n" +
           (cleanedViews.length ? `**Clean Local applied:** ${cleanedViews.map(publicViewName).join(", ")}\n` : "") +
           MULTIVIEW_VIEW_ORDER
