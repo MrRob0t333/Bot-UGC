@@ -206,6 +206,8 @@ light_distance = max(size * 4.5, 6.0)
 top_distance = max(size * 4.0, 6.0)
 side_height = max(size * 0.55, 1.0)
 area_size = max(size * preset["size"], 4.0)
+side_energy_scale = min(max((light_distance / 6.0) ** 2, 1.0), 96.0)
+top_energy_scale = min(max((top_distance / 6.0) ** 2, 1.0), 96.0)
 
 light_positions = [
     ("Front_Light",  (0, -light_distance, side_height)),
@@ -230,14 +232,14 @@ for name, location in light_positions:
     point_light_at_origin(light)
 
     light_weight = preset.get("weights", {}).get(name, 1.0)
-    light.data.energy = preset["energy"] * light_weight * light_power
+    light.data.energy = preset["energy"] * light_weight * light_power * side_energy_scale
 
     # Área muito maior = sombras suaves
     light.data.size = area_size
 
 # Pequenos ajustes
-bpy.data.objects["Top_Light"].data.energy = preset["top"] * light_power
-bpy.data.objects["Bottom_Light"].data.energy = preset["bottom"] * light_power
+bpy.data.objects["Top_Light"].data.energy = preset["top"] * light_power * top_energy_scale
+bpy.data.objects["Bottom_Light"].data.energy = preset["bottom"] * light_power * top_energy_scale
 
 # Mundo neutro
 world = bpy.context.scene.world or bpy.data.worlds.new("World")

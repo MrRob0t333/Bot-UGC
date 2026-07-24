@@ -143,7 +143,7 @@ const DEFAULT_RENDER_SETTINGS = {
   exposure: 0.15,
   lightPower: 1,
 };
-const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v3";
+const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v4";
 const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "normal").toLowerCase();
 const TEXTURE_TONES = {
   normal: {
@@ -1048,11 +1048,11 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("angles")
-        .setDescription("Reference angle set. AI 5 views is admin-only.")
+        .setDescription("Reference angle set. 5 Blender views is admin-only.")
         .setRequired(false)
         .addChoices(
           { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
-          { name: "AI 5 views - front/right/back/left/up", value: "ai5" }
+          { name: "5 Blender views - front/right/back/left/top", value: "ai5" }
         )
     )
     .addNumberOption(o =>
@@ -13333,7 +13333,7 @@ client.on("interactionCreate", async interaction => {
         await interaction.reply({
           content:
             "## Admin Only\n" +
-            "The 5-view AI reference set is available only to admins right now.\n\n" +
+            "The 5-view Blender reference set is available only to admins right now.\n\n" +
             "Use the default 4-view set for `/multiview`.",
           flags: 64,
         });
@@ -13373,7 +13373,7 @@ client.on("interactionCreate", async interaction => {
             `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
             (result.cached ? "**Source:** cached render\n\n" : "") +
             (useAiFiveViews
-              ? "Admin 5-view set ready. Use front, right, back and left for `/multiview`; keep the up view as extra AI/reference context."
+              ? "Admin 5-view Blender set ready. Use front, right, back and left for `/multiview`; keep the top view as extra reference context."
               : "Use these four images as references for `/multiview`."),
           files,
         });
