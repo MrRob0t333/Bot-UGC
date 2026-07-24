@@ -293,8 +293,8 @@ views = {
     "front_right.png": (1, -1, 0),
     "back_left.png": (-1, 1, 0),
     "back_right.png": (1, 1, 0),
-    "up.png": (0, -0.22, 1),
-    "down.png": (0, 0.22, -1),
+    "up.png": (0, -1, 0.85),
+    "down.png": (0, 1, -0.85),
 }
 
 for filename, direction in views.items():
