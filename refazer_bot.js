@@ -2272,7 +2272,8 @@ const commands = [
 
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
-  const hiddenPortugueseCommands = new Set([
+  const hiddenCommandNames = new Set([
+    // Legacy Portuguese aliases kept in code for old interactions, but hidden from Discord's command menu.
     "refazer_comandos",
     "velvet_saldo",
     "velvet_comprar",
@@ -2291,11 +2292,29 @@ async function registerCommands() {
     "refazer_mock",
     "modelo_ultimo",
     "refazer_debug",
+    // Advanced/duplicate public commands hidden to keep the bot simple for clients.
+    "views_custom",
+    "remake",
+    "bulk_remake",
+    "enhance_images",
+    "image_model",
+    "prompt_model",
+    "multiview",
+    "admin_bulk_views",
+    "admin_views_full",
+    "admin_code_create",
+    "admin_code_disable",
+    "admin_codes",
+    "admin_gift_cancel",
+    "admin_post_guide",
+    "admin_post_terms",
+    "admin_post_model_starter",
+    // Low-use internal finance/admin surfaces.
     "affiliate_withdraw",
     "admin_withdrawals",
     "admin_withdrawal",
   ]);
-  const registeredCommands = commands.filter(command => !hiddenPortugueseCommands.has(command.name));
+  const registeredCommands = commands.filter(command => !hiddenCommandNames.has(command.name));
 
   console.log("Registrando comandos do bot laboratorio...");
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
@@ -4106,17 +4125,18 @@ function formatMercadoPagoPixMessage({ request, priceLabel, payment }) {
   const ticketUrl = transactionData.ticket_url;
 
   return [
-    "# Pix Checkout",
-    "Your order was created successfully.",
+    "# 🟩 Pix Checkout",
+    "**Your Pix order was created successfully.**",
     SERVICE_CREDITS_NOTE,
     "",
+    "## Order Summary",
     uiLine("Order ID", `\`${request.id}\``),
     uiLine("Package", formatTokenAmount(request.amount)),
     uiLine("Price", uiMoney(priceLabel)),
     uiLine("Status", "Awaiting Pix payment"),
     purchaseExpirationLine(request),
     "",
-    "## Pay with Pix",
+    "## Pay With Pix",
     pixCode
       ? "Scan the QR Code below or copy and paste this Pix code in your bank app:"
       : "Open the Mercado Pago Pix payment page below:",
@@ -5068,15 +5088,18 @@ function uiMoney(value) {
 
 function formatBalanceMessage({ balance, serviceCredits = "" }) {
   return [
-    "# Service Credits",
-    "Your available Service Credits are ready to use on Velvet services.",
+    "# 💎 Velvet Wallet",
+    "**Your Service Credits are ready to use on Velvet digital services.**",
     SERVICE_CREDITS_NOTE,
-    "Package reference: 1,000 Service Credits is sold as a $5.45 USD service package.",
     "",
-    uiLine("Available credits", formatTokenAmount(balance)),
-    serviceCredits ? `\n## Service Credits\n${serviceCredits}` : "",
+    "## Balance",
+    uiLine("Available", formatTokenAmount(balance)),
+    serviceCredits ? `\n## Service-Specific Credits\n${serviceCredits}` : "",
     "",
-    "Need more? Use `/buy` to purchase a service credit package.",
+    "## Quick Actions",
+    "> Use `/buy` to add Service Credits.",
+    "> Use `/generate3d` to start a guided 3D model request.",
+    "> Use `/commands` if you want to see every available tool.",
   ].filter(Boolean).join("\n");
 }
 
@@ -5118,18 +5141,18 @@ function creditHistoryForUser(userId, limit = 15) {
 
 function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
   return [
-    "# Service Credits Checkout",
-    "Your order was created successfully.",
+    "# 🛒 Service Credits Checkout",
+    "**Your order was created successfully.**",
     SERVICE_CREDITS_NOTE,
-    "Pricing reference: 1,000 Service Credits is a $5.45 USD service package. This is not a cash exchange rate.",
     "",
+    "## Order Summary",
     uiLine("Order ID", `\`${request.id}\``),
     uiLine("Package", formatTokenAmount(request.amount)),
     uiLine("Price", uiMoney(priceLabel)),
     uiLine("Status", "Awaiting payment"),
     purchaseExpirationLine(request),
     "",
-    "## Next Step",
+    "## Secure Payment",
     paymentLink
       ? `Pay securely with **${paymentProvider}**:\n${paymentLink}\n\nYour Service Credits will be released automatically after confirmation.`
       : "Send the payment in the channel indicated by the team. Your Service Credits will be released after manual confirmation.",
@@ -5466,19 +5489,16 @@ function formatOfficialInfoMessage(kind) {
     ],
     how_to_buy: [
       `# ${e.cart} How To Buy`,
-      "Buying from Velvet is simple.",
+      "**Buying from Velvet is simple: add Service Credits, choose a service, and let the bot guide the delivery.**",
       "",
-      `## ${e.bot} 1. Choose What You Need`,
-      "Use the bot command for the service you want:",
+      `## ${e.bot} 1. Choose The Service`,
+      "Use the command that matches what you need:",
       "",
+      "- `/generate3d` create a guided 3D model request",
+      "- `/views` render clean references from a UGC ID",
+      "- `/steal` copy supported UGC files or classic clothing templates",
       "- `/buy` purchase Service Credits",
-      "- `/subscribe` buy a plan",
-      "- `/steal` copy original UGC files",
-      "- `/steal` auto-detects UGC assets and classic clothing templates",
-      "- `/bulk_steal` bulk copy UGC files",
-      "- `/bulk_steal_clothing` bulk copy clothing templates",
-      "- `/remake` remake a model",
-      "- `/multiview` generate from multiple views",
+      "- `/subscribe` buy Basic, Premium, Elite or Lifetime access",
       "",
       `## ${e.coin} 2. Pay Securely`,
       "The bot will generate a checkout link.",
@@ -5523,25 +5543,22 @@ function formatOfficialInfoMessage(kind) {
     ],
     bot_instructions: [
       `# ${e.bot} Bot Instructions`,
-      "Use these commands to start.",
+      "**Use the commands below for the cleanest Velvet workflow.**",
+      "",
+      `## ${e.star} Recommended Flow`,
+      "`/views` - render clean references from a UGC ID.",
+      "`/generate3d` - create the final model with guided review.",
+      "`/steal` - copy supported asset files or classic clothing templates.",
       "",
       `## ${e.shield} Account`,
-      "`/settings` - choose your payment currency.",
       "`/balance` - check your Service Credits.",
-      "`/buy` - purchase a service credit package.",
+      "`/buy` - purchase Service Credits.",
       "`/subscribe` - buy Basic, Premium, Elite or Lifetime access.",
+      "`/settings` - update currency, language and render defaults.",
       "",
-      `## ${e.cart} Copy Services`,
-      "`/steal` - copy original UGC files.",
-      "`/steal` - copy UGC assets or classic clothing templates.",
-      "`/bulk_steal` - bulk copy UGC files.",
-      "`/bulk_steal_clothing` - bulk copy clothing templates.",
-      "",
-      `## ${e.star} Model Services`,
-      "`/price` - preview remake pricing.",
-      "`/remake` - generate a model from an item ID.",
-      "`/multiview` - generate a model from front, right, back and left references.",
-      "`/enhance_images` - clean reference images before using them.",
+      `## ${e.cart} Bulk Tools`,
+      "`/bulk_steal_clothing` - bulk copy classic clothing templates.",
+      "`/bulk_steal` - premium bulk copy for UGC assets.",
       "",
       `## ${e.alert} Support`,
       "If a command fails, send the error screenshot and order ID to the team.",
@@ -11159,71 +11176,67 @@ formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
   const lines = [
     "# ✨ Velvet UGC Commands",
     "",
-    "**Create, copy and remake Roblox-ready assets directly in Discord.**",
+    "**Simple commands for Roblox-ready assets, AI models and Velvet services.**",
     "Payments use **Service Credits** for Velvet digital services only.",
     "",
-    "## 🚀 Start Here",
-    "`/generate3d` - Guided 3D model request with review buttons",
-    "`/views` - Render front/right/back/left references from a UGC ID",
-    "`/price` - Preview a service price before ordering",
+    "## 🚀 Best Starting Point",
+    "`/generate3d` - guided 3D model creation with review buttons",
+    "`/views` - render clean front/right/back/left references from a UGC ID",
+    "`/steal` - copy supported asset files or classic clothing templates",
     "",
     "## 💎 Account",
-    "`/balance` - View your Service Credits",
-    "`/buy` - Buy Service Credits",
-    "`/subscribe` - View Basic, Premium, Elite and Lifetime plans",
-    "`/settings` - Language, currency and render defaults",
+    "`/balance` - view your Service Credits",
+    "`/buy` - buy Service Credits",
+    "`/subscribe` - view Basic, Premium, Elite and Lifetime plans",
+    "`/settings` - language, currency and render defaults",
     "",
-    "## 📦 Copy Services",
-    "`/steal` - Copy UGC asset files or classic clothing templates automatically",
-    "`/bulk_steal_clothing` - Copy multiple clothing templates in bulk",
+    "## 🎨 AI & References",
+    "`/generate_image` - create a reference image from a prompt",
+    "`/price` - preview model pricing before ordering",
     "",
-    "## 🎨 Model Tools",
-    "`/remake` - Remake a UGC from an item ID",
-    "`/image_model` - Generate a model from one reference image",
-    "`/multiview` - Generate from front/right/back/left images",
-    "`/enhance_images` - Clean reference images before multiview",
-    "`/model_views` - Render preview images from an uploaded model",
+    "## 📦 Bulk Tools",
+    "`/bulk_steal_clothing` - copy multiple classic clothing templates",
   ];
 
   if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
     lines.push(
       "",
       "## ⭐ Premium / Elite",
-      "`/bulk_steal` - Copy multiple UGC assets in bulk",
-      "`/bulk_remake` - Request up to 10 remakes at once"
+      "`/bulk_steal` - copy multiple UGC assets in bulk"
     );
   }
 
   lines.push(
     "",
     "## 🤝 Affiliate & Gifts",
-    "`/affiliate` - View your affiliate dashboard",
-    "`/affiliate_register` - Register your Discord invite",
-    "`/affiliate_apply` - Apply an affiliate code or invite",
-    "`/affiliate_redeem` - Convert commission into Service Credits",
-    "`/gift_create` - Create a restricted gift code",
-    "`/gift_redeem` - Redeem a gift code",
-    "`/gift_history` - View your gift history"
+    "`/affiliate` - view your affiliate dashboard",
+    "`/affiliate_register` - register your Discord invite",
+    "`/affiliate_apply` - apply an affiliate code or invite",
+    "`/affiliate_redeem` - convert commission into Service Credits",
+    "`/gift_create` - create a restricted gift code",
+    "`/gift_redeem` - redeem a gift code",
+    "`/gift_history` - view your gift history"
   );
 
   if (userIsAdmin(interaction)) {
     lines.push(
       "",
       "## 🛡️ Admin",
-      "`/sniper` - Market radar for high-potential UGCs",
-      "`/limited_sniper` - Limited / collectible market radar",
-      "`/admin_buy` - Create a discounted checkout",
-      "`/admin_add` - Add Service Credits",
-      "`/admin_remove` - Remove Service Credits",
-      "`/admin_purchases` - Review purchases",
-      "`/admin_post_info` - Post official channel messages"
+      "`/sniper` - market radar for high-potential UGCs",
+      "`/limited_sniper` - limited / collectible market radar",
+      "`/model_views` - render preview images from an uploaded model",
+      "`/admin_buy` - create a discounted checkout",
+      "`/admin_add` - add Service Credits",
+      "`/admin_remove` - remove Service Credits",
+      "`/admin_credit_history` - review balance history",
+      "`/admin_post_info` - post polished official channel messages"
     );
   }
 
   lines.push(
     "",
     "## ✅ Recommended Flow",
-    "`/views` → `/generate3d` → review photos → create final model"
+    "`/views` → `/generate3d` → review references → create final model"
   );
 
   return lines.join("\n");
