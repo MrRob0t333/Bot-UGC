@@ -6814,12 +6814,21 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   let data = [];
   let lastError = null;
   let searchFallbackReason = "";
+  let stopScanning = false;
   const startedAt = Date.now();
 
   for (const queryVariant of queryVariants) {
     for (let categoryIndex = 0; categoryIndex < categoriesToTry.length; categoryIndex += 1) {
       const searchCategory = categoriesToTry[categoryIndex];
-      assertSniperDeadline(deadlineAt);
+      if (sniperDeadlineExceeded(deadlineAt)) {
+        if (data.length) {
+          lastSniperDebug.partial = true;
+          lastSniperDebug.partialReason = "Stopped scan after reaching the command deadline with partial catalog data.";
+          stopScanning = true;
+          break;
+        }
+        assertSniperDeadline(deadlineAt);
+      }
       if (categoryIndex > 0 && SNIPER_CATEGORY_DELAY_MS > 0) {
         await wait(SNIPER_CATEGORY_DELAY_MS);
       }
@@ -6845,7 +6854,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (!useV2Search && Number.isFinite(queryVariant.maxPrice)) baseParams.MaxPrice = String(queryVariant.maxPrice);
 
       for (const attemptParams of windowAttempts) {
-        assertSniperDeadline(deadlineAt);
+        if (sniperDeadlineExceeded(deadlineAt)) {
+          if (data.length) {
+            lastSniperDebug.partial = true;
+            lastSniperDebug.partialReason = "Stopped scan after reaching the command deadline with partial catalog data.";
+            stopScanning = true;
+            break;
+          }
+          assertSniperDeadline(deadlineAt);
+        }
         const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
         const debugAttempt = {
           category: searchCategory,
@@ -6857,8 +6874,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           error: null,
         };
         lastSniperDebug.attempts.push(debugAttempt);
+        const collected = [];
         try {
-          const collected = [];
           let cursor = "";
           const maxPages = Math.max(
             depthPages,
@@ -6866,7 +6883,11 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           );
 
           for (let page = 0; page < maxPages; page += 1) {
-            assertSniperDeadline(deadlineAt);
+            if (sniperDeadlineExceeded(deadlineAt)) {
+              lastSniperDebug.partial = true;
+              lastSniperDebug.partialReason = "Stopped scan after reaching the command deadline with partial catalog data.";
+              break;
+            }
             if (page > 0 && SNIPER_PAGE_DELAY_MS > 0) {
               await wait(SNIPER_PAGE_DELAY_MS);
             }
@@ -6889,8 +6910,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
             lastError = null;
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             if (data.length >= targetRawRows) break;
+            if (sniperDeadlineExceeded(deadlineAt)) {
+              stopScanning = true;
+              break;
+            }
           }
         } catch (err) {
+          if (collected.length) {
+            data.push(...collected);
+          }
           lastError = err;
           debugAttempt.error = String(err.message || err).slice(0, 300);
           if (isRobloxRateLimitError(err) || err.code === "SNIPER_TIMEOUT") {
@@ -6905,13 +6933,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       }
 
       const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
-      if (data.length >= targetRawRows || (softFailure && data.length)) {
+      if (stopScanning || data.length >= targetRawRows || (softFailure && data.length)) {
         break;
       }
     }
 
     const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
-    if (data.length >= targetRawRows || (softFailure && data.length)) {
+    if (stopScanning || data.length >= targetRawRows || (softFailure && data.length)) {
       break;
     }
   }
