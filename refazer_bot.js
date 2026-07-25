@@ -552,9 +552,8 @@ const commands = [
       o
         .setName("language")
         .setDescription("Bot language")
-        .setRequired(false)
+        .setRequired(true)
         .addChoices(
-          { name: "Auto", value: "auto" },
           { name: "English", value: "en" },
           { name: "Español", value: "es" },
           { name: "Português do Brasil", value: "pt-BR" },
@@ -3004,6 +3003,7 @@ function walletUser(db, userId) {
       balance: 0,
       serviceCredits: [],
       language: DEFAULT_LANGUAGE,
+      languageConfirmed: false,
       currency: DEFAULT_CURRENCY,
       affiliateCode: null,
       referredBy: null,
@@ -3013,6 +3013,7 @@ function walletUser(db, userId) {
   }
 
   db.users[userId].language ||= DEFAULT_LANGUAGE;
+  db.users[userId].languageConfirmed = db.users[userId].languageConfirmed === true;
   db.users[userId].currency ||= DEFAULT_CURRENCY;
   db.users[userId].affiliateBalance ||= 0;
   db.users[userId].serviceCredits ||= [];
@@ -3445,6 +3446,7 @@ function walletPreferences(userId) {
   const user = walletUser(db, userId);
   return {
     language: user.language || DEFAULT_LANGUAGE,
+    languageConfirmed: user.languageConfirmed === true,
     currency: user.currency || DEFAULT_CURRENCY,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
@@ -3459,7 +3461,10 @@ function walletPreferences(userId) {
 function updateWalletPreferences(userId, updates) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
-  if (updates.language) user.language = normalizeLanguage(updates.language);
+  if (updates.language) {
+    user.language = normalizeLanguage(updates.language);
+    user.languageConfirmed = ["en", "pt-BR", "es"].includes(user.language);
+  }
   if (updates.currency && CURRENCIES[updates.currency]) user.currency = updates.currency;
   if (updates.textureTone) user.textureTone = normalizeTextureTone(updates.textureTone);
   if (updates.textureAdjustments) {
@@ -3481,6 +3486,7 @@ function updateWalletPreferences(userId, updates) {
   writeWalletDb(db);
   return {
     language: user.language,
+    languageConfirmed: user.languageConfirmed === true,
     currency: user.currency,
     textureTone: normalizeTextureTone(user.textureTone || DEFAULT_TEXTURE_TONE),
     textureAdjustments: normalizeTextureAdjustments(user.textureAdjustments || DEFAULT_TEXTURE_ADJUSTMENTS),
@@ -3522,6 +3528,40 @@ function languageLabel(language) {
   if (language === "es") return "Español";
   if (language === "en") return "English";
   return "Auto";
+}
+
+function userHasConfirmedLanguage(userId) {
+  return walletPreferences(userId).languageConfirmed === true;
+}
+
+function languageSetupRequiredMessage() {
+  return [
+    "# 🌐 Choose Your Language",
+    "**Before using Velvet services, please choose your bot language.**",
+    "",
+    "## Available Languages",
+    "> **English** - international support and USD/EUR/GBP flows.",
+    "> **Português do Brasil** - recomendado para BRL, Pix e Mercado Pago.",
+    "> **Español** - soporte para clientes hispanohablantes.",
+    "",
+    "## How To Continue",
+    "Use `/settings language:` and select your preferred language.",
+    "",
+    "You can change this anytime with `/settings`.",
+  ].join("\n");
+}
+
+const LANGUAGE_SETUP_BYPASS_COMMANDS = new Set([
+  "settings",
+  "commands",
+  "refazer_comandos",
+]);
+
+function commandRequiresConfirmedLanguage(interaction) {
+  if (!interaction?.isChatInputCommand?.()) return false;
+  if (LANGUAGE_SETUP_BYPASS_COMMANDS.has(interaction.commandName)) return false;
+  if (userIsAdmin(interaction)) return false;
+  return !userHasConfirmedLanguage(interaction.user.id);
 }
 
 function currencyFor(interaction, selectedCurrency) {
@@ -12689,6 +12729,14 @@ client.on("interactionCreate", async interaction => {
     if (!userIsAllowed(interaction)) {
       await interaction.reply({
         content: "You do not have the required role to use this bot.",
+        flags: 64,
+      });
+      return;
+    }
+
+    if (commandRequiresConfirmedLanguage(interaction)) {
+      await interaction.reply({
+        content: languageSetupRequiredMessage(),
         flags: 64,
       });
       return;
