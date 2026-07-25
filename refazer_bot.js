@@ -556,6 +556,7 @@ const commands = [
         .addChoices(
           { name: "Auto", value: "auto" },
           { name: "English", value: "en" },
+          { name: "Português do Brasil", value: "pt-BR" },
         )
     )
     .addStringOption(o =>
@@ -643,6 +644,22 @@ const commands = [
   new SlashCommandBuilder()
     .setName("balance")
     .setDescription("Shows your Service Credits balance")
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("history")
+    .setDescription("Shows your recent Velvet orders and Service Credits activity")
+    .addIntegerOption(o =>
+      o.setName("limit").setDescription("How many entries to show").setRequired(false).setMinValue(1).setMaxValue(15)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("order_status")
+    .setDescription("Checks a Service Credits order or 3D model request status")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Order ID or model request ID").setRequired(true)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1332,6 +1349,14 @@ const commands = [
     .setDescription("Admin: checks Roblox cookie/safe-mode status")
     .addBooleanOption(o =>
       o.setName("reset_pause").setDescription("Clear the current Roblox Safe Mode pause").setRequired(false)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("admin_status")
+    .setDescription("Admin: checks Velvet systems, APIs, queues and recent risk signals")
+    .addBooleanOption(o =>
+      o.setName("reset_roblox_pause").setDescription("Clear the current Roblox Safe Mode pause").setRequired(false)
     )
     .toJSON(),
 
@@ -3467,6 +3492,9 @@ function updateWalletPreferences(userId, updates) {
 }
 
 function languageFor(interaction) {
+  const prefs = walletPreferences(interaction.user.id);
+  if (prefs.language === "pt-BR") return "pt-BR";
+  if (prefs.language === "auto" && prefs.currency === "BRL") return "pt-BR";
   return "en";
 }
 
@@ -5139,6 +5167,132 @@ function creditHistoryForUser(userId, limit = 15) {
     .slice(0, clampNumber(limit, 1, 25, 15));
 }
 
+function recentPurchaseRequestsForUser(userId, limit = 5) {
+  const db = readWalletDb();
+  return (db.purchaseRequests || [])
+    .filter(request => request.userId === userId)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, clampNumber(limit, 1, 10, 5));
+}
+
+function formatShortDate(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || !Number.isFinite(date.getTime())) return "unknown";
+  return date.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+function formatPurchaseRequestLine(request) {
+  const price = request.brl ? formatCurrencyFromBrl(request.brl, request.currency || DEFAULT_CURRENCY) : "manual";
+  return [
+    `\`${request.id}\``,
+    `**${request.status || "pending"}**`,
+    formatTokenAmount(request.amount),
+    price,
+    formatShortDate(request.createdAt),
+  ].join(" | ");
+}
+
+function formatCustomerHistoryMessage({ userId, limit = 8 }) {
+  const transactions = creditHistoryForUser(userId, limit);
+  const purchases = recentPurchaseRequestsForUser(userId, 5);
+
+  return [
+    "# 🧾 Velvet History",
+    "**Your recent Service Credits activity and purchase requests.**",
+    SERVICE_CREDITS_NOTE,
+    "",
+    "## 💎 Recent Credit Activity",
+    transactions.length
+      ? transactions.map(formatTransactionLine).join("\n")
+      : "> No Service Credits activity found yet.",
+    "",
+    "## 🛒 Recent Orders",
+    purchases.length
+      ? purchases.map(formatPurchaseRequestLine).join("\n")
+      : "> No purchase requests found yet.",
+    "",
+    "Use `/order_status id:ORDER_ID` to inspect a specific order.",
+  ].join("\n");
+}
+
+function findOrderStatus(id, requesterId = null, includeAdmin = false) {
+  const needle = cleanEnv(id);
+  if (!needle) return null;
+  const db = readWalletDb();
+
+  const purchase = (db.purchaseRequests || []).find(item => item.id === needle);
+  if (purchase) {
+    if (!includeAdmin && requesterId && purchase.userId !== requesterId) return { forbidden: true };
+    return { type: "purchase", data: purchase };
+  }
+
+  const action = pendingMultiviewActions.get(needle);
+  if (action) {
+    if (!includeAdmin && requesterId && action.userId !== requesterId) return { forbidden: true };
+    return { type: "model", data: action };
+  }
+
+  for (const [actionId, item] of pendingMultiviewActions.entries()) {
+    if (item.generationActionId === needle || item.threadId === needle || item.sessionId === needle) {
+      if (!includeAdmin && requesterId && item.userId !== requesterId) return { forbidden: true };
+      return { type: "model", data: { ...item, id: actionId } };
+    }
+  }
+
+  return null;
+}
+
+function formatOrderStatusMessage(result) {
+  if (!result) {
+    return [
+      "# 🔎 Order Not Found",
+      "I could not find that order or model request.",
+      "",
+      "> Check the ID and try again, or contact support with a screenshot.",
+    ].join("\n");
+  }
+
+  if (result.forbidden) {
+    return [
+      "# 🔒 Private Order",
+      "That order belongs to another user.",
+      "",
+      "> Only the customer or staff can inspect this status.",
+    ].join("\n");
+  }
+
+  if (result.type === "purchase") {
+    const request = result.data;
+    return [
+      "# 🛒 Order Status",
+      uiLine("Order ID", `\`${request.id}\``),
+      uiLine("Status", `**${request.status || "pending"}**`),
+      uiLine("Package", formatTokenAmount(request.amount)),
+      uiLine("Price", request.brl ? uiMoney(formatCurrencyFromBrl(request.brl, request.currency || DEFAULT_CURRENCY)) : "manual"),
+      uiLine("Created", formatShortDate(request.createdAt)),
+      request.expiresAt ? uiLine("Expires", formatShortDate(request.expiresAt)) : "",
+      "",
+      request.status === "pending"
+        ? "Payment is still awaiting confirmation. Service Credits are released automatically after approval."
+        : "This order has already been resolved.",
+    ].filter(Boolean).join("\n");
+  }
+
+  const action = result.data;
+  return [
+    "# 🎨 Model Request Status",
+    uiLine("Request ID", `\`${action.id || action.actionId || "unknown"}\``),
+    uiLine("Status", `**${action.status || "unknown"}**`),
+    uiLine("Charge status", action.chargeStatus || "not charged"),
+    uiLine("Delivery status", action.deliveryStatus || "not delivered"),
+    action.price ? uiLine("Price", formatTokenAmount(action.price)) : "",
+    action.balanceAfterCharge !== undefined ? uiLine("Balance after charge", formatTokenAmount(action.balanceAfterCharge)) : "",
+    action.lastError ? uiLine("Last issue", `\`${String(action.lastError).slice(0, 500)}\``) : "",
+    "",
+    "Service Credits are only deducted after a final model is delivered.",
+  ].filter(Boolean).join("\n");
+}
+
 function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
   return [
     "# 🛒 Service Credits Checkout",
@@ -5993,6 +6147,49 @@ function robloxStatusMessage() {
   );
 
   return lines.join("\n");
+}
+
+function formatAdminSystemStatusMessage() {
+  const paused = robloxSafeModeIsPaused();
+  const pendingActions = Array.from(pendingMultiviewActions.values());
+  const generating = pendingActions.filter(action => ["generating", "generated", "delivered_pending_charge"].includes(action.status)).length;
+  const needsReview = pendingActions.filter(action =>
+    ["delivery_failed", "delivered_charge_failed", "interrupted", "insufficient_balance_before_delivery"].includes(action.status)
+  ).length;
+  const db = readWalletDb();
+  const pendingPurchases = (db.purchaseRequests || []).filter(item => item.status === "pending").length;
+  const pendingWithdrawals = (db.withdrawalRequests || []).filter(item => item.status === "pending").length;
+  const sniperCooldownMs = Math.max(0, sniperBusyUntil - Date.now());
+
+  return [
+    "# 🛡️ Velvet Admin Status",
+    "**Operational snapshot for the bot, APIs and pending queues.**",
+    "",
+    "## 🤖 AI Engines",
+    uiLine("Model provider", modelEngineLabel()),
+    uiLine("Hyper3D key", HYPER3D_API_KEY ? "configured" : "missing"),
+    uiLine("OpenAI image key", OPENAI_API_KEY ? "configured" : "missing"),
+    uiLine("Tripo fallback", TRIPO_API_KEY || TRIPO_AI_ENDPOINT ? "configured" : "missing"),
+    "",
+    "## 🧱 Roblox Access",
+    uiLine("Safe Mode", paused ? "paused" : "ready"),
+    uiLine("Pause remaining", paused ? `${Math.ceil(robloxPauseRemainingMs() / 60000)} min` : "none"),
+    uiLine("Configured cookies", ROBLOX_COOKIES.length),
+    uiLine("Last issue", robloxHealth.lastError || "none"),
+    "",
+    "## 📦 Queues",
+    uiLine("Pending model actions", pendingMultiviewActions.size),
+    uiLine("Generating / finalizing", generating),
+    uiLine("Needs review", needsReview),
+    uiLine("Pending purchases", pendingPurchases),
+    uiLine("Pending withdrawals", pendingWithdrawals),
+    "",
+    "## 🎯 Sniper",
+    uiLine("Cooldown", sniperCooldownMs ? `${Math.ceil(sniperCooldownMs / 1000)}s` : "ready"),
+    uiLine("Cache entries", sniperCatalogCache.size),
+    "",
+    "Use `/admin_roblox_status` for detailed Roblox cookie diagnostics.",
+  ].join("\n");
 }
 
 async function waitForRobloxSlot() {
@@ -11173,6 +11370,64 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
 };
 
 formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
+  if (languageFor(interaction) === "pt-BR") {
+    const lines = [
+      "# ✨ Comandos Velvet UGC",
+      "",
+      "**Comandos simples para assets Roblox, modelos 3D com IA e serviços Velvet.**",
+      "Pagamentos usam **Service Credits** apenas para serviços digitais da Velvet.",
+      "",
+      "## 🚀 Comece Aqui",
+      "`/generate3d` - criar modelo 3D guiado com revisão por botões",
+      "`/views` - renderizar referências front/right/back/left de um UGC",
+      "`/steal` - copiar assets suportados ou templates clássicos",
+      "",
+      "## 💎 Conta",
+      "`/balance` - ver seus Service Credits",
+      "`/history` - ver pedidos e movimentações recentes",
+      "`/order_status` - consultar um pedido ou geração 3D",
+      "`/buy` - comprar Service Credits",
+      "`/subscribe` - ver planos Basic, Premium, Elite e Lifetime",
+      "`/settings` - idioma, moeda e padrões de render",
+      "",
+      "## 🎨 IA & Referências",
+      "`/generate_image` - criar imagem de referência por prompt",
+      "`/price` - prever preço antes de pedir",
+      "",
+      "## 📦 Bulk",
+      "`/bulk_steal_clothing` - copiar vários templates clássicos",
+    ];
+
+    if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
+      lines.push("", "## ⭐ Premium / Elite", "`/bulk_steal` - copiar múltiplos assets UGC em lote");
+    }
+
+    lines.push(
+      "",
+      "## 🤝 Afiliados & Gifts",
+      "`/affiliate` - ver seu painel de afiliado",
+      "`/gift_create` - criar gift code restrito",
+      "`/gift_redeem` - resgatar gift code",
+      "`/gift_history` - ver histórico de gifts"
+    );
+
+    if (userIsAdmin(interaction)) {
+      lines.push(
+        "",
+        "## 🛡️ Admin",
+        "`/sniper` - radar de mercado UGC",
+        "`/limited_sniper` - radar de limiteds/collectibles",
+        "`/model_views` - renderizar previews de um modelo enviado",
+        "`/admin_status` - checar APIs, filas e sinais de risco",
+        "`/admin_buy` - criar checkout com desconto",
+        "`/admin_post_info` - postar mensagens oficiais"
+      );
+    }
+
+    lines.push("", "## ✅ Fluxo Recomendado", "`/views` → `/generate3d` → revisar referências → criar modelo final");
+    return lines.join("\n");
+  }
+
   const lines = [
     "# ✨ Velvet UGC Commands",
     "",
@@ -11186,6 +11441,8 @@ formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
     "",
     "## 💎 Account",
     "`/balance` - view your Service Credits",
+    "`/history` - view recent orders and credit activity",
+    "`/order_status` - check a specific order or model request",
     "`/buy` - buy Service Credits",
     "`/subscribe` - view Basic, Premium, Elite and Lifetime plans",
     "`/settings` - language, currency and render defaults",
@@ -11229,6 +11486,7 @@ formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
       "`/admin_add` - add Service Credits",
       "`/admin_remove` - remove Service Credits",
       "`/admin_credit_history` - review balance history",
+      "`/admin_status` - check APIs, queues and risk signals",
       "`/admin_post_info` - post polished official channel messages"
     );
   }
@@ -11990,6 +12248,8 @@ client.on("interactionCreate", async interaction => {
     "settings",
     "velvet_saldo",
     "balance",
+    "history",
+    "order_status",
     "velvet_comprar",
     "buy",
     "affiliate",
@@ -12030,6 +12290,7 @@ client.on("interactionCreate", async interaction => {
     "admin_views_full",
     "model_views",
     "admin_roblox_status",
+    "admin_status",
     "copiar",
     "steal",
     "sniper",
@@ -12175,6 +12436,7 @@ client.on("interactionCreate", async interaction => {
       "admin_views_full",
       "model_views",
       "admin_roblox_status",
+      "admin_status",
     ].includes(interaction.commandName) && !userIsAdmin(interaction)) {
       await interaction.reply({
         content: "Esse comando e reservado para a equipe.",
@@ -12618,6 +12880,25 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply({
         content: `## Balance Added\n**User:** ${target}\n**Amount:** +${formatTokenAmount(amount)}\n**New balance:** ${formatTokenAmount(balance)}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "history") {
+      const limit = interaction.options.getInteger("limit") || 8;
+      await interaction.reply({
+        content: formatCustomerHistoryMessage({ userId: interaction.user.id, limit }),
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "order_status") {
+      const id = interaction.options.getString("id");
+      const result = findOrderStatus(id, interaction.user.id, userIsAdmin(interaction));
+      await interaction.reply({
+        content: formatOrderStatusMessage(result),
         flags: 64,
       });
       return;
@@ -13077,6 +13358,22 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply({
         content: `## Starter Published\n**Channel:** ${channel}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "admin_status") {
+      const resetPause = interaction.options.getBoolean("reset_roblox_pause") || false;
+
+      if (resetPause) {
+        clearRobloxSafePause();
+      }
+
+      await interaction.reply({
+        content:
+          formatAdminSystemStatusMessage() +
+          (resetPause ? "\n\n**Action:** Roblox Safe Mode pause cleared manually." : ""),
         flags: 64,
       });
       return;
