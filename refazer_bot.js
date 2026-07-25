@@ -3551,6 +3551,67 @@ function languageSetupRequiredMessage() {
   ].join("\n");
 }
 
+function formatSettingsMessage({ prefs, resolvedLanguage }) {
+  const language = normalizeLanguage(resolvedLanguage);
+  if (language === "pt-BR") {
+    return [
+      "# ⚙️ Configurações Velvet",
+      uiLine("Idioma", languageLabel(resolvedLanguage)),
+      uiLine("Moeda", prefs.currency),
+      "",
+      "## Textura",
+      uiLine("Tom", textureToneSummary(prefs.textureTone)),
+      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments)),
+      "",
+      "## Render Padrão",
+      renderSettingsSummary(prefs.renderSettings),
+      "",
+      "## Geração 3D",
+      uiLine("Oferta de textura avançada", prefs.advancedTexturePrompt ? "Ativada antes da geração" : "Oculta"),
+      "",
+      `Previews de pagamento usarão **${prefs.currency}**. As mensagens do bot usarão **${languageLabel(resolvedLanguage)}** quando houver tradução disponível.`,
+    ].join("\n");
+  }
+
+  if (language === "es") {
+    return [
+      "# ⚙️ Configuración Velvet",
+      uiLine("Idioma", languageLabel(resolvedLanguage)),
+      uiLine("Moneda", prefs.currency),
+      "",
+      "## Textura",
+      uiLine("Tono", textureToneSummary(prefs.textureTone)),
+      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments)),
+      "",
+      "## Render Predeterminado",
+      renderSettingsSummary(prefs.renderSettings),
+      "",
+      "## Generación 3D",
+      uiLine("Oferta de textura avanzada", prefs.advancedTexturePrompt ? "Visible antes de generar" : "Oculta"),
+      "",
+      `Las vistas de pago usarán **${prefs.currency}**. Los mensajes del bot usarán **${languageLabel(resolvedLanguage)}** cuando la traducción esté disponible.`,
+    ].join("\n");
+  }
+
+  return [
+    "# ⚙️ Velvet Settings",
+    uiLine("Language", languageLabel(resolvedLanguage)),
+    uiLine("Currency", prefs.currency),
+    "",
+    "## Texture",
+    uiLine("Tone", textureToneSummary(prefs.textureTone)),
+    uiLine("Controls", textureAdjustmentsSummary(prefs.textureAdjustments)),
+    "",
+    "## Render Defaults",
+    renderSettingsSummary(prefs.renderSettings),
+    "",
+    "## 3D Generation",
+    uiLine("Advanced texture offer", prefs.advancedTexturePrompt ? "Shown before generation" : "Hidden"),
+    "",
+    `Payment previews will use **${prefs.currency}**. Bot messages will use **${languageLabel(resolvedLanguage)}** when localization is available.`,
+  ].join("\n");
+}
+
 const LANGUAGE_SETUP_BYPASS_COMMANDS = new Set([
   "settings",
   "commands",
@@ -6239,12 +6300,30 @@ function commandChannelIsAllowed(interaction) {
   return COMMAND_CHANNEL_IDS.has(interaction.channelId);
 }
 
-function formatAllowedCommandChannelsMessage() {
+function formatAllowedCommandChannelsMessage(language = "en") {
   const channels = [...COMMAND_CHANNEL_IDS].map(id => `<#${id}>`).join(", ");
+  if (language === "pt-BR") {
+    return [
+      "## Canal incorreto",
+      `Use o bot em: ${channels || "o canal oficial do bot"}.`,
+    ].join("\n");
+  }
+  if (language === "es") {
+    return [
+      "## Canal incorrecto",
+      `Usa el bot en: ${channels || "el canal oficial del bot"}.`,
+    ].join("\n");
+  }
   return [
     "## Commands are limited to specific channels",
     `Please use the bot in: ${channels || "the official bot channel"}.`,
   ].join("\n");
+}
+
+function formatCooldownMessage(seconds, language = "en") {
+  if (language === "pt-BR") return `⏳ Aguarde ${seconds}s antes de usar outro comando.`;
+  if (language === "es") return `⏳ Espera ${seconds}s antes de usar otro comando.`;
+  return `⏳ Wait ${seconds}s before using another command.`;
 }
 
 async function checkCooldown(interaction) {
@@ -6256,7 +6335,7 @@ async function checkCooldown(interaction) {
     const wait = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
 
     await interaction.reply({
-      content: `⏳ Wait ${wait}s before using another command.`,
+      content: formatCooldownMessage(wait, languageFor(interaction)),
       flags: 64,
     }).catch(() => {});
 
@@ -12706,19 +12785,32 @@ client.on("interactionCreate", async interaction => {
   try {
     if (!commandChannelIsAllowed(interaction)) {
       await interaction.reply({
-        content: formatAllowedCommandChannelsMessage(),
+        content: formatAllowedCommandChannelsMessage(languageFor(interaction)),
         flags: 64,
       });
       return;
     }
 
     if (DISABLED_STORED_VALUE_COMMANDS.has(interaction.commandName)) {
+      const lang = languageFor(interaction);
       await interaction.reply({
-        content: [
-          "# Feature unavailable",
-          SERVICE_CREDITS_NOTE,
-          "Use `/buy` for service packages or `/affiliate_redeem` to convert affiliate commission into Service Credits.",
-        ].join("\n"),
+        content: lang === "pt-BR"
+          ? [
+            "# Recurso indisponível",
+            SERVICE_CREDITS_NOTE,
+            "Use `/buy` para pacotes de serviço ou `/affiliate_redeem` para converter comissão em Service Credits.",
+          ].join("\n")
+          : lang === "es"
+            ? [
+              "# Función no disponible",
+              SERVICE_CREDITS_NOTE,
+              "Usa `/buy` para paquetes de servicio o `/affiliate_redeem` para convertir comisión en Service Credits.",
+            ].join("\n")
+            : [
+              "# Feature unavailable",
+              SERVICE_CREDITS_NOTE,
+              "Use `/buy` for service packages or `/affiliate_redeem` to convert affiliate commission into Service Credits.",
+            ].join("\n"),
         flags: 64,
       });
       return;
@@ -12727,8 +12819,13 @@ client.on("interactionCreate", async interaction => {
     if (!await checkCooldown(interaction)) return;
 
     if (!userIsAllowed(interaction)) {
+      const lang = languageFor(interaction);
       await interaction.reply({
-        content: "You do not have the required role to use this bot.",
+        content: lang === "pt-BR"
+          ? "Você não tem o cargo necessário para usar este bot."
+          : lang === "es"
+            ? "No tienes el rol necesario para usar este bot."
+            : "You do not have the required role to use this bot.",
         flags: 64,
       });
       return;
@@ -12785,20 +12882,10 @@ client.on("interactionCreate", async interaction => {
         renderSettings: Object.keys(renderUpdates).length ? renderUpdates : null,
         advancedTexturePrompt: advancedTexturePrompt ? advancedTexturePrompt === "show" : undefined,
       });
-      const resolvedLanguage = prefs.language === "auto"
-        ? `Auto → ${languageLabel(languageFor(interaction))}`
-        : languageLabel(prefs.language);
+      const resolvedLanguage = prefs.language === "auto" ? languageFor(interaction) : prefs.language;
 
       await interaction.reply({
-        content:
-          `## ⚙️ Velvet Settings\n` +
-          `**Language:** ${resolvedLanguage}\n` +
-          `**Currency:** ${prefs.currency}\n\n` +
-          `**Texture tone:** ${textureToneSummary(prefs.textureTone)}\n\n` +
-          `**Texture controls:** ${textureAdjustmentsSummary(prefs.textureAdjustments)}\n\n` +
-          `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
-          `**Advanced texture offer:** ${prefs.advancedTexturePrompt ? "Shown before generation" : "Hidden"}\n\n` +
-          `Payment previews will use **${prefs.currency}**. Bot messages will use **${languageLabel(languageFor(interaction))}** when localization is available.`,
+        content: formatSettingsMessage({ prefs, resolvedLanguage }),
         flags: 64,
       });
       return;
