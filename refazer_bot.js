@@ -2906,53 +2906,102 @@ function bulkAssetLimitFor(interaction) {
   return Math.min(FREE_BULK_ASSET_LIMIT, BULK_ASSET_LIMIT);
 }
 
-function formatCopyAllowance(quote) {
+function localizedLineLabels(language) {
+  if (language === "pt-BR") {
+    return {
+      plan: "Plano",
+      dailyCopies: "Copias diarias",
+      dailyClothingCopies: "Copias de roupa diarias",
+      freeCopiesToday: "Copias gratis hoje",
+      freeClothingCopiesToday: "Copias de roupa gratis hoje",
+      freeRemainingBeforeCopy: "Gratis restantes antes desta copia",
+      freeRemainingBeforeBulk: "Gratis restantes antes deste lote",
+      bulkAmount: "Quantidade em lote",
+      paidCopies: "Copias pagas",
+      pricePerPaidCopy: "Preco por copia paga",
+      unlimited: "ilimitadas",
+    };
+  }
+  if (language === "es") {
+    return {
+      plan: "Plan",
+      dailyCopies: "Copias diarias",
+      dailyClothingCopies: "Copias de ropa diarias",
+      freeCopiesToday: "Copias gratis hoy",
+      freeClothingCopiesToday: "Copias de ropa gratis hoy",
+      freeRemainingBeforeCopy: "Gratis restantes antes de esta copia",
+      freeRemainingBeforeBulk: "Gratis restantes antes de este lote",
+      bulkAmount: "Cantidad del lote",
+      paidCopies: "Copias pagadas",
+      pricePerPaidCopy: "Precio por copia pagada",
+      unlimited: "ilimitadas",
+    };
+  }
+  return {
+    plan: "Plan",
+    dailyCopies: "Daily copies",
+    dailyClothingCopies: "Daily clothing copies",
+    freeCopiesToday: "Free copies today",
+    freeClothingCopiesToday: "Free clothing copies today",
+    freeRemainingBeforeCopy: "Free remaining before this copy",
+    freeRemainingBeforeBulk: "Free remaining before this bulk",
+    bulkAmount: "Bulk amount",
+    paidCopies: "Paid copies",
+    pricePerPaidCopy: "Price per paid copy",
+    unlimited: "unlimited",
+  };
+}
+
+function formatCopyAllowance(quote, language = "en") {
+  const labels = localizedLineLabels(language);
   if (quote.dailyLimit === null) {
     return [
-      `**Plan:** ${quote.planLabel}`,
-      "**Daily copies:** unlimited",
+      `**${labels.plan}:** ${quote.planLabel}`,
+      `**${labels.dailyCopies}:** ${labels.unlimited}`,
     ].join("\n");
   }
 
   return [
-    `**Plan:** ${quote.planLabel}`,
-    `**Free copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
-    `**Free remaining before this copy:** ${quote.freeRemaining}`,
+    `**${labels.plan}:** ${quote.planLabel}`,
+    `**${labels.freeCopiesToday}:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+    `**${labels.freeRemainingBeforeCopy}:** ${quote.freeRemaining}`,
   ].join("\n");
 }
 
-function formatClothingAllowance(quote) {
+function formatClothingAllowance(quote, language = "en") {
+  const labels = localizedLineLabels(language);
   if (quote.dailyLimit === null) {
     return [
-      `**Plan:** ${quote.planLabel}`,
-      "**Daily clothing copies:** unlimited",
+      `**${labels.plan}:** ${quote.planLabel}`,
+      `**${labels.dailyClothingCopies}:** ${labels.unlimited}`,
     ].join("\n");
   }
 
   return [
-    `**Plan:** ${quote.planLabel}`,
-    `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
-    `**Free remaining before this copy:** ${quote.freeRemaining}`,
+    `**${labels.plan}:** ${quote.planLabel}`,
+    `**${labels.freeClothingCopiesToday}:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+    `**${labels.freeRemainingBeforeCopy}:** ${quote.freeRemaining}`,
   ].filter(line => line !== null).join("\n");
 }
 
-function formatBulkClothingAllowance(quote) {
+function formatBulkClothingAllowance(quote, language = "en") {
+  const labels = localizedLineLabels(language);
   const base = quote.dailyLimit === null
     ? [
-      `**Plan:** ${quote.planLabel}`,
-      "**Daily clothing copies:** unlimited",
+      `**${labels.plan}:** ${quote.planLabel}`,
+      `**${labels.dailyClothingCopies}:** ${labels.unlimited}`,
     ]
     : [
-      `**Plan:** ${quote.planLabel}`,
-      `**Free clothing copies today:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
-      `**Free remaining before this bulk:** ${quote.freeRemaining}`,
+      `**${labels.plan}:** ${quote.planLabel}`,
+      `**${labels.freeClothingCopiesToday}:** ${Math.min(quote.usedToday, quote.dailyLimit)}/${quote.dailyLimit}`,
+      `**${labels.freeRemainingBeforeBulk}:** ${quote.freeRemaining}`,
     ];
 
   return [
     ...base,
-    `**Bulk amount:** ${quote.count}`,
-    `**Paid copies:** ${quote.paidCount}`,
-    quote.paidCount ? `**Price per paid copy:** ${formatTokenAmount(quote.perPaidItem)}` : null,
+    `**${labels.bulkAmount}:** ${quote.count}`,
+    `**${labels.paidCopies}:** ${quote.paidCount}`,
+    quote.paidCount ? `**${labels.pricePerPaidCopy}:** ${formatTokenAmount(quote.perPaidItem)}` : null,
   ].filter(Boolean).join("\n");
 }
 
@@ -3560,11 +3609,11 @@ function formatSettingsMessage({ prefs, resolvedLanguage }) {
       uiLine("Moeda", prefs.currency),
       "",
       "## Textura",
-      uiLine("Tom", textureToneSummary(prefs.textureTone)),
-      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments)),
+      uiLine("Tom", textureToneSummary(prefs.textureTone, language)),
+      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments, language)),
       "",
       "## Render Padrão",
-      renderSettingsSummary(prefs.renderSettings),
+      renderSettingsSummary(prefs.renderSettings, language),
       "",
       "## Geração 3D",
       uiLine("Oferta de textura avançada", prefs.advancedTexturePrompt ? "Ativada antes da geração" : "Oculta"),
@@ -3580,11 +3629,11 @@ function formatSettingsMessage({ prefs, resolvedLanguage }) {
       uiLine("Moneda", prefs.currency),
       "",
       "## Textura",
-      uiLine("Tono", textureToneSummary(prefs.textureTone)),
-      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments)),
+      uiLine("Tono", textureToneSummary(prefs.textureTone, language)),
+      uiLine("Controles", textureAdjustmentsSummary(prefs.textureAdjustments, language)),
       "",
       "## Render Predeterminado",
-      renderSettingsSummary(prefs.renderSettings),
+      renderSettingsSummary(prefs.renderSettings, language),
       "",
       "## Generación 3D",
       uiLine("Oferta de textura avanzada", prefs.advancedTexturePrompt ? "Visible antes de generar" : "Oculta"),
@@ -3599,11 +3648,11 @@ function formatSettingsMessage({ prefs, resolvedLanguage }) {
     uiLine("Currency", prefs.currency),
     "",
     "## Texture",
-    uiLine("Tone", textureToneSummary(prefs.textureTone)),
-    uiLine("Controls", textureAdjustmentsSummary(prefs.textureAdjustments)),
+    uiLine("Tone", textureToneSummary(prefs.textureTone, language)),
+    uiLine("Controls", textureAdjustmentsSummary(prefs.textureAdjustments, language)),
     "",
     "## Render Defaults",
-    renderSettingsSummary(prefs.renderSettings),
+    renderSettingsSummary(prefs.renderSettings, language),
     "",
     "## 3D Generation",
     uiLine("Advanced texture offer", prefs.advancedTexturePrompt ? "Shown before generation" : "Hidden"),
@@ -3691,13 +3740,30 @@ function explicitTextureAdjustmentsForInteraction(interaction, fallback = DEFAUL
   });
 }
 
-function textureToneSummary(textureTone) {
+function textureToneSummary(textureTone, language = "en") {
   const key = normalizeTextureTone(textureTone);
-  return TEXTURE_TONES[key]?.label || TEXTURE_TONES[DEFAULT_TEXTURE_TONE].label;
+  const label = TEXTURE_TONES[key]?.label || TEXTURE_TONES[DEFAULT_TEXTURE_TONE].label;
+  if (language === "pt-BR") {
+    if (key === "normal") return "Roblox Seguro";
+    if (key === "brighter") return "Mais claro";
+    if (key === "vibrant") return "Vibrante";
+  }
+  if (language === "es") {
+    if (key === "normal") return "Roblox Seguro";
+    if (key === "brighter") return "Mas claro";
+    if (key === "vibrant") return "Vibrante";
+  }
+  return label;
 }
 
-function textureAdjustmentsSummary(adjustments) {
+function textureAdjustmentsSummary(adjustments, language = "en") {
   const normalized = normalizeTextureAdjustments(adjustments);
+  if (language === "pt-BR") {
+    return `Saturacao ${normalized.saturation.toFixed(2)}x, Valor ${normalized.value.toFixed(2)}x`;
+  }
+  if (language === "es") {
+    return `Saturacion ${normalized.saturation.toFixed(2)}x, Valor ${normalized.value.toFixed(2)}x`;
+  }
   return `Saturation ${normalized.saturation.toFixed(2)}x, Value ${normalized.value.toFixed(2)}x`;
 }
 
@@ -3736,14 +3802,40 @@ function renderSettingsForInteraction(interaction) {
   });
 }
 
-function renderSettingsSummary(settings) {
+function renderSettingsSummary(settings, language = "en") {
+  const labels = language === "pt-BR"
+    ? {
+      lighting: "Iluminacao",
+      pov: "POV",
+      ior: "IOR",
+      roughness: "Rugosidade",
+      exposure: "Exposicao",
+      lightPower: "Potencia da luz",
+    }
+    : language === "es"
+      ? {
+        lighting: "Iluminacion",
+        pov: "POV",
+        ior: "IOR",
+        roughness: "Rugosidad",
+        exposure: "Exposicion",
+        lightPower: "Potencia de luz",
+      }
+      : {
+        lighting: "Lighting",
+        pov: "POV",
+        ior: "IOR",
+        roughness: "Roughness",
+        exposure: "Exposure",
+        lightPower: "Light power",
+      };
   return [
-    `Lighting: ${settings.lighting}`,
-    `POV: ${settings.pov}`,
-    `IOR: ${settings.ior}`,
-    `Roughness: ${settings.roughness}`,
-    `Exposure: ${settings.exposure}`,
-    `Light power: ${settings.lightPower}`,
+    `${labels.lighting}: ${settings.lighting}`,
+    `${labels.pov}: ${settings.pov}`,
+    `${labels.ior}: ${settings.ior}`,
+    `${labels.roughness}: ${settings.roughness}`,
+    `${labels.exposure}: ${settings.exposure}`,
+    `${labels.lightPower}: ${settings.lightPower}`,
   ].join("\n");
 }
 
@@ -5748,7 +5840,31 @@ function formatSubscriptionMessage({ plan, provider, email, link, orderId = null
   ].join("\n");
 }
 
-function formatInsufficientBalanceMessage({ service, price, balance }) {
+function formatInsufficientBalanceMessage({ service, price, balance, language = "en" }) {
+  if (language === "pt-BR") {
+    return [
+      "# ⚠️ Saldo insuficiente",
+      "Você precisa de mais Service Credits para continuar.",
+      "",
+      uiLine("Serviço", service),
+      uiLine("Preço", formatTokenAmount(price)),
+      uiLine("Seu saldo", formatTokenAmount(balance)),
+      "",
+      "Use `/buy` para adicionar Service Credits.",
+    ].join("\n");
+  }
+  if (language === "es") {
+    return [
+      "# ⚠️ Saldo insuficiente",
+      "Necesitas mas Service Credits para continuar.",
+      "",
+      uiLine("Servicio", service),
+      uiLine("Precio", formatTokenAmount(price)),
+      uiLine("Tu saldo", formatTokenAmount(balance)),
+      "",
+      "Usa `/buy` para agregar Service Credits.",
+    ].join("\n");
+  }
   return [
     "# ⚠️ Insufficient Balance",
     "You need more Service Credits to continue.",
@@ -8129,30 +8245,34 @@ async function downloadClassicClothingTemplate(rawId) {
 }
 
 async function handleClassicClothingSteal(interaction, idInput, sourceCommand = "steal") {
+  const lang = languageFor(interaction);
   const quote = calculateClothingCopyPrice(interaction);
-  const allowanceText = formatClothingAllowance(quote);
+  const allowanceText = formatClothingAllowance(quote, lang);
   const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
 
   if (balanceBefore < quote.walletAmount) {
     await interaction.reply({
-      content:
-        `## Insufficient Balance\n` +
-        `**Service:** Copy clothing template\n` +
-        `${allowanceText}\n` +
-        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-        `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-        "Use `/buy` to add Service Credits.",
+      content: formatInsufficientBalanceMessage({
+        service: lang === "pt-BR" ? "Copiar template de roupa" : lang === "es" ? "Copiar template de ropa" : "Copy clothing template",
+        price: quote.walletAmount,
+        balance: balanceBefore,
+        language: lang,
+      }),
       flags: 64,
     });
     return;
   }
 
   await interaction.reply(
-    `## Copy Clothing\n` +
+    (lang === "pt-BR" ? "## Copiar roupa\n" : lang === "es" ? "## Copiar ropa\n" : "## Copy Clothing\n") +
     `**Input:** \`${idInput}\`\n` +
     `${allowanceText}\n` +
-    `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
-    "Preparing the original clothing template..."
+    `**${lang === "pt-BR" ? "Preço" : lang === "es" ? "Precio" : "Price"}:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+    (lang === "pt-BR"
+      ? "Preparando o template original da roupa..."
+      : lang === "es"
+        ? "Preparando el template original de la ropa..."
+        : "Preparing the original clothing template...")
   );
 
   try {
@@ -8177,17 +8297,20 @@ async function handleClassicClothingSteal(interaction, idInput, sourceCommand = 
 
     await interaction.editReply({
       content:
-        `## Clothing Template Copied\n` +
-        `**Item:** ${result.name}\n` +
+        (lang === "pt-BR" ? "## Template de roupa copiado\n" : lang === "es" ? "## Template de ropa copiado\n" : "## Clothing Template Copied\n") +
+        `**${lang === "pt-BR" ? "Item" : lang === "es" ? "Item" : "Item"}:** ${result.name}\n` +
         `**Catalog ID:** \`${result.catalogId}\`\n` +
         `**Template ID:** \`${result.templateId}\`\n` +
-        `**Type:** ${result.typeLabel}\n` +
-        `**Creator:** ${result.creator}\n` +
-        `${formatClothingAllowance(finalQuote)}\n` +
-        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-        `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-        "Original template file is attached below.\n\n" +
-        "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
+        `**${lang === "pt-BR" ? "Tipo" : lang === "es" ? "Tipo" : "Type"}:** ${result.typeLabel}\n` +
+        `**${lang === "pt-BR" ? "Criador" : lang === "es" ? "Creador" : "Creator"}:** ${result.creator}\n` +
+        `${formatClothingAllowance(finalQuote, lang)}\n` +
+        `**${lang === "pt-BR" ? "Preço" : lang === "es" ? "Precio" : "Price"}:** ${formatTokenAmount(quote.walletAmount)}\n` +
+        `**${lang === "pt-BR" ? "Saldo restante" : lang === "es" ? "Saldo restante" : "Remaining balance"}:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+        (lang === "pt-BR"
+          ? "O arquivo original do template está anexado abaixo.\n\nUse **Reset Template** para receber essa mesma roupa com o guia visível por cima."
+          : lang === "es"
+            ? "El archivo original del template está adjunto abajo.\n\nUsa **Reset Template** para recibir esta misma ropa con una guia visible encima."
+            : "Original template file is attached below.\n\nUse **Reset Template** to receive this same clothing with a visible template guide on top."),
       files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
       components: [clothingResetButton(resetAction.id)],
     });
@@ -8198,8 +8321,16 @@ async function handleClassicClothingSteal(interaction, idInput, sourceCommand = 
 
     await interaction.editReply(
       isRateLimited
-        ? "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal` again. No charge was deducted."
-        : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review."
+        ? (lang === "pt-BR"
+          ? "## Roblox está limitando downloads de roupas\nAguarde alguns minutos e tente `/steal` novamente. Nenhum Service Credit foi descontado."
+          : lang === "es"
+            ? "## Roblox está limitando descargas de ropa\nEspera unos minutos e intenta `/steal` otra vez. No se descontaron Service Credits."
+            : "## Roblox is rate-limiting clothing downloads\nWait a few minutes and try `/steal` again. No charge was deducted.")
+        : (lang === "pt-BR"
+          ? "## Não consegui copiar este template de roupa\nApenas shirts, pants e t-shirts clássicas são suportadas agora. Confira o ID ou envie para a equipe revisar manualmente."
+          : lang === "es"
+            ? "## No pude copiar este template de ropa\nSolo shirts, pants y t-shirts clasicas son compatibles ahora. Verifica el ID o envialo al equipo para revision manual."
+            : "## I could not copy this clothing template\nOnly classic shirts, pants and t-shirts are supported right now. Check the ID or send it to the team for manual review.")
     );
 
     if (userIsAdmin(interaction)) {
@@ -10306,14 +10437,20 @@ async function createResetTemplateImage(action) {
   throw lastError || new Error("Could not run Python image processor.");
 }
 
-function formatGenerationProgress({ status, progress }) {
+function formatGenerationProgress({ status, progress, language = "en" }) {
   if (status === "finalizing") {
+    if (language === "pt-BR") return "Finalizando arquivo pronto para Roblox...";
+    if (language === "es") return "Finalizando archivo listo para Roblox...";
     return "Finalizing Roblox-ready file...";
   }
   if (status === "texturing") {
+    if (language === "pt-BR") return "Aplicando referência de textura avançada...";
+    if (language === "es") return "Aplicando referencia de textura avanzada...";
     return "Applying advanced texture reference...";
   }
 
+  if (language === "pt-BR") return `Geração: ${status || "processando"} ${progress || 0}%`;
+  if (language === "es") return `Generación: ${status || "procesando"} ${progress || 0}%`;
   return `Generation: ${status || "processing"} ${progress || 0}%`;
 }
 
@@ -10981,6 +11118,7 @@ async function prepareGuidedModelReferences(channel, session, interactionLike) {
           service: "Guided 3D model",
           price: quote.walletAmount,
           balance,
+          language: normalizeLanguage(session.language || "en"),
         }) +
         "\n\nAfter adding Service Credits, click the button below to prepare the references.",
       components: [guidedModelPrepareButtons(session.threadId), guidedModelThreadControls(session.threadId)],
@@ -11261,6 +11399,8 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   const serviceKey = action.serviceKey || "multiview";
   const serviceLabel = action.serviceLabel || "Multiview AI model";
   const generationMode = action.generationMode || "multiview";
+  const lang = normalizeLanguage(action.language || languageFor(interaction));
+  action.language = lang;
   action.prompt = normalizeModelGenerationPrompt(action.prompt);
   action.texture = normalizeTextureOption(action.texture || "standard");
   const generationImagePaths = Array.isArray(action.imagePaths) && action.imagePaths.length
@@ -11268,7 +11408,12 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     : MULTIVIEW_UPLOAD_ORDER.map(view => action.viewPaths?.[view]).filter(Boolean);
 
   if (!modelGenerationIsConfigured()) {
-    await interaction.followUp({ content: "Real model generation is not configured yet. Contact support.", flags: 64 }).catch(() => {});
+    const content = lang === "pt-BR"
+      ? "A geração real de modelo ainda não está configurada. Chame o suporte."
+      : lang === "es"
+        ? "La generación real de modelo todavía no está configurada. Contacta al soporte."
+        : "Real model generation is not configured yet. Contact support.";
+    await interaction.followUp({ content, flags: 64 }).catch(() => {});
     return;
   }
 
@@ -11288,6 +11433,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
       service: serviceLabel,
       price: quote.walletAmount,
       balance: balanceBefore,
+      language: lang,
     });
     if (interaction.deferred || interaction.replied) {
       await interaction.followUp({ content, flags: 64 }).catch(() => {});
@@ -11318,12 +11464,23 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
 
   if (updateMode === "offer") {
     await interaction.editReply({
-      content: "## Generation Started\nI will deliver the final model here when it is ready.",
+      content: lang === "pt-BR"
+        ? "## Geração iniciada\nVou entregar o modelo final aqui quando estiver pronto."
+        : lang === "es"
+          ? "## Generación iniciada\nEntregaré el modelo final aquí cuando esté listo."
+          : "## Generation Started\nI will deliver the final model here when it is ready.",
       components: [],
     });
   } else {
     await interaction.editReply({ components: [disableMultiviewReviewButtons(actionId, true)] });
-    await interaction.followUp({ content: "## Generation Started\nI will deliver the final model here when it is ready.", flags: 64 });
+    await interaction.followUp({
+      content: lang === "pt-BR"
+        ? "## Geração iniciada\nVou entregar o modelo final aqui quando estiver pronto."
+        : lang === "es"
+          ? "## Generación iniciada\nEntregaré el modelo final aquí cuando esté listo."
+          : "## Generation Started\nI will deliver the final model here when it is ready.",
+      flags: 64,
+    });
   }
 
   let progressMessage = null;
@@ -11331,7 +11488,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
 
   try {
     const onProgress = async ({ status, progress }) => {
-      const content = formatGenerationProgress({ status, progress });
+      const content = formatGenerationProgress({ status, progress, language: lang });
       if (progressMessage) {
         await progressMessage.edit(content).catch(async () => {
           progressMessage = await interaction.followUp({ content, flags: 64 }).catch(() => null);
@@ -11392,9 +11549,11 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
     action.lastError = String(err.message || err).slice(0, 500);
     setPendingMultiviewAction(actionId, action);
     await interaction.followUp({
-      content:
-        "## Model Generation Failed\n" +
-        "No charge was deducted because no final model was delivered.",
+      content: lang === "pt-BR"
+        ? "## Falha na geração do modelo\nNenhum Service Credit foi descontado porque nenhum modelo final foi entregue."
+        : lang === "es"
+          ? "## Error en la generación del modelo\nNo se descontaron Service Credits porque no se entregó ningún modelo final."
+          : "## Model Generation Failed\nNo charge was deducted because no final model was delivered.",
       flags: 64,
     });
 
@@ -11440,6 +11599,7 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
         service: serviceLabel,
         price: quote.walletAmount,
         balance: balanceBeforeDelivery,
+        language: lang,
       }),
       flags: 64,
     });
@@ -11449,10 +11609,17 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   let delivery;
   try {
     delivery = await deliverModelPrivatelyOrFallback(interaction, {
-      content:
-        "## Final Model Generated\n" +
-        `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-        "**Remaining balance:** updating...",
+      content: lang === "pt-BR"
+        ? "## Modelo final gerado\n" +
+          `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          "**Saldo restante:** atualizando..."
+        : lang === "es"
+          ? "## Modelo final generado\n" +
+            `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            "**Saldo restante:** actualizando..."
+          : "## Final Model Generated\n" +
+            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+            "**Remaining balance:** updating...",
       modelPath: model.modelPath,
       modelPaths: model.modelPaths,
     });
@@ -11472,9 +11639,11 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
       .map(file => `${path.basename(file)}=${formatBytes(fs.statSync(file).size)}`)
       .join(", ");
     await interaction.followUp({
-      content:
-        "## Model Delivery Failed\n" +
-        "No charge was deducted because the final model could not be delivered.",
+      content: lang === "pt-BR"
+        ? "## Falha ao entregar o modelo\nNenhum Service Credit foi descontado porque o modelo final não pôde ser entregue."
+        : lang === "es"
+          ? "## Error al entregar el modelo\nNo se descontaron Service Credits porque el modelo final no pudo ser entregado."
+          : "## Model Delivery Failed\nNo charge was deducted because the final model could not be delivered.",
       flags: 64,
     });
     if (userIsAdmin(interaction)) {
@@ -11557,16 +11726,31 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   }
 
   await delivery.message.edit({
-    content:
-      "## Final Model Generated\n" +
-      `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-      `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
+    content: lang === "pt-BR"
+      ? "## Modelo final gerado\n" +
+        `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
+        `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`
+      : lang === "es"
+        ? "## Modelo final generado\n" +
+          `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`
+        : "## Final Model Generated\n" +
+          `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}`,
   }).catch(() => {});
 
   await interaction.followUp({
     content: delivery.deliveredInDm
-      ? "## Delivered Privately\nYour final model was sent to your DMs."
-      : "## Delivered\nYour final model was delivered in this channel because your DMs are closed.",
+      ? (lang === "pt-BR"
+        ? "## Entregue no privado\nSeu modelo final foi enviado na sua DM."
+        : lang === "es"
+          ? "## Entregado por privado\nTu modelo final fue enviado a tus DMs."
+          : "## Delivered Privately\nYour final model was sent to your DMs.")
+      : (lang === "pt-BR"
+        ? "## Entregue\nSeu modelo final foi entregue neste canal porque sua DM está fechada."
+        : lang === "es"
+          ? "## Entregado\nTu modelo final fue entregado en este canal porque tus DMs están cerrados."
+          : "## Delivered\nYour final model was delivered in this channel because your DMs are closed."),
     flags: 64,
   }).catch(() => {});
 
@@ -11576,11 +11760,20 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
       session.status = "delivered";
       session.updatedAt = Date.now();
       await interaction.channel?.send({
-        content:
-          "# Request Complete\n" +
-          "Your final model has been delivered.\n\n" +
-          "> Need support? Keep this thread open and message the team here.\n" +
-          "> All done? Click **Close request** to archive this thread.",
+        content: lang === "pt-BR"
+          ? "# Pedido concluído\n" +
+            "Seu modelo final foi entregue.\n\n" +
+            "> Precisa de suporte? Mantenha este tópico aberto e fale com a equipe aqui.\n" +
+            "> Tudo certo? Clique em **Close request** para arquivar este tópico."
+          : lang === "es"
+            ? "# Pedido completado\n" +
+              "Tu modelo final fue entregado.\n\n" +
+              "> Necesitas soporte? Mantén este hilo abierto y habla con el equipo aquí.\n" +
+              "> Todo listo? Haz clic en **Close request** para archivar este hilo."
+            : "# Request Complete\n" +
+              "Your final model has been delivered.\n\n" +
+              "> Need support? Keep this thread open and message the team here.\n" +
+              "> All done? Click **Close request** to archive this thread.",
         components: [guidedModelThreadControls(action.guidedThreadId)],
       }).catch(() => {});
     }
@@ -12207,6 +12400,7 @@ client.on("interactionCreate", async interaction => {
         parentChannelId: interaction.channelId,
         userId: interaction.user.id,
         status: "choosing_type",
+        language: languageFor(interaction),
         stepIndex: 0,
         viewPaths: {},
         originalViewPaths: {},
@@ -12940,19 +13134,10 @@ client.on("interactionCreate", async interaction => {
         flags: 64,
       });
       return;
-
-      const lang = interaction.commandName === "balance" ? "en" : languageFor(interaction);
-      await interaction.reply({
-        content: lang === "pt-BR"
-          ? `## 💎 Carteira Velvet\n**Saldo atual:** ${formatTokenAmount(walletBalance(interaction.user.id))}`
-          : `## 💎 Velvet Wallet\n**Current balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}`,
-        flags: 64,
-      });
-      return;
     }
 
     if (interaction.commandName === "velvet_comprar" || interaction.commandName === "buy") {
-      const lang = interaction.commandName === "buy" ? "en" : languageFor(interaction);
+      const lang = languageFor(interaction);
       const amount = interaction.options.getInteger("quantidade") || interaction.options.getInteger("amount");
       const selectedCurrency = interaction.options.getString("moeda") || interaction.options.getString("currency");
       const selectedProvider = interaction.options.getString("gateway") || interaction.options.getString("provider");
@@ -14217,7 +14402,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "copiar" || interaction.commandName === "steal") {
-      const lang = interaction.commandName === "steal" ? "en" : languageFor(interaction);
+      const lang = languageFor(interaction);
       const id = interaction.options.getString("id").trim();
       const target = await classifyStealTarget(id);
 
@@ -14227,25 +14412,31 @@ client.on("interactionCreate", async interaction => {
       }
 
       const quote = calculateCopyPrice(interaction);
-      const allowanceText = formatCopyAllowance(quote);
+      const allowanceText = formatCopyAllowance(quote, lang);
       const balanceBefore = walletAvailableBalance(interaction.user.id, "copy");
 
       if (balanceBefore < quote.walletAmount) {
         await interaction.reply({
           content: lang === "pt-BR"
-            ?
-            `## ⚠️ Saldo insuficiente\n` +
-            `**Serviço:** Copiar modelo original\n` +
-            `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Seu saldo:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/velvet_comprar` para criar um pedido de compra."
-            :
-            `## ⚠️ Insufficient Balance\n` +
-            `**Service:** Copy original asset\n` +
-            `${allowanceText}\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
-            "Use `/buy` to create a purchase request.",
+            ? `## ⚠️ Saldo insuficiente\n` +
+              `**Serviço:** Copiar asset original\n` +
+              `${allowanceText}\n` +
+              `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
+              `**Seu saldo:** ${formatTokenAmount(balanceBefore)}\n\n` +
+              "Use `/buy` para adicionar Service Credits."
+            : lang === "es"
+              ? `## ⚠️ Saldo insuficiente\n` +
+                `**Servicio:** Copiar asset original\n` +
+                `${allowanceText}\n` +
+                `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n` +
+                `**Tu saldo:** ${formatTokenAmount(balanceBefore)}\n\n` +
+                "Usa `/buy` para agregar Service Credits."
+              : `## ⚠️ Insufficient Balance\n` +
+                `**Service:** Copy original asset\n` +
+                `${allowanceText}\n` +
+                `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+                `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
+                "Use `/buy` to add Service Credits.",
           flags: 64,
         });
         return;
@@ -14253,15 +14444,22 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.reply(
         lang === "pt-BR"
-          ? `## 📎 Copiar Modelo\n` +
-            `**UGC:** \`${id}\`\n` +
-            `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
-            "⏳ Preparando arquivos originais..."
-          : `## 📎 Copy Asset\n` +
+          ? `## 📎 Copiar Asset\n` +
             `**UGC:** \`${id}\`\n` +
             `${allowanceText}\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
-            "⏳ Preparing original files..."
+            `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+            "⏳ Preparando arquivos originais..."
+          : lang === "es"
+            ? `## 📎 Copiar Asset\n` +
+              `**UGC:** \`${id}\`\n` +
+              `${allowanceText}\n` +
+              `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+              "⏳ Preparando archivos originales..."
+            : `## 📎 Copy Asset\n` +
+              `**UGC:** \`${id}\`\n` +
+              `${allowanceText}\n` +
+              `**Price:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
+              "⏳ Preparing original files..."
       );
 
       try {
@@ -14285,26 +14483,34 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.editReply({
           content: lang === "pt-BR"
-            ?
-            `## ✅ Modelo Copiado\n` +
-            `**UGC:** \`${id}\`\n` +
-            `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-            "📦 Arquivos originais anexados abaixo."
-            :
-            `## ✅ Asset Copied\n` +
-            `**UGC:** \`${id}\`\n` +
-            `${formatCopyAllowance(finalQuote)}\n` +
-            `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-            `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
-            "📦 Original files are attached below.",
+            ? `## ✅ Asset copiado\n` +
+              `**UGC:** \`${id}\`\n` +
+              `${formatCopyAllowance(finalQuote, lang)}\n` +
+              `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
+              `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+              "📦 Arquivos originais anexados abaixo."
+            : lang === "es"
+              ? `## ✅ Asset copiado\n` +
+                `**UGC:** \`${id}\`\n` +
+                `${formatCopyAllowance(finalQuote, lang)}\n` +
+                `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n` +
+                `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+                "📦 Archivos originales adjuntos abajo."
+              : `## ✅ Asset Copied\n` +
+                `**UGC:** \`${id}\`\n` +
+                `${formatCopyAllowance(finalQuote, lang)}\n` +
+                `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
+                `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+                "📦 Original files are attached below.",
           files: attachmentsFromPaths(files).slice(0, 10),
         });
       } catch (err) {
         console.error(err);
         await interaction.editReply(lang === "pt-BR"
-          ? "## ⚠️ Não consegui copiar esse modelo\nA equipe pode revisar o ID manualmente."
-          : "## ⚠️ I could not copy this asset\nThe team can review this ID manually.");
+          ? "## ⚠️ Não consegui copiar este asset\nA equipe pode revisar este ID manualmente."
+          : lang === "es"
+            ? "## ⚠️ No pude copiar este asset\nEl equipo puede revisar este ID manualmente."
+            : "## ⚠️ I could not copy this asset\nThe team can review this ID manually.");
       }
       return;
     }
@@ -14645,6 +14851,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "views" || interaction.commandName === "views_custom") {
       const id = interaction.options.getString("id").trim();
+      const lang = languageFor(interaction);
       const renderSettings = renderSettingsForInteraction(interaction);
       const angleSet = interaction.commandName === "views"
         ? (interaction.options.getString("angles") || "multiview4")
@@ -14653,10 +14860,17 @@ client.on("interactionCreate", async interaction => {
 
       if (useAiFiveViews && !userIsAdmin(interaction)) {
         await interaction.reply({
-          content:
-            "## Admin Only\n" +
-            "The 5-view Blender reference set is available only to admins right now.\n\n" +
-            "Use the default 4-view set for `/multiview`.",
+          content: lang === "pt-BR"
+            ? "## Apenas admins\n" +
+              "O conjunto Blender com 5 views está disponível apenas para admins por enquanto.\n\n" +
+              "Use o conjunto padrão com 4 views no `/multiview`."
+            : lang === "es"
+              ? "## Solo admins\n" +
+                "El conjunto Blender de 5 vistas está disponible solo para admins por ahora.\n\n" +
+                "Usa el conjunto estándar de 4 vistas en `/multiview`."
+              : "## Admin Only\n" +
+                "The 5-view Blender reference set is available only to admins right now.\n\n" +
+                "Use the default 4-view set for `/multiview`.",
           flags: 64,
         });
         return;
@@ -14666,14 +14880,26 @@ client.on("interactionCreate", async interaction => {
 
       try {
         const angleDescription = useAiFiveViews
-          ? "front, right, back, left and up reference images"
-          : "front, right, back and left reference images";
+          ? (lang === "pt-BR"
+            ? "imagens de referência de frente, direita, costas, esquerda e cima"
+            : lang === "es"
+              ? "imagenes de referencia de frente, derecha, atras, izquierda y arriba"
+              : "front, right, back, left and up reference images")
+          : (lang === "pt-BR"
+            ? "imagens de referência de frente, direita, costas e esquerda"
+            : lang === "es"
+              ? "imagenes de referencia de frente, derecha, atras e izquierda"
+              : "front, right, back and left reference images");
 
         await interaction.editReply(
-          "## Rendering UGC Views\n" +
+          (lang === "pt-BR"
+            ? "## Renderizando views do UGC\n"
+            : lang === "es"
+              ? "## Renderizando vistas del UGC\n"
+              : "## Rendering UGC Views\n") +
           `**UGC:** \`${id}\`\n\n` +
-          `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-          `Preparing ${angleDescription}...`
+          `**${lang === "pt-BR" ? "Configurações de render" : lang === "es" ? "Configuracion de render" : "Render settings"}:**\n${renderSettingsSummary(renderSettings, lang)}\n\n` +
+          `${lang === "pt-BR" ? "Preparando" : lang === "es" ? "Preparando" : "Preparing"} ${angleDescription}...`
         );
 
         const result = await processUGC(id, {
@@ -14688,28 +14914,58 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.editReply({
           content:
-            "## UGC Views Ready\n" +
+            (lang === "pt-BR"
+              ? "## Views do UGC prontas\n"
+              : lang === "es"
+                ? "## Vistas del UGC listas\n"
+                : "## UGC Views Ready\n") +
             `**UGC:** \`${id}\`\n` +
             `**MeshId:** \`${result.meshId}\`\n` +
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
-            `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-            (result.cached ? "**Source:** cached render\n\n" : "") +
+            `**${lang === "pt-BR" ? "Configurações de render" : lang === "es" ? "Configuracion de render" : "Render settings"}:**\n${renderSettingsSummary(renderSettings, lang)}\n\n` +
+            (result.cached
+              ? `**${lang === "pt-BR" ? "Fonte" : lang === "es" ? "Fuente" : "Source"}:** ${lang === "pt-BR" ? "render em cache" : lang === "es" ? "render en cache" : "cached render"}\n\n`
+              : "") +
             (useAiFiveViews
-              ? "Admin 5-view Blender set ready. Use front, right, back and left for `/multiview`; keep the top view as extra reference context."
-              : "Use these four images as references for `/multiview`."),
+              ? (lang === "pt-BR"
+                ? "Conjunto Blender admin com 5 views pronto. Use frente, direita, costas e esquerda no `/multiview`; mantenha a view de cima como contexto extra."
+                : lang === "es"
+                  ? "Conjunto Blender admin con 5 vistas listo. Usa frente, derecha, atras e izquierda en `/multiview`; guarda la vista superior como contexto extra."
+                  : "Admin 5-view Blender set ready. Use front, right, back and left for `/multiview`; keep the top view as extra reference context.")
+              : (lang === "pt-BR"
+                ? "Use estas quatro imagens como referências no `/multiview`."
+                : lang === "es"
+                  ? "Usa estas cuatro imagenes como referencias en `/multiview`."
+                  : "Use these four images as references for `/multiview`.")),
           files,
         });
       } catch (err) {
         console.error(err);
         const errorMessage = String(err.message || err);
         const publicReason = errorMessage.includes("Nao tenho permissao")
-          ? "I do not have permission to access this Roblox item. It may be private, restricted, moderated, or unavailable to the current Roblox cookie."
+          ? (lang === "pt-BR"
+            ? "Não tenho permissão para acessar este item do Roblox. Ele pode estar privado, restrito, moderado ou indisponível para o cookie atual."
+            : lang === "es"
+              ? "No tengo permiso para acceder a este item de Roblox. Puede estar privado, restringido, moderado o no disponible para la cookie actual."
+              : "I do not have permission to access this Roblox item. It may be private, restricted, moderated, or unavailable to the current Roblox cookie.")
           : errorMessage.includes("rate-limiting") || errorMessage.includes("429")
-            ? "Roblox is rate-limiting requests right now. Wait a few minutes and try again."
-            : "I could not render this UGC. Check if the ID is valid, public, and supported.";
+            ? (lang === "pt-BR"
+              ? "O Roblox está limitando requisições agora. Aguarde alguns minutos e tente novamente."
+              : lang === "es"
+                ? "Roblox está limitando las solicitudes ahora. Espera unos minutos e intenta de nuevo."
+                : "Roblox is rate-limiting requests right now. Wait a few minutes and try again.")
+            : (lang === "pt-BR"
+              ? "Não consegui renderizar este UGC. Confira se o ID é válido, público e suportado."
+              : lang === "es"
+                ? "No pude renderizar este UGC. Verifica si el ID es valido, publico y compatible."
+                : "I could not render this UGC. Check if the ID is valid, public, and supported.");
 
         await interaction.editReply(
-          "## View Rendering Failed\n" +
+          (lang === "pt-BR"
+            ? "## Falha ao renderizar views\n"
+            : lang === "es"
+              ? "## Error al renderizar vistas\n"
+              : "## View Rendering Failed\n") +
           publicReason
         );
 
@@ -14799,6 +15055,7 @@ client.on("interactionCreate", async interaction => {
           service: "Reference image generation",
           price,
           balance: balanceBefore,
+          language: languageFor(interaction),
         }));
         return;
       }
@@ -14886,6 +15143,7 @@ client.on("interactionCreate", async interaction => {
           service: "Reference image enhancement",
           price: expectedPrice,
           balance: balanceBefore,
+          language: languageFor(interaction),
         }));
         return;
       }
@@ -15046,6 +15304,7 @@ client.on("interactionCreate", async interaction => {
           service: "Prompt model generation",
           price,
           balance: balanceBefore,
+          language: languageFor(interaction),
         }));
         return;
       }
@@ -15159,6 +15418,7 @@ client.on("interactionCreate", async interaction => {
           service: "Single image AI model",
           price: quote.walletAmount,
           balance: balanceBefore,
+          language: languageFor(interaction),
         }));
         return;
       }
@@ -15173,6 +15433,7 @@ client.on("interactionCreate", async interaction => {
       const actionId = createPendingMultiviewAction({
         actionType: "image_model",
         userId: interaction.user.id,
+        language: languageFor(interaction),
         imagePaths: [imagePath],
         viewPaths: { frente: imagePath },
         texture,
@@ -15261,6 +15522,7 @@ client.on("interactionCreate", async interaction => {
           service: "Multiview AI model",
           price: quote.walletAmount,
           balance: balanceBefore,
+          language: languageFor(interaction),
         }));
         return;
       }
@@ -15305,6 +15567,7 @@ client.on("interactionCreate", async interaction => {
 
       const actionId = createPendingMultiviewAction({
         userId: interaction.user.id,
+        language: languageFor(interaction),
         viewPaths,
         texture,
         enhancement,
@@ -15431,6 +15694,7 @@ client.on("interactionCreate", async interaction => {
           service: "AI remake",
           price: quote.walletAmount,
           balance: balanceBefore,
+          language: languageFor(interaction),
         })
       );
       return;
