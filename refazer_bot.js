@@ -5861,6 +5861,8 @@ const SNIPER_COMMAND_TIMEOUT_MS = Number(process.env.REFAZER_SNIPER_COMMAND_TIME
 const SNIPER_DETAIL_LIMIT = Number(process.env.REFAZER_SNIPER_DETAIL_LIMIT || 8);
 const SNIPER_SEARCH_LIMIT = Number(process.env.REFAZER_SNIPER_SEARCH_LIMIT || 10);
 const SNIPER_MAX_PAGES_WITH_AGE = Number(process.env.REFAZER_SNIPER_MAX_PAGES_WITH_AGE || 12);
+const SNIPER_NORMAL_SCAN_ROWS = Number(process.env.REFAZER_SNIPER_NORMAL_SCAN_ROWS || 600);
+const SNIPER_DEEP_SCAN_ROWS = Number(process.env.REFAZER_SNIPER_DEEP_SCAN_ROWS || 1000);
 const SNIPER_LIMITED_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DETAIL_SCAN_LIMIT || 90);
 const SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT || 180);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 15000);
@@ -6797,10 +6799,14 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
   const categoriesToTry = sniperSearchCategoriesFor(category);
   const aggregateCategoryScan = categoriesToTry.length > 1 && ["accessories"].includes(category);
-  const targetRawRows = Math.max(limit * 8, 60);
-  const depthPages = depth === "deep"
-    ? Math.max(1, SNIPER_MAX_PAGES_WITH_AGE)
-    : Math.max(1, Math.min(3, SNIPER_MAX_PAGES_WITH_AGE));
+  const pageSize = Number(robloxCatalogSearchLimit(true)) || 30;
+  const targetRawRows = Math.max(
+    limit * 8,
+    depth === "deep" ? SNIPER_DEEP_SCAN_ROWS : SNIPER_NORMAL_SCAN_ROWS
+  );
+  const depthPages = Math.max(1, Math.ceil(targetRawRows / pageSize));
+  lastSniperDebug.targetRawRows = targetRawRows;
+  lastSniperDebug.targetPages = depthPages;
   const queryVariants = [
     { keyword, minPrice, maxPrice, reason: "requested filters" },
     keyword ? { keyword: "", minPrice, maxPrice, reason: "without keyword" } : null,
@@ -6854,9 +6860,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         try {
           const collected = [];
           let cursor = "";
-          const maxPages = Number.isFinite(maxAgeDays)
-            ? (aggregateCategoryScan ? depthPages : Math.max(1, SNIPER_MAX_PAGES_WITH_AGE))
-            : (depth === "deep" && aggregateCategoryScan ? 2 : 1);
+          const maxPages = Math.max(
+            depthPages,
+            Number.isFinite(maxAgeDays) ? SNIPER_MAX_PAGES_WITH_AGE : 1
+          );
 
           for (let page = 0; page < maxPages; page += 1) {
             assertSniperDeadline(deadlineAt);
@@ -6881,7 +6888,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           if (collected.length) {
             lastError = null;
             searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
-            if (!aggregateCategoryScan || data.length >= targetRawRows) break;
+            if (data.length >= targetRawRows) break;
           }
         } catch (err) {
           lastError = err;
@@ -6898,13 +6905,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       }
 
       const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
-      if (data.length >= targetRawRows || (!aggregateCategoryScan && data.length) || (softFailure && data.length)) {
+      if (data.length >= targetRawRows || (softFailure && data.length)) {
         break;
       }
     }
 
     const softFailure = isRobloxRateLimitError(lastError) || lastError?.code === "SNIPER_TIMEOUT";
-    if (data.length >= targetRawRows || data.length || (softFailure && data.length)) {
+    if (data.length >= targetRawRows || (softFailure && data.length)) {
       break;
     }
   }
@@ -13027,8 +13034,8 @@ client.on("interactionCreate", async interaction => {
 
       const sniperTimeoutMs = Math.max(
         SNIPER_COMMAND_TIMEOUT_MS,
-        depth === "deep" ? 60000 : SNIPER_COMMAND_TIMEOUT_MS,
-        resultCount > 25 ? 60000 : resultCount > 10 ? 45000 : SNIPER_COMMAND_TIMEOUT_MS
+        depth === "deep" ? 140000 : 95000,
+        resultCount > 25 ? 95000 : resultCount > 10 ? 80000 : SNIPER_COMMAND_TIMEOUT_MS
       );
       const queueWaitMs = Math.max(0, sniperBusyUntil - Date.now());
 
