@@ -7059,7 +7059,11 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   if (!enriched.length && !inferred.length && ["all", "accessories", "clothing", "collectibles"].includes(category)) {
-    for (const item of unique.slice(0, 5)) {
+    const deadlineFallback = sniperDeadlineExceeded(deadlineAt);
+    const fallbackLimit = sniperDeadlineExceeded(deadlineAt)
+      ? Math.max(limit * 3, 15)
+      : 5;
+    for (const item of unique.slice(0, fallbackLimit)) {
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
@@ -7068,8 +7072,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         marketplaceRank: marketplaceRankById.get(String(id)),
         sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
       });
-      candidate.reasons.push("broad fallback: category not confirmed");
+      candidate.reasons.push(deadlineFallback
+        ? "deadline fallback: raw catalog signal"
+        : "broad fallback: category not confirmed");
       inferred.push(candidate);
+      if (inferred.length >= Math.max(limit, 5)) break;
+    }
+    if (deadlineFallback && inferred.length) {
+      lastSniperDebug.partial = true;
+      lastSniperDebug.partialReason = "Built raw candidates after the detail scan deadline was reached.";
     }
   }
 
