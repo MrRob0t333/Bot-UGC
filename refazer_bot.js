@@ -556,6 +556,7 @@ const commands = [
         .addChoices(
           { name: "Auto", value: "auto" },
           { name: "English", value: "en" },
+          { name: "Español", value: "es" },
           { name: "Português do Brasil", value: "pt-BR" },
         )
     )
@@ -3458,7 +3459,7 @@ function walletPreferences(userId) {
 function updateWalletPreferences(userId, updates) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
-  if (updates.language) user.language = updates.language;
+  if (updates.language) user.language = normalizeLanguage(updates.language);
   if (updates.currency && CURRENCIES[updates.currency]) user.currency = updates.currency;
   if (updates.textureTone) user.textureTone = normalizeTextureTone(updates.textureTone);
   if (updates.textureAdjustments) {
@@ -3491,11 +3492,36 @@ function updateWalletPreferences(userId, updates) {
   };
 }
 
+function normalizeLanguage(value) {
+  const lang = cleanEnv(value).toLowerCase();
+  if (lang === "pt" || lang === "pt-br" || lang === "pt_br") return "pt-BR";
+  if (lang === "es" || lang.startsWith("es-") || lang.startsWith("es_")) return "es";
+  if (lang === "en" || lang.startsWith("en-") || lang.startsWith("en_")) return "en";
+  return "auto";
+}
+
+function languageFromDiscordLocale(locale) {
+  const lang = normalizeLanguage(locale);
+  return lang === "auto" ? "" : lang;
+}
+
 function languageFor(interaction) {
   const prefs = walletPreferences(interaction.user.id);
-  if (prefs.language === "pt-BR") return "pt-BR";
-  if (prefs.language === "auto" && prefs.currency === "BRL") return "pt-BR";
+  const saved = normalizeLanguage(prefs.language);
+  if (saved !== "auto") return saved;
+
+  const localeLanguage = languageFromDiscordLocale(interaction.locale || interaction.guildLocale);
+  if (localeLanguage) return localeLanguage;
+
+  if (prefs.currency === "BRL") return "pt-BR";
   return "en";
+}
+
+function languageLabel(language) {
+  if (language === "pt-BR") return "Português do Brasil";
+  if (language === "es") return "Español";
+  if (language === "en") return "English";
+  return "Auto";
 }
 
 function currencyFor(interaction, selectedCurrency) {
@@ -4147,10 +4173,58 @@ function mercadoPagoPixAttachments(payment, requestId) {
   return [new AttachmentBuilder(buffer, { name: `${requestId}_pix_qr.png` })];
 }
 
-function formatMercadoPagoPixMessage({ request, priceLabel, payment }) {
+function formatMercadoPagoPixMessage({ request, priceLabel, payment, language = "pt-BR" }) {
   const transactionData = payment?.point_of_interaction?.transaction_data || {};
   const pixCode = transactionData.qr_code;
   const ticketUrl = transactionData.ticket_url;
+
+  if (language === "pt-BR") {
+    return [
+      "# 🟩 Checkout Pix",
+      "**Seu pedido Pix foi criado com sucesso.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Resumo do Pedido",
+      uiLine("ID do pedido", `\`${request.id}\``),
+      uiLine("Pacote", formatTokenAmount(request.amount)),
+      uiLine("Preço", uiMoney(priceLabel)),
+      uiLine("Status", "Aguardando pagamento Pix"),
+      purchaseExpirationLine(request),
+      "",
+      "## Pagar com Pix",
+      pixCode
+        ? "Escaneie o QR Code abaixo ou copie e cole este código Pix no app do seu banco:"
+        : "Abra a página de pagamento Pix do Mercado Pago abaixo:",
+      pixCode ? `\`\`\`\n${pixCode}\n\`\`\`` : "",
+      ticketUrl ? `Página de pagamento: ${ticketUrl}` : "",
+      "",
+      "Seus Service Credits serão liberados automaticamente após a confirmação do Mercado Pago.",
+    ].filter(Boolean).join("\n");
+  }
+
+  if (language === "es") {
+    return [
+      "# 🟩 Checkout Pix",
+      "**Tu pedido Pix fue creado correctamente.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Resumen del Pedido",
+      uiLine("ID del pedido", `\`${request.id}\``),
+      uiLine("Paquete", formatTokenAmount(request.amount)),
+      uiLine("Precio", uiMoney(priceLabel)),
+      uiLine("Estado", "Esperando pago Pix"),
+      purchaseExpirationLine(request),
+      "",
+      "## Pagar con Pix",
+      pixCode
+        ? "Escanea el QR Code o copia y pega este código Pix en tu app bancaria:"
+        : "Abre la página de pago Pix de Mercado Pago:",
+      pixCode ? `\`\`\`\n${pixCode}\n\`\`\`` : "",
+      ticketUrl ? `Página de pago: ${ticketUrl}` : "",
+      "",
+      "Tus Service Credits se liberarán automáticamente después de la confirmación de Mercado Pago.",
+    ].filter(Boolean).join("\n");
+  }
 
   return [
     "# 🟩 Pix Checkout",
@@ -5114,7 +5188,41 @@ function uiMoney(value) {
   return `**${value}**`;
 }
 
-function formatBalanceMessage({ balance, serviceCredits = "" }) {
+function formatBalanceMessage({ balance, serviceCredits = "", language = "en" }) {
+  if (language === "pt-BR") {
+    return [
+      "# 💎 Carteira Velvet",
+      "**Seus Service Credits estão prontos para usar nos serviços digitais da Velvet.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Saldo",
+      uiLine("Disponível", formatTokenAmount(balance)),
+      serviceCredits ? `\n## Créditos Específicos\n${serviceCredits}` : "",
+      "",
+      "## Ações Rápidas",
+      "> Use `/buy` para adicionar Service Credits.",
+      "> Use `/generate3d` para iniciar um pedido guiado de modelo 3D.",
+      "> Use `/commands` para ver todas as ferramentas disponíveis.",
+    ].filter(Boolean).join("\n");
+  }
+
+  if (language === "es") {
+    return [
+      "# 💎 Billetera Velvet",
+      "**Tus Service Credits están listos para usar en los servicios digitales de Velvet.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Saldo",
+      uiLine("Disponible", formatTokenAmount(balance)),
+      serviceCredits ? `\n## Créditos Específicos\n${serviceCredits}` : "",
+      "",
+      "## Acciones Rápidas",
+      "> Usa `/buy` para añadir Service Credits.",
+      "> Usa `/generate3d` para iniciar una solicitud guiada de modelo 3D.",
+      "> Usa `/commands` para ver todas las herramientas disponibles.",
+    ].filter(Boolean).join("\n");
+  }
+
   return [
     "# 💎 Velvet Wallet",
     "**Your Service Credits are ready to use on Velvet digital services.**",
@@ -5192,9 +5300,49 @@ function formatPurchaseRequestLine(request) {
   ].join(" | ");
 }
 
-function formatCustomerHistoryMessage({ userId, limit = 8 }) {
+function formatCustomerHistoryMessage({ userId, limit = 8, language = "en" }) {
   const transactions = creditHistoryForUser(userId, limit);
   const purchases = recentPurchaseRequestsForUser(userId, 5);
+
+  if (language === "pt-BR") {
+    return [
+      "# 🧾 Histórico Velvet",
+      "**Seus pedidos recentes e movimentações de Service Credits.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## 💎 Movimentações Recentes",
+      transactions.length
+        ? transactions.map(formatTransactionLine).join("\n")
+        : "> Nenhuma movimentação encontrada ainda.",
+      "",
+      "## 🛒 Pedidos Recentes",
+      purchases.length
+        ? purchases.map(formatPurchaseRequestLine).join("\n")
+        : "> Nenhum pedido encontrado ainda.",
+      "",
+      "Use `/order_status id:ID_DO_PEDIDO` para consultar um pedido específico.",
+    ].join("\n");
+  }
+
+  if (language === "es") {
+    return [
+      "# 🧾 Historial Velvet",
+      "**Tus pedidos recientes y movimientos de Service Credits.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## 💎 Actividad Reciente",
+      transactions.length
+        ? transactions.map(formatTransactionLine).join("\n")
+        : "> No se encontró actividad todavía.",
+      "",
+      "## 🛒 Pedidos Recientes",
+      purchases.length
+        ? purchases.map(formatPurchaseRequestLine).join("\n")
+        : "> No se encontraron pedidos todavía.",
+      "",
+      "Usa `/order_status id:ORDER_ID` para revisar un pedido específico.",
+    ].join("\n");
+  }
 
   return [
     "# 🧾 Velvet History",
@@ -5242,7 +5390,109 @@ function findOrderStatus(id, requesterId = null, includeAdmin = false) {
   return null;
 }
 
-function formatOrderStatusMessage(result) {
+function formatOrderStatusMessage(result, language = "en") {
+  if (language === "pt-BR") {
+    if (!result) {
+      return [
+        "# 🔎 Pedido Não Encontrado",
+        "Não encontrei esse pedido ou geração 3D.",
+        "",
+        "> Confira o ID e tente novamente, ou chame o suporte com um print.",
+      ].join("\n");
+    }
+
+    if (result.forbidden) {
+      return [
+        "# 🔒 Pedido Privado",
+        "Esse pedido pertence a outro usuário.",
+        "",
+        "> Apenas o cliente ou a equipe pode consultar esse status.",
+      ].join("\n");
+    }
+
+    if (result.type === "purchase") {
+      const request = result.data;
+      return [
+        "# 🛒 Status do Pedido",
+        uiLine("ID do pedido", `\`${request.id}\``),
+        uiLine("Status", `**${request.status || "pending"}**`),
+        uiLine("Pacote", formatTokenAmount(request.amount)),
+        uiLine("Preço", request.brl ? uiMoney(formatCurrencyFromBrl(request.brl, request.currency || DEFAULT_CURRENCY)) : "manual"),
+        uiLine("Criado em", formatShortDate(request.createdAt)),
+        request.expiresAt ? uiLine("Expira em", formatShortDate(request.expiresAt)) : "",
+        "",
+        request.status === "pending"
+          ? "O pagamento ainda está aguardando confirmação. Os Service Credits são liberados automaticamente após aprovação."
+          : "Esse pedido já foi resolvido.",
+      ].filter(Boolean).join("\n");
+    }
+
+    const action = result.data;
+    return [
+      "# 🎨 Status da Geração 3D",
+      uiLine("ID da solicitação", `\`${action.id || action.actionId || "unknown"}\``),
+      uiLine("Status", `**${action.status || "unknown"}**`),
+      uiLine("Cobrança", action.chargeStatus || "não cobrado"),
+      uiLine("Entrega", action.deliveryStatus || "não entregue"),
+      action.price ? uiLine("Preço", formatTokenAmount(action.price)) : "",
+      action.balanceAfterCharge !== undefined ? uiLine("Saldo após cobrança", formatTokenAmount(action.balanceAfterCharge)) : "",
+      action.lastError ? uiLine("Último problema", `\`${String(action.lastError).slice(0, 500)}\``) : "",
+      "",
+      "Service Credits só são descontados depois que o modelo final é entregue.",
+    ].filter(Boolean).join("\n");
+  }
+
+  if (language === "es") {
+    if (!result) {
+      return [
+        "# 🔎 Pedido No Encontrado",
+        "No encontré ese pedido o solicitud de modelo 3D.",
+        "",
+        "> Revisa el ID e inténtalo de nuevo, o contacta soporte con una captura.",
+      ].join("\n");
+    }
+
+    if (result.forbidden) {
+      return [
+        "# 🔒 Pedido Privado",
+        "Ese pedido pertenece a otro usuario.",
+        "",
+        "> Solo el cliente o el equipo puede revisar este estado.",
+      ].join("\n");
+    }
+
+    if (result.type === "purchase") {
+      const request = result.data;
+      return [
+        "# 🛒 Estado del Pedido",
+        uiLine("ID del pedido", `\`${request.id}\``),
+        uiLine("Estado", `**${request.status || "pending"}**`),
+        uiLine("Paquete", formatTokenAmount(request.amount)),
+        uiLine("Precio", request.brl ? uiMoney(formatCurrencyFromBrl(request.brl, request.currency || DEFAULT_CURRENCY)) : "manual"),
+        uiLine("Creado", formatShortDate(request.createdAt)),
+        request.expiresAt ? uiLine("Expira", formatShortDate(request.expiresAt)) : "",
+        "",
+        request.status === "pending"
+          ? "El pago aún espera confirmación. Los Service Credits se liberan automáticamente después de la aprobación."
+          : "Este pedido ya fue resuelto.",
+      ].filter(Boolean).join("\n");
+    }
+
+    const action = result.data;
+    return [
+      "# 🎨 Estado de Generación 3D",
+      uiLine("ID de solicitud", `\`${action.id || action.actionId || "unknown"}\``),
+      uiLine("Estado", `**${action.status || "unknown"}**`),
+      uiLine("Cobro", action.chargeStatus || "no cobrado"),
+      uiLine("Entrega", action.deliveryStatus || "no entregado"),
+      action.price ? uiLine("Precio", formatTokenAmount(action.price)) : "",
+      action.balanceAfterCharge !== undefined ? uiLine("Saldo después del cobro", formatTokenAmount(action.balanceAfterCharge)) : "",
+      action.lastError ? uiLine("Último problema", `\`${String(action.lastError).slice(0, 500)}\``) : "",
+      "",
+      "Los Service Credits solo se descuentan después de entregar el modelo final.",
+    ].filter(Boolean).join("\n");
+  }
+
   if (!result) {
     return [
       "# 🔎 Order Not Found",
@@ -5293,7 +5543,47 @@ function formatOrderStatusMessage(result) {
   ].filter(Boolean).join("\n");
 }
 
-function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }) {
+function formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink, language = "en" }) {
+  if (language === "pt-BR") {
+    return [
+      "# 🛒 Checkout de Service Credits",
+      "**Seu pedido foi criado com sucesso.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Resumo do Pedido",
+      uiLine("ID do pedido", `\`${request.id}\``),
+      uiLine("Pacote", formatTokenAmount(request.amount)),
+      uiLine("Preço", uiMoney(priceLabel)),
+      uiLine("Status", "Aguardando pagamento"),
+      purchaseExpirationLine(request),
+      "",
+      "## Pagamento Seguro",
+      paymentLink
+        ? `Pague com segurança via **${paymentProvider}**:\n${paymentLink}\n\nSeus Service Credits serão liberados automaticamente após a confirmação.`
+        : "Envie o pagamento no canal indicado pela equipe. Seus Service Credits serão liberados após confirmação manual.",
+    ].join("\n");
+  }
+
+  if (language === "es") {
+    return [
+      "# 🛒 Checkout de Service Credits",
+      "**Tu pedido fue creado correctamente.**",
+      SERVICE_CREDITS_NOTE,
+      "",
+      "## Resumen del Pedido",
+      uiLine("ID del pedido", `\`${request.id}\``),
+      uiLine("Paquete", formatTokenAmount(request.amount)),
+      uiLine("Precio", uiMoney(priceLabel)),
+      uiLine("Estado", "Esperando pago"),
+      purchaseExpirationLine(request),
+      "",
+      "## Pago Seguro",
+      paymentLink
+        ? `Paga de forma segura con **${paymentProvider}**:\n${paymentLink}\n\nTus Service Credits se liberarán automáticamente después de la confirmación.`
+        : "Envía el pago en el canal indicado por el equipo. Tus Service Credits se liberarán después de la confirmación manual.",
+    ].join("\n");
+  }
+
   return [
     "# 🛒 Service Credits Checkout",
     "**Your order was created successfully.**",
@@ -11428,6 +11718,64 @@ formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
     return lines.join("\n");
   }
 
+  if (languageFor(interaction) === "es") {
+    const lines = [
+      "# ✨ Comandos Velvet UGC",
+      "",
+      "**Comandos simples para assets de Roblox, modelos 3D con IA y servicios Velvet.**",
+      "Los pagos usan **Service Credits** solo para servicios digitales de Velvet.",
+      "",
+      "## 🚀 Empieza Aquí",
+      "`/generate3d` - crear modelo 3D guiado con revisión por botones",
+      "`/views` - renderizar referencias front/right/back/left desde un UGC",
+      "`/steal` - copiar assets soportados o templates clásicos",
+      "",
+      "## 💎 Cuenta",
+      "`/balance` - ver tus Service Credits",
+      "`/history` - ver pedidos y actividad reciente",
+      "`/order_status` - consultar un pedido o generación 3D",
+      "`/buy` - comprar Service Credits",
+      "`/subscribe` - ver planes Basic, Premium, Elite y Lifetime",
+      "`/settings` - idioma, moneda y ajustes de render",
+      "",
+      "## 🎨 IA & Referencias",
+      "`/generate_image` - crear una imagen de referencia con prompt",
+      "`/price` - revisar precio antes de pedir",
+      "",
+      "## 📦 Bulk",
+      "`/bulk_steal_clothing` - copiar varios templates clásicos",
+    ];
+
+    if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
+      lines.push("", "## ⭐ Premium / Elite", "`/bulk_steal` - copiar múltiples assets UGC en lote");
+    }
+
+    lines.push(
+      "",
+      "## 🤝 Afiliados & Gifts",
+      "`/affiliate` - ver tu panel de afiliado",
+      "`/gift_create` - crear un gift code restringido",
+      "`/gift_redeem` - canjear un gift code",
+      "`/gift_history` - ver historial de gifts"
+    );
+
+    if (userIsAdmin(interaction)) {
+      lines.push(
+        "",
+        "## 🛡️ Admin",
+        "`/sniper` - radar de mercado UGC",
+        "`/limited_sniper` - radar de limiteds/collectibles",
+        "`/model_views` - renderizar previews desde un modelo subido",
+        "`/admin_status` - revisar APIs, colas y señales de riesgo",
+        "`/admin_buy` - crear checkout con descuento",
+        "`/admin_post_info` - publicar mensajes oficiales"
+      );
+    }
+
+    lines.push("", "## ✅ Flujo Recomendado", "`/views` → `/generate3d` → revisar referencias → crear modelo final");
+    return lines.join("\n");
+  }
+
   const lines = [
     "# ✨ Velvet UGC Commands",
     "",
@@ -12389,7 +12737,9 @@ client.on("interactionCreate", async interaction => {
         renderSettings: Object.keys(renderUpdates).length ? renderUpdates : null,
         advancedTexturePrompt: advancedTexturePrompt ? advancedTexturePrompt === "show" : undefined,
       });
-      const resolvedLanguage = prefs.language === "auto" ? "Auto" : prefs.language;
+      const resolvedLanguage = prefs.language === "auto"
+        ? `Auto → ${languageLabel(languageFor(interaction))}`
+        : languageLabel(prefs.language);
 
       await interaction.reply({
         content:
@@ -12400,7 +12750,7 @@ client.on("interactionCreate", async interaction => {
           `**Texture controls:** ${textureAdjustmentsSummary(prefs.textureAdjustments)}\n\n` +
           `**Render defaults:**\n${renderSettingsSummary(prefs.renderSettings)}\n\n` +
           `**Advanced texture offer:** ${prefs.advancedTexturePrompt ? "Shown before generation" : "Hidden"}\n\n` +
-          `Payment previews will use **${prefs.currency}**. Bot messages will follow your language preference when available.`,
+          `Payment previews will use **${prefs.currency}**. Bot messages will use **${languageLabel(languageFor(interaction))}** when localization is available.`,
         flags: 64,
       });
       return;
@@ -12450,6 +12800,7 @@ client.on("interactionCreate", async interaction => {
         content: formatBalanceMessage({
           balance: walletBalance(interaction.user.id),
           serviceCredits: walletServiceCreditsSummary(interaction.user.id),
+          language: languageFor(interaction),
         }),
         flags: 64,
       });
@@ -12522,7 +12873,7 @@ client.on("interactionCreate", async interaction => {
 
       if (pixPayment) {
         await interaction.reply({
-          content: formatMercadoPagoPixMessage({ request, priceLabel, payment: pixPayment }),
+          content: formatMercadoPagoPixMessage({ request, priceLabel, payment: pixPayment, language: languageFor(interaction) }),
           files: mercadoPagoPixAttachments(pixPayment, request.id),
           flags: 64,
         });
@@ -12530,7 +12881,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       await interaction.reply({
-        content: formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink }),
+        content: formatPurchaseMessage({ request, priceLabel, paymentProvider, paymentLink, language: languageFor(interaction) }),
         flags: 64,
       });
       return;
@@ -12888,7 +13239,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "history") {
       const limit = interaction.options.getInteger("limit") || 8;
       await interaction.reply({
-        content: formatCustomerHistoryMessage({ userId: interaction.user.id, limit }),
+        content: formatCustomerHistoryMessage({ userId: interaction.user.id, limit, language: languageFor(interaction) }),
         flags: 64,
       });
       return;
@@ -12898,7 +13249,7 @@ client.on("interactionCreate", async interaction => {
       const id = interaction.options.getString("id");
       const result = findOrderStatus(id, interaction.user.id, userIsAdmin(interaction));
       await interaction.reply({
-        content: formatOrderStatusMessage(result),
+        content: formatOrderStatusMessage(result, languageFor(interaction)),
         flags: 64,
       });
       return;
