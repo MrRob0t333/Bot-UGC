@@ -658,8 +658,8 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("moeda")
-        .setDescription("Moeda de pagamento")
-        .setRequired(false)
+        .setDescription("Moeda de pagamento. BRL usa Mercado Pago/Pix.")
+        .setRequired(true)
         .addChoices(
           { name: "USD - Dollar", value: "USD" },
           { name: "EUR - Euro", value: "EUR" },
@@ -694,8 +694,8 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("currency")
-        .setDescription("Payment currency")
-        .setRequired(false)
+        .setDescription("Payment currency. BRL uses Mercado Pago/Pix.")
+        .setRequired(true)
         .addChoices(
           { name: "BRL - Real", value: "BRL" },
           { name: "USD - Dollar", value: "USD" },
