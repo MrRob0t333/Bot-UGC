@@ -10003,7 +10003,7 @@ function guidedModelStartButton(triangles = ROBLOX_SAFE_TRIANGLE_LIMIT, prompt =
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(optionId ? `guided3d_start:${triangleTarget}:${optionId}` : `guided3d_start:${triangleTarget}`)
-      .setLabel("Start 3D Model Request")
+      .setLabel("Start 3D Model")
       .setStyle(ButtonStyle.Success)
   );
 }
@@ -10097,11 +10097,11 @@ function guidedModelConfirmButtons(threadId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`guided3d_generate:${threadId}`)
-      .setLabel("Yes, create it")
+      .setLabel("Create Final Model")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId(`guided3d_change:${threadId}`)
-      .setLabel("Change a photo")
+      .setLabel("Change Photo")
       .setStyle(ButtonStyle.Secondary)
   );
 }
@@ -10110,7 +10110,7 @@ function guidedModelPrepareButtons(threadId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`guided3d_prepare:${threadId}`)
-      .setLabel("Check balance and prepare references")
+      .setLabel("Prepare References")
       .setStyle(ButtonStyle.Primary)
   );
 }
@@ -10268,15 +10268,17 @@ async function sendGuidedModelPhotoPrompt(channel, session) {
   const step = guidedModelCurrentStep(session);
   await channel.send(
     [
-      `# ${step.label} Reference`,
+      `# 📸 ${step.label} Reference`,
       `## ${step.prompt}`,
       step.instruction,
       "",
-      "**Reference checklist**",
+      "## ✅ Quick Checklist",
       "> Keep the object centered, sharp and fully visible.",
-      "> Do not crop important parts, outlines, hair, chains, logos or small details.",
-      "> Use matching lighting and distance when possible.",
-      "> If this side is wrong, the final 3D model can also come out wrong.",
+      "> Do not crop hair, outlines, chains, logos, hearts or small details.",
+      "> Keep lighting and camera distance similar to the other sides.",
+      "> The final model follows these references, so wrong sides can create wrong geometry.",
+      "",
+      "**Upload one image attachment in this message.**",
     ].join("\n")
   );
 }
@@ -10303,26 +10305,27 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
 
   await channel.send({
     content:
-      "# Model Review\n" +
-      "**Your references are ready. Review everything before the AI starts.**\n\n" +
-      `**Object type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
+      "# ✅ Final Review\n" +
+      "**Your references are ready. Check every side before starting the AI generation.**\n\n" +
+      "## 🎛️ Model Setup\n" +
+      `**Type:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType] || "Other"}\n` +
       `**Quality:** ${qualityConfig.label}\n` +
       `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement || "none"] || IMAGE_ENHANCEMENTS.none).label}\n` +
-      `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n` +
-      `**Roblox-safe triangles:** ${triangles}\n` +
+      `**Alpha-aware:** ${session.useAlpha ? "On" : "Off"}\n` +
+      `**Roblox-safe target:** ${triangles} triangles\n` +
       modelPromptReviewLine(session.prompt) +
       `**Total:** ${formatTokenAmount(quote.walletAmount)}\n\n` +
       (session.prepWarnings?.length
-        ? "## Prep Notes\n" + session.prepWarnings.map(item => `> ${item}`).join("\n") + "\n\n"
+        ? "## ⚠️ Prep Notes\n" + session.prepWarnings.map(item => `> ${item}`).join("\n") + "\n\n"
         : "") +
-      "## Included\n" +
+      "## 📦 Included\n" +
       `> ${AI_MODEL_INCLUDED_REFERENCE_ROUNDS} reference setup/review round included in this model price.\n` +
       `> Extra reference regeneration, when available, starts at ${formatWalletAmount(AI_MODEL_EXTRA_REFERENCE_REGEN_BRL)}.\n\n` +
-      "## Before Generating\n" +
+      "## 🔒 Before Generating\n" +
       "> Check each side carefully.\n" +
-      "> If one image is wrong, click **Change a photo**.\n" +
-      "> If everything is correct, click **Yes, create it**.\n" +
-      "> Cash refunds are not available after a correctly delivered digital service. If the model fails to deliver, no Service Credits are deducted.\n\n" +
+      "> If one image is wrong, click **Change Photo**.\n" +
+      "> If everything is correct, click **Create Final Model**.\n" +
+      "> Cash refunds are not available after a correctly delivered digital service.\n\n" +
       "**No Service Credits are charged until the final model is delivered.**",
     files,
     components: [guidedModelConfirmButtons(session.threadId), guidedModelThreadControls(session.threadId)],
@@ -10484,8 +10487,9 @@ async function handleGuidedModelPhotoMessage(message, session) {
 
   if (!attachment) {
     await message.channel.send(
-      "## Image Missing\n" +
-      "Please upload the photo as an image attachment using Discord's upload button, then send it here."
+      "# ⚠️ Image Missing\n" +
+      "I need this reference as an **image attachment** before continuing.\n\n" +
+      "> Use Discord's upload button or drag the image into this thread, then send it here."
     );
     return true;
   }
@@ -10510,8 +10514,9 @@ async function handleGuidedModelPhotoMessage(message, session) {
   const validation = validateGuidedModelImage(buffer);
   if (!validation.ok) {
     await message.channel.send(
-      `## ${validation.level === "yellow" ? "Almost There" : "Image Not Accepted"}\n` +
-      `${validation.reason}`
+      `# ${validation.level === "yellow" ? "⚠️ Almost There" : "❌ Image Not Accepted"}\n` +
+      `${validation.reason}\n\n` +
+      "Please send a clearer image for this side so the final 3D model has a better chance of matching the reference."
     );
     return true;
   }
@@ -10530,8 +10535,9 @@ async function handleGuidedModelPhotoMessage(message, session) {
   session.updatedAt = Date.now();
 
   await message.channel.send(
-    `## ${publicViewName(view)} Accepted\n` +
-    "Reference saved. I will prepare the final review images after all four sides are uploaded."
+    `# ✅ ${publicViewName(view)} Accepted\n` +
+    "Reference saved and locked in the correct order.\n\n" +
+    "> I will show the final review after all four sides are uploaded."
   );
 
   if (guidedModelCompleted(session)) {
@@ -11149,6 +11155,80 @@ formatCommandsHelp = function formatCommandsHelpClean(interaction) {
   return lines.join("\n");
 };
 
+formatCommandsHelp = function formatCommandsHelpPolished(interaction) {
+  const lines = [
+    "# ✨ Velvet UGC Commands",
+    "",
+    "**Create, copy and remake Roblox-ready assets directly in Discord.**",
+    "Payments use **Service Credits** for Velvet digital services only.",
+    "",
+    "## 🚀 Start Here",
+    "`/generate3d` - Guided 3D model request with review buttons",
+    "`/views` - Render front/right/back/left references from a UGC ID",
+    "`/price` - Preview a service price before ordering",
+    "",
+    "## 💎 Account",
+    "`/balance` - View your Service Credits",
+    "`/buy` - Buy Service Credits",
+    "`/subscribe` - View Basic, Premium, Elite and Lifetime plans",
+    "`/settings` - Language, currency and render defaults",
+    "",
+    "## 📦 Copy Services",
+    "`/steal` - Copy UGC asset files or classic clothing templates automatically",
+    "`/bulk_steal_clothing` - Copy multiple clothing templates in bulk",
+    "",
+    "## 🎨 Model Tools",
+    "`/remake` - Remake a UGC from an item ID",
+    "`/image_model` - Generate a model from one reference image",
+    "`/multiview` - Generate from front/right/back/left images",
+    "`/enhance_images` - Clean reference images before multiview",
+    "`/model_views` - Render preview images from an uploaded model",
+  ];
+
+  if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) {
+    lines.push(
+      "",
+      "## ⭐ Premium / Elite",
+      "`/bulk_steal` - Copy multiple UGC assets in bulk",
+      "`/bulk_remake` - Request up to 10 remakes at once"
+    );
+  }
+
+  lines.push(
+    "",
+    "## 🤝 Affiliate & Gifts",
+    "`/affiliate` - View your affiliate dashboard",
+    "`/affiliate_register` - Register your Discord invite",
+    "`/affiliate_apply` - Apply an affiliate code or invite",
+    "`/affiliate_redeem` - Convert commission into Service Credits",
+    "`/gift_create` - Create a restricted gift code",
+    "`/gift_redeem` - Redeem a gift code",
+    "`/gift_history` - View your gift history"
+  );
+
+  if (userIsAdmin(interaction)) {
+    lines.push(
+      "",
+      "## 🛡️ Admin",
+      "`/sniper` - Market radar for high-potential UGCs",
+      "`/limited_sniper` - Limited / collectible market radar",
+      "`/admin_buy` - Create a discounted checkout",
+      "`/admin_add` - Add Service Credits",
+      "`/admin_remove` - Remove Service Credits",
+      "`/admin_purchases` - Review purchases",
+      "`/admin_post_info` - Post official channel messages"
+    );
+  }
+
+  lines.push(
+    "",
+    "## ✅ Recommended Flow",
+    "`/views` → `/generate3d` → review photos → create final model"
+  );
+
+  return lines.join("\n");
+};
+
 function parseWebhookBody(req) {
   return new Promise(resolve => {
     let body = "";
@@ -11404,22 +11484,21 @@ client.on("interactionCreate", async interaction => {
 
       await thread.send({
         content:
-          "# 3D Model Request\n" +
-          `Welcome ${interaction.user}. This private thread keeps your references, review and delivery organized.\n\n` +
-          "## Process\n" +
-          "> Choose the model type.\n" +
-          "> Choose the detail level.\n" +
-          "> Choose whether alpha/cutout awareness should be used.\n" +
-          `> Triangle target: **${triangles}**.\n` +
-          (prompt ? "> Custom prompt: enabled.\n" : "") +
-          "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
-          "> Review everything before generation starts.\n\n" +
-          "## Important\n" +
-          "> The AI follows the images you approve. Wrong side, cropped image or missing detail can affect the final model.\n" +
-          "> Service Credits are charged only after a final model is delivered.\n\n" +
-          `**Thread window:** ${formatHoursDuration(closeHours)}. You can close it earlier with **Close request**.\n\n` +
-          "## Step 1\n" +
-          "Choose the closest model type:",
+          "# ✨ 3D Model Request\n" +
+          `Welcome ${interaction.user}. This thread keeps your references, review and final delivery organized.\n\n` +
+          "## 🔁 Flow\n" +
+          "> 1. Choose the model type and quality preset.\n" +
+          "> 2. Upload **Front**, **Right**, **Left** and **Back** references one by one.\n" +
+          "> 3. Review the prepared images before generation starts.\n" +
+          "> 4. Receive the final Roblox-ready GLB in this channel.\n\n" +
+          "## ⚙️ Current Setup\n" +
+          `**Triangle target:** ${triangles}\n` +
+          `**Custom prompt:** ${prompt ? "Enabled" : "Off"}\n` +
+          `**Thread window:** ${formatHoursDuration(closeHours)}\n\n` +
+          "## 🔒 Billing\n" +
+          "**Service Credits are charged only after a final model is delivered.**\n\n" +
+          "## 1️⃣ Choose Model Type\n" +
+          "Pick the closest option so the bot can use safer prompts and review language:",
         components: [...guidedModelTypeButtons(thread.id), guidedModelThreadControls(thread.id)],
       });
       await interaction.editReply(`I created your private request thread: ${thread}`);
@@ -11479,12 +11558,13 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.update({
         content:
-          "# Quality Level\n" +
+          "# 2️⃣ Quality Preset\n" +
           `**Type selected:** ${GUIDED_MODEL_TYPE_LABELS[session.objectType]}\n\n` +
-          "Choose how strongly the AI should focus on details.\n\n" +
-          "> **Standard** is the safest value for most UGC-style models.\n" +
-          "> **Sharper** is recommended for small accessories, symbols, hair pieces and details.\n" +
-          "> **Max** is for the strongest detail pass when the references are clean and consistent.",
+          "Choose how much detail the AI should preserve.\n\n" +
+          "## Recommended\n" +
+          "> **Sharper** is the best default for most paid orders.\n" +
+          "> **Standard** is safer for simple shapes and rough references.\n" +
+          "> **Max** is for clean references with small details, symbols, hair pieces or accessories.",
         components: guidedModelQualityButtons(actionId),
       });
       return;
@@ -11508,12 +11588,13 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.update({
         content:
-          "# Alpha Option\n" +
+          "# 3️⃣ Alpha / Cutout Option\n" +
           `**Quality selected:** ${qualityConfig.label}\n\n` +
-          "Choose how the AI should treat transparent/cutout details.\n\n" +
-          "> **Standard** is recommended for most solid objects.\n" +
-          "> **Alpha-aware** can help with transparent PNGs, hair gaps, floating pieces, stickers, hearts and thin details.\n\n" +
-          "**Tip:** if the object is simple and fully solid, use **Standard**.",
+          "Choose how the AI should treat transparent or floating details.\n\n" +
+          "## Recommended\n" +
+          "> **Standard** for solid hats, heads, bodies and most accessories.\n" +
+          "> **Alpha-aware** only for transparent PNGs, hair gaps, stickers, hearts, chains or thin floating pieces.\n\n" +
+          "**When unsure, use Standard.**",
         components: guidedModelAlphaButtons(actionId),
       });
       return;
@@ -11536,15 +11617,15 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.update({
         content:
-          "# Reference Prep\n" +
+          "# 4️⃣ Reference Prep\n" +
           `**Alpha-aware generation:** ${session.useAlpha ? "On" : "Off"}\n\n` +
-          "Choose how the bot should prepare your images before the model generation.\n\n" +
+          "Choose how the bot should prepare your images before generation.\n\n" +
           "> **Use originals** keeps your files exactly as sent.\n" +
-          "> **Clean references** applies a safe local cleanup for clarity and sharper readable references. It does not use generative AI, so it is safer for shape preservation.\n" +
+          "> **Clean references** applies safe local cleanup for sharper, clearer references.\n" +
           (OPENAI_API_KEY
-            ? "> **AI enhance** uses a conservative AI cleanup prompt to improve material readability while trying to preserve the exact shape.\n\n"
+            ? "> **AI enhance** can improve texture readability, but may change the image if the reference is difficult.\n\n"
             : "\n") +
-          "**Recommended:** use **Clean references** for normal screenshots. Use **AI enhance** only when the image needs stronger texture/detail cleanup.",
+          "**Recommended:** use **Clean references** for normal screenshots. Use **AI enhance** only when you intentionally want stronger cleanup.",
         components: guidedModelEnhancementButtons(actionId),
       });
       return;
@@ -11577,7 +11658,7 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.update({
         content:
-          "# References\n" +
+          "# 📸 Upload References\n" +
           `**Reference prep:** ${(IMAGE_ENHANCEMENTS[session.enhancement] || IMAGE_ENHANCEMENTS.none).label}\n\n` +
           "Send the four references one by one. I will ask for each side in order.\n\n" +
           "**Do not send all sides in one message.** This keeps the order clean and prevents wrong-side generations.",
@@ -12933,19 +13014,19 @@ client.on("interactionCreate", async interaction => {
       const prompt = normalizeModelGenerationPrompt(interaction.options.getString("prompt"));
       await interaction.reply({
         content:
-          "# Start a 3D Model Request\n" +
-          "**Use this guided flow if you want the easiest way to create a model.**\n\n" +
-          "## What is included\n" +
+          "# ✨ Start a 3D Model Request\n" +
+          "**The easiest way to create a Roblox-ready 3D model with guided review.**\n\n" +
+          "## 📦 Included\n" +
           "> Send **Front**, **Right**, **Left** and **Back** references.\n" +
           "> Choose the model type, detail level and alpha option.\n" +
           `> Triangle target: **${triangles}**.\n` +
           (prompt ? "> Custom prompt: enabled.\n" : "") +
           "> Review all images before the AI starts.\n" +
           "> Your final model is delivered only after generation succeeds.\n\n" +
-          "## Payment\n" +
+          "## 🔒 Payment\n" +
           "> No Service Credits are charged until the final model is delivered.\n" +
           "> If your images are wrong and you approve them anyway, the final result may also be wrong.\n\n" +
-          "Click below to open your private request thread.",
+          "**Click below to open your private request thread.**",
         components: [guidedModelStartButton(triangles, prompt)],
         flags: 64,
       });
@@ -12965,18 +13046,18 @@ client.on("interactionCreate", async interaction => {
 
       await channel.send({
         content:
-          "# Create Your 3D Model\n" +
-          "**Generate a 3D model from images directly inside Discord.**\n\n" +
-          "## How it works\n" +
-          "> Click **Start 3D Model Request**.\n" +
+          "# ✨ Create Your 3D Model\n" +
+          "**Generate a Roblox-ready 3D model from images directly inside Discord.**\n\n" +
+          "## 🔁 How It Works\n" +
+          "> Click **Start 3D Model**.\n" +
           "> Choose type, quality and alpha option.\n" +
           "> Send **Front**, **Right**, **Left** and **Back** one by one.\n" +
           "> Review the references before generation starts.\n\n" +
-          "## Launch offer\n" +
+          "## 💎 Launch Offer\n" +
           `> First ${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT} delivered AI models: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_FIRST_PRICE_BRL)} each**.\n` +
           `> After that: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_REGULAR_PRICE_BRL)} each**.\n` +
           `> Special role price: **${formatWalletAmount(AI_MODEL_LAUNCH_PROMO_ROLE_PRICE_BRL)} each** after the first ${AI_MODEL_LAUNCH_PROMO_FIRST_LIMIT}.\n\n` +
-          "## Payment\n" +
+          "## 🔒 Payment\n" +
           "**No Service Credits are charged until the final model is delivered.**",
         components: [guidedModelStartButton()],
       });
