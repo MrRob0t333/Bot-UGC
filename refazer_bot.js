@@ -5877,6 +5877,16 @@ function formatInsufficientBalanceMessage({ service, price, balance, language = 
   ].join("\n");
 }
 
+async function replyOrEditInteraction(interaction, options) {
+  if (interaction.deferred || interaction.replied) {
+    if (typeof options === "string") return interaction.editReply(options);
+    const editOptions = { ...options };
+    delete editOptions.flags;
+    return interaction.editReply(editOptions);
+  }
+  return interaction.reply(options);
+}
+
 function formatOfficialGuide(language) {
   if (language === "pt-BR") {
     return [
@@ -8251,7 +8261,7 @@ async function handleClassicClothingSteal(interaction, idInput, sourceCommand = 
   const balanceBefore = walletAvailableBalance(interaction.user.id, "clothing");
 
   if (balanceBefore < quote.walletAmount) {
-    await interaction.reply({
+    await replyOrEditInteraction(interaction, {
       content: formatInsufficientBalanceMessage({
         service: lang === "pt-BR" ? "Copiar template de roupa" : lang === "es" ? "Copiar template de ropa" : "Copy clothing template",
         price: quote.walletAmount,
@@ -8263,7 +8273,7 @@ async function handleClassicClothingSteal(interaction, idInput, sourceCommand = 
     return;
   }
 
-  await interaction.reply(
+  await replyOrEditInteraction(interaction,
     (lang === "pt-BR" ? "## Copiar roupa\n" : lang === "es" ? "## Copiar ropa\n" : "## Copy Clothing\n") +
     `**Input:** \`${idInput}\`\n` +
     `${allowanceText}\n` +
@@ -14404,6 +14414,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "copiar" || interaction.commandName === "steal") {
       const lang = languageFor(interaction);
       const id = interaction.options.getString("id").trim();
+      await interaction.deferReply();
       const target = await classifyStealTarget(id);
 
       if (target.kind === "clothing") {
@@ -14416,7 +14427,7 @@ client.on("interactionCreate", async interaction => {
       const balanceBefore = walletAvailableBalance(interaction.user.id, "copy");
 
       if (balanceBefore < quote.walletAmount) {
-        await interaction.reply({
+        await interaction.editReply({
           content: lang === "pt-BR"
             ? `## ⚠️ Saldo insuficiente\n` +
               `**Serviço:** Copiar asset original\n` +
@@ -14437,12 +14448,11 @@ client.on("interactionCreate", async interaction => {
                 `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
                 `**Your balance:** ${formatTokenAmount(balanceBefore)}\n\n` +
                 "Use `/buy` to add Service Credits.",
-          flags: 64,
         });
         return;
       }
 
-      await interaction.reply(
+      await interaction.editReply(
         lang === "pt-BR"
           ? `## 📎 Copiar Asset\n` +
             `**UGC:** \`${id}\`\n` +
