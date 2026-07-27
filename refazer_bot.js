@@ -3010,7 +3010,7 @@ function brlToWalletTokens(value) {
 }
 
 function formatWalletAmount(value) {
-  return `${brlToWalletTokens(value)} ${WALLET_TOKEN_NAME}`;
+  return formatTokenAmount(brlToWalletTokens(value));
 }
 
 function normalizeTextureOption(texture) {
@@ -5370,7 +5370,7 @@ function resolveWithdrawal({ requestId, action, actorId, reason }) {
 }
 
 function formatTokenAmount(amount) {
-  return `${Number(amount || 0).toLocaleString("en-US")} ${WALLET_TOKEN_NAME}`;
+  return `${Number(amount || 0).toLocaleString("pt-BR")} ${WALLET_TOKEN_NAME}`;
 }
 
 function uiLine(label, value) {
