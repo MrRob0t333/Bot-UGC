@@ -6788,7 +6788,7 @@ function formatAdminSystemStatusMessage() {
     "**Operational snapshot for the bot, APIs and pending queues.**",
     "",
     "## 🤖 AI Engines",
-    uiLine("Model provider", modelEngineLabel()),
+    uiLine("Model provider", activeModelEngineLabel()),
     uiLine("Hyper3D key", HYPER3D_API_KEY ? "configured" : "missing"),
     uiLine("OpenAI image key", OPENAI_API_KEY ? "configured" : "missing"),
     uiLine("Tripo fallback", TRIPO_API_KEY || TRIPO_AI_ENDPOINT ? "configured" : "missing"),
