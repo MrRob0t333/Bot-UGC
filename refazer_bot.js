@@ -2526,6 +2526,56 @@ function applyAiModelLaunchPromo(interaction, quote) {
   };
 }
 
+function quoteSnapshotFromQuote(quote, settings = {}) {
+  return {
+    walletAmount: Number(quote.walletAmount) || 0,
+    price: Number(quote.price ?? quote.priceBrl) || 0,
+    priceBrl: Number(quote.priceBrl ?? quote.price) || 0,
+    originalWalletAmount: Number(quote.originalWalletAmount) || null,
+    originalPrice: Number(quote.originalPrice) || null,
+    estimatedProfitBrl: Number(quote.estimatedProfitBrl) || null,
+    lines: Array.isArray(quote.lines) ? quote.lines.slice() : [],
+    promoExtraLines: Array.isArray(quote.promoExtraLines) ? quote.promoExtraLines.slice() : [],
+    plan: quote.plan || null,
+    planLabel: quote.planLabel || null,
+    promo: quote.promo ? {
+      used: quote.promo.used,
+      remainingFirstSlots: quote.promo.remainingFirstSlots,
+      firstLimit: quote.promo.firstLimit,
+      roleDiscountActive: quote.promo.roleDiscountActive,
+      priceBrl: quote.promo.priceBrl,
+      walletAmount: quote.promo.walletAmount,
+      label: quote.promo.label,
+    } : null,
+    settings: {
+      mode: settings.mode || null,
+      texture: settings.texture || null,
+      triangles: settings.triangles || null,
+      enhancement: settings.enhancement || null,
+      modelQuality: settings.modelQuality || null,
+      advancedTexture: settings.advancedTexture || null,
+    },
+    lockedAt: new Date().toISOString(),
+  };
+}
+
+function quoteSnapshotMatches(snapshot, settings = {}) {
+  if (!snapshot?.walletAmount || !snapshot.settings) return false;
+  return ["mode", "texture", "triangles", "enhancement", "modelQuality", "advancedTexture"].every(key =>
+    String(snapshot.settings[key] ?? "") === String(settings[key] ?? "")
+  );
+}
+
+function quoteWithSnapshot(fallbackQuote, snapshot) {
+  if (!snapshot?.walletAmount) return fallbackQuote;
+  return {
+    ...fallbackQuote,
+    ...snapshot,
+    lines: Array.isArray(snapshot.lines) ? snapshot.lines.slice() : fallbackQuote.lines,
+    promoExtraLines: Array.isArray(snapshot.promoExtraLines) ? snapshot.promoExtraLines.slice() : fallbackQuote.promoExtraLines,
+  };
+}
+
 function estimatedApiCostBrl({ mode, texture, lowPoly, enhancement }) {
   texture = normalizeTextureOption(texture);
   const enhancementConfig = IMAGE_ENHANCEMENTS[enhancement] || IMAGE_ENHANCEMENTS.none;
@@ -11087,6 +11137,14 @@ async function sendGuidedModelSummary(channel, session, interactionLike) {
   });
 
   session.quoteAmount = quote.walletAmount;
+  session.quoteSnapshot = quoteSnapshotFromQuote(quote, {
+    mode: "guided",
+    texture: "standard",
+    triangles,
+    enhancement: session.enhancement || "none",
+    modelQuality,
+    advancedTexture: "none",
+  });
   const files = multiviewReviewAttachments(session.viewPaths);
 
   await channel.send({
@@ -11444,14 +11502,19 @@ async function startPendingMultiviewGeneration(interaction, actionId, action, { 
   }
 
   const advancedTextureCfg = advancedTextureConfig(action.advancedTexture);
-  const quote = calculatePrice(interaction, {
+  const quoteSettings = {
     mode: priceMode,
     texture: action.texture,
     triangles: action.triangles,
     enhancement: action.enhancement,
     modelQuality: action.modelQuality,
     advancedTexture: action.advancedTexture,
-  });
+  };
+  const calculatedQuote = calculatePrice(interaction, quoteSettings);
+  const quote = quoteSnapshotMatches(action.quoteSnapshot, quoteSettings)
+    ? quoteWithSnapshot(calculatedQuote, action.quoteSnapshot)
+    : calculatedQuote;
+  action.quoteSnapshot = quoteSnapshotFromQuote(quote, quoteSettings);
 
   const balanceBefore = walletAvailableBalance(interaction.user.id, serviceKey);
   if (balanceBefore < quote.walletAmount) {
@@ -12736,6 +12799,7 @@ client.on("interactionCreate", async interaction => {
         priceMode: "guided",
         serviceKey: "multiview",
         guidedThreadId: session.threadId,
+        quoteSnapshot: session.quoteSnapshot,
       });
       const action = pendingMultiviewActions.get(generationActionId);
       await startPendingMultiviewGeneration(interaction, generationActionId, action, { updateMode: "review" });
@@ -15479,6 +15543,14 @@ client.on("interactionCreate", async interaction => {
         serviceKey: "image_model",
         serviceLabel: "Single image AI model",
         generationMode: "image",
+        quoteSnapshot: quoteSnapshotFromQuote(quote, {
+          mode: "single",
+          texture,
+          triangles,
+          enhancement,
+          modelQuality,
+          advancedTexture,
+        }),
       });
 
       const textureLabel = texture === "none" ? "No texture" : "Standard";
@@ -15608,6 +15680,14 @@ client.on("interactionCreate", async interaction => {
         textureSource: "none",
         advancedTexturePrompted: false,
         waitingTextureDecision: false,
+        quoteSnapshot: quoteSnapshotFromQuote(quote, {
+          mode: "multiview",
+          texture,
+          triangles,
+          enhancement,
+          modelQuality,
+          advancedTexture,
+        }),
       });
 
       await interaction.editReply({
