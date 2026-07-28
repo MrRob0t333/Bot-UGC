@@ -6650,6 +6650,11 @@ const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
 const SNIPER_HISTORY_WINDOWS = parseIdListEnv(
   process.env.REFAZER_SNIPER_HISTORY_WINDOWS || "yesterday,week"
 );
+const SNIPER_ALERT_CHANNEL_ID = cleanEnv(process.env.REFAZER_SNIPER_ALERT_CHANNEL_ID, "1531516456452231228");
+const SNIPER_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_ALERT_MIN_RANK_GAIN || 150);
+const SNIPER_ALERT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_ALERT_MAX_CURRENT_RANK || 250);
+const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AGE_DAYS || 90);
+const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
 let sniperHistoryWorkerRunning = false;
@@ -6810,6 +6815,8 @@ function formatAdminSystemStatusMessage() {
     uiLine("History windows", SNIPER_HISTORY_WINDOWS.join(", ") || "none"),
     uiLine("Last history run", sniperHistoryLastRun || "never"),
     uiLine("Last history error", sniperHistoryLastError || "none"),
+    uiLine("Alert channel", SNIPER_ALERT_CHANNEL_ID ? `<#${SNIPER_ALERT_CHANNEL_ID}>` : "disabled"),
+    uiLine("Alert threshold", `+${SNIPER_ALERT_MIN_RANK_GAIN} ranks into top ${SNIPER_ALERT_MAX_CURRENT_RANK}`),
     "",
     "Use `/admin_roblox_status` for detailed Roblox cookie diagnostics.",
   ].join("\n");
@@ -7692,6 +7699,89 @@ function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPr
   return candidates.length ? candidates : null;
 }
 
+function buildSniperRankAlerts({ previousScan, scan }) {
+  if (!previousScan?.items?.length || !scan?.items?.length) return [];
+
+  const previousById = new Map(
+    previousScan.items
+      .filter(item => item?.id && Number.isFinite(Number(item.marketplaceRank)))
+      .map(item => [String(item.id), Number(item.marketplaceRank)])
+  );
+  const alerts = [];
+
+  for (const item of scan.items) {
+    const id = String(item.id || "");
+    if (!id || !previousById.has(id)) continue;
+    const previousRank = previousById.get(id);
+    const currentRank = Number(item.marketplaceRank);
+    const rankGain = previousRank - currentRank;
+    if (!Number.isFinite(currentRank) || !Number.isFinite(rankGain)) continue;
+    if (rankGain < SNIPER_ALERT_MIN_RANK_GAIN) continue;
+    if (currentRank > SNIPER_ALERT_MAX_CURRENT_RANK) continue;
+    if (SNIPER_ALERT_MAX_AGE_DAYS && !sniperAgeMatchesFilter(item, {}, SNIPER_ALERT_MAX_AGE_DAYS)) continue;
+
+    alerts.push({
+      item,
+      previousRank,
+      currentRank,
+      rankGain,
+      window: scan.window,
+      category: scan.category,
+      collectedAt: scan.collectedAt,
+    });
+  }
+
+  return alerts
+    .sort((a, b) => {
+      if (b.rankGain !== a.rankGain) return b.rankGain - a.rankGain;
+      return a.currentRank - b.currentRank;
+    })
+    .slice(0, Math.max(1, SNIPER_ALERT_MAX_PER_SCAN));
+}
+
+function formatSniperAlert(alert) {
+  const item = alert.item;
+  const candidate = buildSniperCandidate(item, {}, alert.category, true, {
+    marketplaceRank: alert.currentRank,
+    sourceCategory: alert.category,
+  });
+  const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+  const ageText = age === null ? "unknown age" : `${age}d old`;
+  const favorites = candidate.favorites ? `${candidate.favorites.toLocaleString("en-US")} favorites` : "favorites unavailable";
+  const price = candidate.price === null ? "unknown price" : `${candidate.price} Robux`;
+
+  return [
+    "# 🎯 Fast-Rising UGC Alert",
+    `**${String(candidate.name || `Item ${candidate.id}`).slice(0, 80)}**`,
+    `**Creator:** ${String(candidate.creator || "Unknown").slice(0, 60)}`,
+    "",
+    `**Window:** ${SNIPER_WINDOW_LABELS[alert.window] || alert.window}`,
+    `**Category:** ${SNIPER_CATEGORY_LABELS[alert.category] || alert.category}`,
+    `**Rank movement:** #${alert.previousRank} → #${alert.currentRank} (**+${alert.rankGain}**)`,
+    `**Signals:** ${favorites} | ${price} | ${ageText}`,
+    `**Score:** ${candidate.score}/100`,
+    "",
+    `https://www.roblox.com/catalog/${candidate.id}`,
+    `Copy views: \`${sniperViewsCommand(candidate.id)}\``,
+  ].join("\n");
+}
+
+async function sendSniperRankAlerts(alerts) {
+  if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
+  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    console.warn(`[sniper_history] alert channel not found or not text: ${SNIPER_ALERT_CHANNEL_ID}`);
+    return;
+  }
+
+  for (const alert of alerts) {
+    await channel.send({ content: formatSniperAlert(alert) }).catch(err => {
+      console.warn("[sniper_history] could not send alert:", err.message || err);
+    });
+    await wait(750);
+  }
+}
+
 function addSniperDebugSample(reason, item, details = {}) {
   if (!lastSniperDebug?.samples || lastSniperDebug.samples.length >= 8) return;
 
@@ -8208,7 +8298,10 @@ function saveSniperHistoryScan({ window, category, rows }) {
   current.version = 1;
   current.updatedAt = collectedAt;
   current.scans ||= {};
-  current.scans[sniperHistoryScanKey(window, category)] = scan;
+  const scanKey = sniperHistoryScanKey(window, category);
+  const previousScan = current.scans[scanKey] || null;
+  const alerts = buildSniperRankAlerts({ previousScan, scan });
+  current.scans[scanKey] = scan;
   writeSniperHistoryCurrent(current);
   appendSniperHistorySnapshot({
     type: "scan",
@@ -8219,7 +8312,7 @@ function saveSniperHistoryScan({ window, category, rows }) {
     uniqueRows: compactItems.length,
     topIds: compactItems.slice(0, 50).map(item => item.id),
   });
-  return scan;
+  return { scan, alerts };
 }
 
 function pruneSniperHistorySnapshots() {
@@ -8248,7 +8341,7 @@ async function runSniperHistoryWorkerCycle() {
   if (!SNIPER_HISTORY_ENABLED || sniperHistoryWorkerRunning) return;
   sniperHistoryWorkerRunning = true;
   const startedAt = Date.now();
-  const summary = { scans: 0, rows: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
+  const summary = { scans: 0, rows: 0, alerts: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
 
   try {
     for (const window of SNIPER_HISTORY_WINDOWS) {
@@ -8262,11 +8355,13 @@ async function runSniperHistoryWorkerCycle() {
         }
 
         const rows = await collectSniperHistoryRows({ window, category });
-        const scan = saveSniperHistoryScan({ window, category, rows });
+        const { scan, alerts } = saveSniperHistoryScan({ window, category, rows });
         summary.scans += 1;
         summary.rows += scan.uniqueRows;
+        summary.alerts += alerts.length;
         summary.categories.push(category);
-        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows}`);
+        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}`);
+        await sendSniperRankAlerts(alerts);
       }
     }
 
