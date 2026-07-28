@@ -6640,8 +6640,8 @@ const SNIPER_HISTORY_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_HISTORY_ENABL
 const SNIPER_HISTORY_DEPTH = Number(process.env.REFAZER_SNIPER_HISTORY_DEPTH || 1000);
 const SNIPER_HISTORY_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_INTERVAL_MS || 30 * 60 * 1000);
 const SNIPER_HISTORY_START_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_START_DELAY_MS || 60 * 1000);
-const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_PAGE_DELAY_MS || 3000);
-const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 15000);
+const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_PAGE_DELAY_MS || 6000);
+const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 30000);
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
 const SNIPER_HISTORY_RETENTION_DAYS = Number(process.env.REFAZER_SNIPER_HISTORY_RETENTION_DAYS || 7);
 const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
@@ -8251,28 +8251,41 @@ async function collectSniperHistoryRows({ window, category, depth = SNIPER_HISTO
   const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
   const rows = [];
   let cursor = "";
+  let partialReason = "";
 
   for (let page = 0; page < maxPages; page += 1) {
     if (page > 0 && SNIPER_HISTORY_PAGE_DELAY_MS > 0) {
       await wait(SNIPER_HISTORY_PAGE_DELAY_MS);
     }
 
-    const params = new URLSearchParams({ ...baseParams, ...normalizedAttemptParams });
-    if (cursor) params.set("Cursor", cursor);
-    const endpoint = useV2Search ? "v2" : "v1";
-    const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/${endpoint}/search/items/details?${params.toString()}`, {
-      maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
-    });
-    const pageRows = Array.isArray(response.data) ? response.data : [];
-    rows.push(...pageRows);
-    cursor = response.nextPageCursor || "";
-    if (!cursor || !pageRows.length || rows.length >= depth) break;
+    try {
+      const params = new URLSearchParams({ ...baseParams, ...normalizedAttemptParams });
+      if (cursor) params.set("Cursor", cursor);
+      const endpoint = useV2Search ? "v2" : "v1";
+      const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/${endpoint}/search/items/details?${params.toString()}`, {
+        maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
+      });
+      const pageRows = Array.isArray(response.data) ? response.data : [];
+      rows.push(...pageRows);
+      cursor = response.nextPageCursor || "";
+      if (!cursor || !pageRows.length || rows.length >= depth) break;
+    } catch (err) {
+      if (rows.length && isRobloxRateLimitError(err)) {
+        partialReason = String(err.message || err).slice(0, 300);
+        console.warn(`[sniper_history] partial ${window}/${category}: saved ${rows.length} rows after rate limit on page ${page + 1}`);
+        break;
+      }
+      throw err;
+    }
   }
 
-  return rows.slice(0, depth);
+  return {
+    rows: rows.slice(0, depth),
+    partialReason,
+  };
 }
 
-function saveSniperHistoryScan({ window, category, rows }) {
+function saveSniperHistoryScan({ window, category, rows, partialReason = "" }) {
   const current = readSniperHistoryCurrent();
   const collectedAt = new Date().toISOString();
   const compactItems = [];
@@ -8292,6 +8305,8 @@ function saveSniperHistoryScan({ window, category, rows }) {
     depth: SNIPER_HISTORY_DEPTH,
     rows: rows.length,
     uniqueRows: compactItems.length,
+    partial: Boolean(partialReason),
+    partialReason,
     items: compactItems,
   };
 
@@ -8354,13 +8369,18 @@ async function runSniperHistoryWorkerCycle() {
           await wait(SNIPER_HISTORY_CATEGORY_DELAY_MS);
         }
 
-        const rows = await collectSniperHistoryRows({ window, category });
-        const { scan, alerts } = saveSniperHistoryScan({ window, category, rows });
+        const collected = await collectSniperHistoryRows({ window, category });
+        const { scan, alerts } = saveSniperHistoryScan({
+          window,
+          category,
+          rows: collected.rows,
+          partialReason: collected.partialReason,
+        });
         summary.scans += 1;
         summary.rows += scan.uniqueRows;
         summary.alerts += alerts.length;
         summary.categories.push(category);
-        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}`);
+        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}${scan.partial ? " partial=yes" : ""}`);
         await sendSniperRankAlerts(alerts);
       }
     }
