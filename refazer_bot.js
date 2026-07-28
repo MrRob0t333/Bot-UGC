@@ -6636,8 +6636,29 @@ const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAI
 const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
 const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
 const SNIPER_QUEUE_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_QUEUE_WAIT_LIMIT_MS || 30000);
+const SNIPER_HISTORY_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_HISTORY_ENABLED, "true") !== "false";
+const SNIPER_HISTORY_DEPTH = Number(process.env.REFAZER_SNIPER_HISTORY_DEPTH || 1000);
+const SNIPER_HISTORY_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_INTERVAL_MS || 30 * 60 * 1000);
+const SNIPER_HISTORY_START_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_START_DELAY_MS || 60 * 1000);
+const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_PAGE_DELAY_MS || 3000);
+const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 15000);
+const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
+const SNIPER_HISTORY_RETENTION_DAYS = Number(process.env.REFAZER_SNIPER_HISTORY_RETENTION_DAYS || 7);
+const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
+  process.env.REFAZER_SNIPER_HISTORY_CATEGORIES || "hair,hats,face_accessories,back_accessories"
+);
+const SNIPER_HISTORY_WINDOWS = parseIdListEnv(
+  process.env.REFAZER_SNIPER_HISTORY_WINDOWS || "yesterday,week"
+);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 let sniperBusyUntil = 0;
+let sniperHistoryWorkerRunning = false;
+let sniperHistoryWorkerTimer = null;
+let sniperHistoryLastRun = null;
+let sniperHistoryLastError = "";
+let sniperHistoryLastSummary = null;
+const SNIPER_HISTORY_CURRENT_PATH = path.join(__dirname, "data", "sniper_history_current.json");
+const SNIPER_HISTORY_SNAPSHOTS_PATH = path.join(__dirname, "data", "sniper_history_snapshots.jsonl");
 
 const SNIPER_ACCESSORY_SUBCATEGORIES = [
   "hats",
@@ -6783,6 +6804,12 @@ function formatAdminSystemStatusMessage() {
     "## 🎯 Sniper",
     uiLine("Cooldown", sniperCooldownMs ? `${Math.ceil(sniperCooldownMs / 1000)}s` : "ready"),
     uiLine("Cache entries", sniperCatalogCache.size),
+    uiLine("History worker", SNIPER_HISTORY_ENABLED ? (sniperHistoryWorkerRunning ? "running" : "enabled") : "disabled"),
+    uiLine("History depth", SNIPER_HISTORY_DEPTH),
+    uiLine("History categories", SNIPER_HISTORY_CATEGORIES.join(", ") || "none"),
+    uiLine("History windows", SNIPER_HISTORY_WINDOWS.join(", ") || "none"),
+    uiLine("Last history run", sniperHistoryLastRun || "never"),
+    uiLine("Last history error", sniperHistoryLastError || "none"),
     "",
     "Use `/admin_roblox_status` for detailed Roblox cookie diagnostics.",
   ].join("\n");
@@ -7510,6 +7537,161 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
   };
 }
 
+function readSniperHistoryCurrent() {
+  try {
+    if (!fs.existsSync(SNIPER_HISTORY_CURRENT_PATH)) return { version: 1, scans: {} };
+    const parsed = JSON.parse(fs.readFileSync(SNIPER_HISTORY_CURRENT_PATH, "utf8"));
+    if (!parsed || typeof parsed !== "object") return { version: 1, scans: {} };
+    parsed.scans ||= {};
+    return parsed;
+  } catch (err) {
+    console.warn("Could not read sniper history cache:", err.message || err);
+    return { version: 1, scans: {} };
+  }
+}
+
+function writeSniperHistoryCurrent(data) {
+  try {
+    fs.mkdirSync(path.dirname(SNIPER_HISTORY_CURRENT_PATH), { recursive: true });
+    fs.writeFileSync(SNIPER_HISTORY_CURRENT_PATH, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.warn("Could not write sniper history cache:", err.message || err);
+  }
+}
+
+function appendSniperHistorySnapshot(entry) {
+  try {
+    fs.mkdirSync(path.dirname(SNIPER_HISTORY_SNAPSHOTS_PATH), { recursive: true });
+    fs.appendFileSync(SNIPER_HISTORY_SNAPSHOTS_PATH, `${JSON.stringify(entry)}\n`);
+  } catch (err) {
+    console.warn("Could not append sniper history snapshot:", err.message || err);
+  }
+}
+
+function compactSniperHistoryItem(item, category, window, marketplaceRank) {
+  const id = catalogItemId(item);
+  if (!id) return null;
+  return {
+    id,
+    name: item.name || item.item?.name || `Item ${id}`,
+    creatorName: item.creatorName || item.creator?.name || item.item?.creatorName || "Unknown",
+    price: catalogItemPrice(item, {}),
+    favoriteCount: normalizeCatalogNumber(item.favoriteCount, item.favorites),
+    saleCount: normalizeCatalogNumber(item.saleCount, item.sales, item.unitsSold),
+    itemCreatedUtc: catalogItemCreatedAt(item, {}),
+    assetTypeId: catalogAssetTypeId(item, {}),
+    assetType: catalogAssetTypeId(item, {}),
+    itemType: item.itemType || item.item?.itemType || "Asset",
+    itemRestrictions: item.itemRestrictions || item.item?.itemRestrictions || [],
+    collectibleItemId: item.collectibleItemId || item.item?.collectibleItemId || null,
+    hasResellers: Boolean(item.hasResellers || item.item?.hasResellers),
+    lowestResalePrice: normalizeCatalogNumber(item.lowestResalePrice, item.item?.lowestResalePrice) || null,
+    totalQuantity: normalizeCatalogNumber(item.totalQuantity, item.item?.totalQuantity) || null,
+    unitsAvailableForConsumption: normalizeCatalogNumber(item.unitsAvailableForConsumption, item.item?.unitsAvailableForConsumption) || null,
+    marketplaceRank,
+    sourceCategory: category,
+    sourceWindow: window,
+  };
+}
+
+function sniperHistoryScanKey(window, category) {
+  return `${window}:${category}`;
+}
+
+function latestSniperHistoryScansFor(category, window) {
+  const current = readSniperHistoryCurrent();
+  const exact = current.scans?.[sniperHistoryScanKey(window, category)];
+  if (exact) return [exact];
+
+  if (category === "accessories") {
+    return SNIPER_ACCESSORY_SUBCATEGORIES
+      .map(subcategory => current.scans?.[sniperHistoryScanKey(window, subcategory)])
+      .filter(Boolean);
+  }
+
+  if (category === "all") {
+    return Object.entries(current.scans || {})
+      .filter(([key]) => key.startsWith(`${window}:`))
+      .map(([, scan]) => scan);
+  }
+
+  return [];
+}
+
+function candidateFromSniperHistoryItem(item, requestedCategory, scan = {}) {
+  const sourceCategory = item.sourceCategory || sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || requestedCategory;
+  const candidate = buildSniperCandidate(item, {}, requestedCategory, true, {
+    marketplaceRank: Number.isFinite(Number(item.marketplaceRank)) ? Number(item.marketplaceRank) : null,
+    sourceCategory,
+  });
+  candidate.reasons = [
+    ...(candidate.reasons || []),
+    "history cache",
+    scan.collectedAt ? `cached ${Math.max(0, Math.round((Date.now() - Date.parse(scan.collectedAt)) / 60000))}m ago` : null,
+  ].filter(Boolean);
+  return candidate;
+}
+
+function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, limitedOnly = false }) {
+  if (!SNIPER_HISTORY_ENABLED) return null;
+  const scans = latestSniperHistoryScansFor(category, window);
+  if (!scans.length) return null;
+
+  const normalizedKeyword = normalizeSniperText(keyword || "");
+  const rows = [];
+  const seen = new Set();
+  let newestScanAt = 0;
+  let totalRows = 0;
+
+  for (const scan of scans) {
+    const collectedAt = Date.parse(scan.collectedAt || "");
+    if (Number.isFinite(collectedAt)) newestScanAt = Math.max(newestScanAt, collectedAt);
+    const items = Array.isArray(scan.items) ? scan.items : [];
+    totalRows += items.length;
+
+    for (const item of items) {
+      const id = catalogItemId(item);
+      if (!id || seen.has(String(id))) continue;
+      seen.add(String(id));
+      if (normalizedKeyword && !normalizeSniperText(`${item.name || ""} ${item.creatorName || ""}`).includes(normalizedKeyword)) continue;
+      if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
+      if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
+      if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
+      if (!sniperCategoryMatches(category, item, {})) continue;
+      rows.push(candidateFromSniperHistoryItem(item, category, scan));
+    }
+  }
+
+  const isStale = newestScanAt > 0 && Date.now() - newestScanAt > SNIPER_HISTORY_STALE_MS;
+  const candidates = rows
+    .sort((a, b) => {
+      const aRank = Number.isFinite(a.marketplaceRank) ? a.marketplaceRank : Number.POSITIVE_INFINITY;
+      const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
+      if (aRank !== bRank) return aRank - bRank;
+      return b.score - a.score;
+    })
+    .slice(0, Math.max(50, limit * 3));
+
+  lastSniperDebug = {
+    fromHistory: true,
+    staleHistory: isStale,
+    request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, limitedOnly },
+    scannedRows: totalRows,
+    uniqueRows: seen.size,
+    candidates: candidates.length,
+    historyCollectedAt: newestScanAt ? new Date(newestScanAt).toISOString() : null,
+    worker: {
+      enabled: SNIPER_HISTORY_ENABLED,
+      running: sniperHistoryWorkerRunning,
+      lastRun: sniperHistoryLastRun,
+      lastError: sniperHistoryLastError,
+      lastSummary: sniperHistoryLastSummary,
+    },
+  };
+
+  return candidates.length ? candidates : null;
+}
+
 function addSniperDebugSample(reason, item, details = {}) {
   if (!lastSniperDebug?.samples || lastSniperDebug.samples.length >= 8) return;
 
@@ -7560,6 +7742,11 @@ function assertSniperDeadline(deadlineAt) {
 }
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", limitedOnly = false, deadlineAt = 0 }) {
+  const historyCandidates = getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit, limitedOnly });
+  if (historyCandidates?.length >= Math.min(limit, 3)) {
+    return historyCandidates;
+  }
+
   const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
   const cached = getSniperCachedCandidates(cacheKey);
@@ -7952,6 +8139,168 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   return candidates;
 }
 
+async function collectSniperHistoryRows({ window, category, depth = SNIPER_HISTORY_DEPTH }) {
+  const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.week;
+  const attemptParams = windowAttempts[0] || {};
+  const useV2Search = sniperCanUseCatalogV2(category);
+  const categoryParams = SNIPER_CATEGORY_PARAMS[category] || SNIPER_CATEGORY_PARAMS.all;
+  const pageSize = Number(robloxCatalogSearchLimit(true)) || 30;
+  const maxPages = Math.max(1, Math.ceil(depth / pageSize));
+  const baseParams = useV2Search
+    ? {
+        limit: String(pageSize),
+        salesTypeFilter: "1",
+        assetTypeIds: SNIPER_CATEGORY_ASSET_TYPES[category].join(","),
+      }
+    : {
+        CurrencyType: "3",
+        Limit: String(pageSize),
+        salesTypeFilter: "1",
+        ...categoryParams,
+      };
+  const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
+  const rows = [];
+  let cursor = "";
+
+  for (let page = 0; page < maxPages; page += 1) {
+    if (page > 0 && SNIPER_HISTORY_PAGE_DELAY_MS > 0) {
+      await wait(SNIPER_HISTORY_PAGE_DELAY_MS);
+    }
+
+    const params = new URLSearchParams({ ...baseParams, ...normalizedAttemptParams });
+    if (cursor) params.set("Cursor", cursor);
+    const endpoint = useV2Search ? "v2" : "v1";
+    const response = await fetchRobloxPublicJson(`https://catalog.roblox.com/${endpoint}/search/items/details?${params.toString()}`, {
+      maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS,
+    });
+    const pageRows = Array.isArray(response.data) ? response.data : [];
+    rows.push(...pageRows);
+    cursor = response.nextPageCursor || "";
+    if (!cursor || !pageRows.length || rows.length >= depth) break;
+  }
+
+  return rows.slice(0, depth);
+}
+
+function saveSniperHistoryScan({ window, category, rows }) {
+  const current = readSniperHistoryCurrent();
+  const collectedAt = new Date().toISOString();
+  const compactItems = [];
+  const seen = new Set();
+
+  for (const [index, row] of rows.entries()) {
+    const compact = compactSniperHistoryItem(row, category, window, index + 1);
+    if (!compact?.id || seen.has(String(compact.id))) continue;
+    seen.add(String(compact.id));
+    compactItems.push(compact);
+  }
+
+  const scan = {
+    window,
+    category,
+    collectedAt,
+    depth: SNIPER_HISTORY_DEPTH,
+    rows: rows.length,
+    uniqueRows: compactItems.length,
+    items: compactItems,
+  };
+
+  current.version = 1;
+  current.updatedAt = collectedAt;
+  current.scans ||= {};
+  current.scans[sniperHistoryScanKey(window, category)] = scan;
+  writeSniperHistoryCurrent(current);
+  appendSniperHistorySnapshot({
+    type: "scan",
+    window,
+    category,
+    collectedAt,
+    rows: rows.length,
+    uniqueRows: compactItems.length,
+    topIds: compactItems.slice(0, 50).map(item => item.id),
+  });
+  return scan;
+}
+
+function pruneSniperHistorySnapshots() {
+  try {
+    if (!fs.existsSync(SNIPER_HISTORY_SNAPSHOTS_PATH)) return;
+    const cutoff = Date.now() - Math.max(1, SNIPER_HISTORY_RETENTION_DAYS) * 86400000;
+    const lines = fs.readFileSync(SNIPER_HISTORY_SNAPSHOTS_PATH, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .filter(line => {
+        try {
+          const item = JSON.parse(line);
+          const time = Date.parse(item.collectedAt || item.at || "");
+          return Number.isFinite(time) ? time >= cutoff : true;
+        } catch {
+          return false;
+        }
+      });
+    fs.writeFileSync(SNIPER_HISTORY_SNAPSHOTS_PATH, lines.length ? `${lines.join("\n")}\n` : "");
+  } catch (err) {
+    console.warn("Could not prune sniper history snapshots:", err.message || err);
+  }
+}
+
+async function runSniperHistoryWorkerCycle() {
+  if (!SNIPER_HISTORY_ENABLED || sniperHistoryWorkerRunning) return;
+  sniperHistoryWorkerRunning = true;
+  const startedAt = Date.now();
+  const summary = { scans: 0, rows: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
+
+  try {
+    for (const window of SNIPER_HISTORY_WINDOWS) {
+      if (!SNIPER_WINDOW_PARAMS[window]) continue;
+      summary.windows.push(window);
+
+      for (const category of SNIPER_HISTORY_CATEGORIES) {
+        if (!SNIPER_CATEGORY_LABELS[category] || !sniperCanUseCatalogV2(category)) continue;
+        if (summary.scans > 0 && SNIPER_HISTORY_CATEGORY_DELAY_MS > 0) {
+          await wait(SNIPER_HISTORY_CATEGORY_DELAY_MS);
+        }
+
+        const rows = await collectSniperHistoryRows({ window, category });
+        const scan = saveSniperHistoryScan({ window, category, rows });
+        summary.scans += 1;
+        summary.rows += scan.uniqueRows;
+        summary.categories.push(category);
+        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows}`);
+      }
+    }
+
+    pruneSniperHistorySnapshots();
+    sniperHistoryLastRun = new Date().toISOString();
+    sniperHistoryLastError = "";
+    sniperHistoryLastSummary = {
+      ...summary,
+      elapsedMs: Date.now() - startedAt,
+      categories: [...new Set(summary.categories)],
+      windows: [...new Set(summary.windows)],
+    };
+  } catch (err) {
+    sniperHistoryLastError = String(err.message || err).slice(0, 500);
+    sniperHistoryLastSummary = {
+      ...summary,
+      elapsedMs: Date.now() - startedAt,
+      error: sniperHistoryLastError,
+    };
+    console.warn("[sniper_history] cycle failed:", sniperHistoryLastError);
+  } finally {
+    sniperHistoryWorkerRunning = false;
+  }
+}
+
+function scheduleSniperHistoryWorker(delayMs = SNIPER_HISTORY_INTERVAL_MS) {
+  if (!SNIPER_HISTORY_ENABLED) return;
+  clearTimeout(sniperHistoryWorkerTimer);
+  sniperHistoryWorkerTimer = setTimeout(async () => {
+    await runSniperHistoryWorkerCycle();
+    scheduleSniperHistoryWorker(SNIPER_HISTORY_INTERVAL_MS);
+  }, Math.max(5000, delayMs));
+}
+
 function sniperSeenIdsFor(user) {
   user.sniperSeenIds ||= [];
   if (!Array.isArray(user.sniperSeenIds)) user.sniperSeenIds = [];
@@ -8011,7 +8360,8 @@ function sniperViewsCommand(itemId) {
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false, debug }) {
   const returnedCount = candidates.length;
   const qualifiedCount = Number(debug?.candidates) || 0;
-  const rawRows = Number(debug?.rawRows) || 0;
+  const fromHistory = Boolean(debug?.fromHistory);
+  const rawRows = Number(debug?.rawRows ?? debug?.scannedRows) || 0;
   const uniqueRows = Number(debug?.uniqueRows) || 0;
   const filters = [
     limitedOnly ? "Mode: Limited / collectible only" : null,
@@ -8025,12 +8375,16 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
   ].filter(Boolean).join("\n");
 
   const scanStats = [
+    fromHistory ? "Source: Background history cache" : null,
     `Scanned rows: ${rawRows}`,
     `Unique rows: ${uniqueRows}`,
     `Qualified pool: ${qualifiedCount}`,
     `Returned: ${returnedCount}`,
-    debug?.partial ? "Status: Partial scan - Roblox rate-limited before the full scan finished" : "Status: Complete scan",
-  ].join("\n");
+    debug?.historyCollectedAt ? `Cache updated: ${debug.historyCollectedAt}` : null,
+    debug?.staleHistory ? "Status: Stale cache - background scanner has not refreshed recently" : null,
+    !fromHistory && debug?.partial ? "Status: Partial scan - Roblox rate-limited before the full scan finished" : null,
+    !fromHistory && !debug?.partial ? "Status: Complete scan" : null,
+  ].filter(Boolean).join("\n");
 
   const rows = candidates.map((candidate, index) => {
     const name = String(candidate.name || `Item ${candidate.id}`).slice(0, 55);
@@ -12398,6 +12752,7 @@ client.once("clientReady", async () => {
   await recoverInterruptedPendingGenerations();
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) await refreshInviteCache(guild);
+  scheduleSniperHistoryWorker(SNIPER_HISTORY_START_DELAY_MS);
   startWebhookServer();
   expirePendingPurchases();
   expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
