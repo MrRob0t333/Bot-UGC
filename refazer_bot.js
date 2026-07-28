@@ -6645,7 +6645,21 @@ const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTO
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
 const SNIPER_HISTORY_RETENTION_DAYS = Number(process.env.REFAZER_SNIPER_HISTORY_RETENTION_DAYS || 7);
 const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
-  process.env.REFAZER_SNIPER_HISTORY_CATEGORIES || "hair,hats,face_accessories,back_accessories"
+  process.env.REFAZER_SNIPER_HISTORY_CATEGORIES || [
+    "hats",
+    "hair",
+    "face_accessories",
+    "neck_accessories",
+    "shoulder_accessories",
+    "front_accessories",
+    "back_accessories",
+    "waist_accessories",
+    "faces",
+    "classic_shirts",
+    "classic_pants",
+    "tshirts",
+    "layered_clothing",
+  ].join(",")
 );
 const SNIPER_HISTORY_WINDOWS = parseIdListEnv(
   process.env.REFAZER_SNIPER_HISTORY_WINDOWS || "yesterday,week"
