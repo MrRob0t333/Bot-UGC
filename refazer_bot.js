@@ -24,6 +24,18 @@ const {
   ChannelType,
 } = require("discord.js");
 
+const LIGHT_POWER_CHOICES = [
+  { name: "0.20 - very soft", value: 0.2 },
+  { name: "0.50 - soft", value: 0.5 },
+  { name: "1.00 - normal", value: 1 },
+  { name: "2.00 - bright", value: 2 },
+  { name: "3.00 - maximum", value: 3 },
+];
+
+function addLightPowerChoices(option) {
+  return option.addChoices(...LIGHT_POWER_CHOICES);
+}
+
 function cleanEnv(value, fallback = "") {
   return String(value ?? fallback).trim();
 }
@@ -605,7 +617,7 @@ const commands = [
       o.setName("render_exposure").setDescription("Default render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("render_light_power").setDescription("Default light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("render_light_power").setDescription("Default light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .addStringOption(o =>
       o
@@ -1147,7 +1159,7 @@ const commands = [
       o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -1191,7 +1203,7 @@ const commands = [
       o.setName("exposure").setDescription("Render exposure. -1.00 dark to 1.00 bright").setRequired(true).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(true).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(true).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -1248,7 +1260,7 @@ const commands = [
       o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -1294,7 +1306,7 @@ const commands = [
       o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -1340,7 +1352,7 @@ const commands = [
       o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3)
+      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -7943,6 +7955,10 @@ function markSniperCandidatesSeen(userId, candidates) {
   writeWalletDb(db);
 }
 
+function sniperViewsCommand(itemId) {
+  return `/views id: ${itemId} lighting: Flat inspection pov: Your default angles: Multiview 4 - front/right/back/left ior: 1 roughness: 1 exposure: 1 light_power: 0.20`;
+}
+
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false, debug }) {
   const returnedCount = candidates.length;
   const qualifiedCount = Number(debug?.candidates) || 0;
@@ -8008,6 +8024,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
       ].filter(Boolean).join(" | "),
       `Why: ${candidate.reasons?.length ? candidate.reasons.slice(0, 4).join(" | ") : "public signal match"}`,
       `https://www.roblox.com/catalog/${candidate.id}`,
+      `Copy views: \`${sniperViewsCommand(candidate.id)}\``,
     ].join("\n");
   }).join("\n\n");
 
