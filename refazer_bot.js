@@ -8469,7 +8469,7 @@ function markSniperCandidatesSeen(userId, candidates) {
 }
 
 function sniperViewsCommand(itemId) {
-  return `/views id: ${itemId} lighting: Flat inspection pov: Your default angles: Multiview 4 - front/right/back/left ior: 1 roughness: 1 exposure: 1 light_power: 0.20`;
+  return `/views id: ${itemId} lighting: Flat inspection pov: Your default angles: Multiview 4 - front/right/back/left ior: 1 roughness: 1 exposure: 1 light_power: 0.20 - very soft`;
 }
 
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false, debug }) {
