@@ -2336,7 +2336,6 @@ async function registerCommands() {
     "enhance_images",
     "image_model",
     "prompt_model",
-    "multiview",
     "admin_bulk_views",
     "admin_views_full",
     "admin_code_create",
