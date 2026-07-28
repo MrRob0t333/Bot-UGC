@@ -7847,7 +7847,7 @@ function assertSniperDeadline(deadlineAt) {
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", limitedOnly = false, deadlineAt = 0 }) {
   const historyCandidates = getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit, limitedOnly });
-  if (historyCandidates?.length >= Math.min(limit, 3)) {
+  if (historyCandidates?.length) {
     return historyCandidates;
   }
 
