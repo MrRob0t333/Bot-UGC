@@ -11717,6 +11717,12 @@ async function prepareGuidedModelReferences(channel, session, interactionLike) {
     if (!sourcePath) continue;
 
     try {
+      const preparedPath = session.preparedViewPaths?.[view];
+      if (preparedPath && fs.existsSync(preparedPath)) {
+        session.viewPaths[view] = preparedPath;
+        continue;
+      }
+
       await progressMessage.edit(
         "# Preparing References\n" +
         `**Current side:** ${publicViewName(view)}\n` +
@@ -11794,9 +11800,11 @@ async function sendGuidedAdminReferencePreview(message, session, view, sourcePat
     await previewMessage.edit({
       content:
         `## Admin Preview Ready: ${publicViewName(view)}\n` +
-        "Use this only to inspect the image enhancement behavior. The customer review still happens after all four sides and balance check.",
+        "This prepared reference will be reused for the final review after all four sides and balance check.",
       files: [new AttachmentBuilder(previewPath, { name: `${view}_admin_preview.png` })],
     }).catch(() => {});
+    session.preparedViewPaths ||= {};
+    session.preparedViewPaths[view] = previewPath;
   } catch (err) {
     console.warn(`Guided admin preview failed for ${view}:`, err.message || err);
     await previewMessage.edit(
@@ -11854,6 +11862,7 @@ async function handleGuidedModelPhotoMessage(message, session) {
   session.originalViewPaths ||= {};
   session.originalViewPaths[view] = outputPath;
   session.viewPaths[view] = outputPath;
+  if (session.preparedViewPaths) delete session.preparedViewPaths[view];
   session.awaitingView = null;
 
   await sendGuidedAdminReferencePreview(message, session, view, outputPath);
@@ -13234,6 +13243,7 @@ client.on("interactionCreate", async interaction => {
 
       delete session.viewPaths[extra];
       delete session.originalViewPaths[extra];
+      if (session.preparedViewPaths) delete session.preparedViewPaths[extra];
       session.prepWarnings = [];
       session.status = "collecting";
       session.awaitingView = extra;
