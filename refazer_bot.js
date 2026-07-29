@@ -78,6 +78,7 @@ const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "15219595263942370
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
 const AFFILIATE_ROLE = cleanEnv(process.env.REFAZER_AFFILIATE_ROLE, "1523108378346520607");
+const AI_IMAGE_ROLE = cleanEnv(process.env.REFAZER_AI_IMAGE_ROLE, "1531844183579558191");
 const COMMAND_CHANNEL_IDS = new Set(parseIdListEnv(process.env.REFAZER_COMMAND_CHANNELS || process.env.REFAZER_ALLOWED_COMMAND_CHANNELS));
 const CLEAN_CHANNEL_IDS = new Set(parseIdListEnv(process.env.REFAZER_CLEAN_CHANNELS || process.env.REFAZER_DELETE_USER_MESSAGES_CHANNELS));
 const COMMAND_CHANNEL_ADMIN_BYPASS = cleanEnv(process.env.REFAZER_COMMAND_CHANNEL_ADMIN_BYPASS, "true") !== "false";
@@ -6473,6 +6474,13 @@ function userIsAdmin(interaction) {
   return hasRole(interaction, ADMIN_ROLE);
 }
 
+function memberCanUseAiImageEnhancement(member) {
+  return Boolean(OPENAI_API_KEY) && (
+    memberHasRole(member, ADMIN_ROLE) ||
+    memberHasRole(member, AI_IMAGE_ROLE)
+  );
+}
+
 function userIsAffiliate(interaction) {
   return userIsAdmin(interaction) || hasRole(interaction, AFFILIATE_ROLE);
 }
@@ -11388,7 +11396,7 @@ function guidedModelAlphaButtons(threadId) {
   ];
 }
 
-function guidedModelEnhancementButtons(threadId) {
+function guidedModelEnhancementButtons(threadId, member = null) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`guided3d_enhancement:${threadId}:none`)
@@ -11400,7 +11408,7 @@ function guidedModelEnhancementButtons(threadId) {
       .setStyle(ButtonStyle.Primary)
   );
 
-  if (OPENAI_API_KEY) {
+  if (memberCanUseAiImageEnhancement(member)) {
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(`guided3d_enhancement:${threadId}:ai`)
@@ -13136,11 +13144,11 @@ client.on("interactionCreate", async interaction => {
           "Choose how the bot should prepare your images before generation.\n\n" +
           "> **Use originals** keeps your files exactly as sent.\n" +
           "> **Clean references** applies safe local cleanup for sharper, clearer references.\n" +
-          (OPENAI_API_KEY
+          (memberCanUseAiImageEnhancement(interaction.member)
             ? "> **AI enhance** can improve texture readability, but may change the image if the reference is difficult.\n\n"
             : "\n") +
           "**Recommended:** use **Clean references** for normal screenshots. Use **AI enhance** only when you intentionally want stronger cleanup.",
-        components: guidedModelEnhancementButtons(actionId),
+        components: guidedModelEnhancementButtons(actionId, interaction.member),
       });
       return;
     }
@@ -13159,6 +13167,16 @@ client.on("interactionCreate", async interaction => {
       if (extra === "ai" && !OPENAI_API_KEY) {
         await interaction.reply({
           content: "AI enhancement is not configured yet. Use **Clean references** or **Use originals**.",
+          flags: 64,
+        });
+        return;
+      }
+
+      if (extra === "ai" && !memberCanUseAiImageEnhancement(interaction.member)) {
+        await interaction.reply({
+          content:
+            "## AI Enhancement Locked\n" +
+            "This option is available only for members with the AI image role. Use **Clean references** or **Use originals** for this request.",
           flags: 64,
         });
         return;
