@@ -6651,6 +6651,8 @@ const SNIPER_HISTORY_START_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_
 const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_PAGE_DELAY_MS || 6000);
 const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 30000);
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
+const SNIPER_HISTORY_MIN_ROWS_NORMAL = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_NORMAL || 180);
+const SNIPER_HISTORY_MIN_ROWS_DEEP = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_DEEP || 600);
 const SNIPER_HISTORY_RETENTION_DAYS = Number(process.env.REFAZER_SNIPER_HISTORY_RETENTION_DAYS || 7);
 const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
   process.env.REFAZER_SNIPER_HISTORY_CATEGORIES || [
@@ -7661,7 +7663,7 @@ function candidateFromSniperHistoryItem(item, requestedCategory, scan = {}) {
   return candidate;
 }
 
-function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, limitedOnly = false }) {
+function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", limitedOnly = false }) {
   if (!SNIPER_HISTORY_ENABLED) return null;
   const scans = latestSniperHistoryScansFor(category, window);
   if (!scans.length) return null;
@@ -7701,9 +7703,16 @@ function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPr
     })
     .slice(0, Math.max(50, limit * 3));
 
+  const minRowsForCache = depth === "deep" ? SNIPER_HISTORY_MIN_ROWS_DEEP : SNIPER_HISTORY_MIN_ROWS_NORMAL;
+  const cacheTooSmallForRequest =
+    totalRows < minRowsForCache &&
+    candidates.length < Math.min(limit, 5);
+
   lastSniperDebug = {
     fromHistory: true,
     staleHistory: isStale,
+    cacheTooSmall: cacheTooSmallForRequest,
+    cacheMinRows: minRowsForCache,
     request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, limitedOnly },
     scannedRows: totalRows,
     uniqueRows: seen.size,
@@ -7718,6 +7727,7 @@ function getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPr
     },
   };
 
+  if (cacheTooSmallForRequest) return null;
   return candidates.length ? candidates : null;
 }
 
@@ -7854,7 +7864,7 @@ function assertSniperDeadline(deadlineAt) {
 }
 
 async function fetchSniperCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit = 5, depth = "normal", limitedOnly = false, deadlineAt = 0 }) {
-  const historyCandidates = getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit, limitedOnly });
+  const historyCandidates = getSniperHistoryCandidates({ window, category, keyword, minPrice, maxPrice, maxAgeDays, limit, depth, limitedOnly });
   if (historyCandidates?.length) {
     return historyCandidates;
   }
@@ -8450,6 +8460,11 @@ function pickSniperCandidates(candidates, userId, count = 1) {
   const seenIds = new Set(sniperSeenIdsFor(user).map(String));
   const fresh = candidates.filter(candidate => !seenIds.has(String(candidate.id)));
   const seenFallback = candidates.filter(candidate => seenIds.has(String(candidate.id)));
+
+  if (count >= 10) {
+    return [...fresh, ...seenFallback].slice(0, count);
+  }
+
   const pool = [...fresh, ...seenFallback].slice(0, Math.max(10, count * 3));
   const selected = [];
 
