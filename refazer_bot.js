@@ -6645,6 +6645,7 @@ const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAI
 const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
 const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
 const SNIPER_QUEUE_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_QUEUE_WAIT_LIMIT_MS || 30000);
+const SNIPER_DEEP_REQUIRES_HISTORY = cleanEnv(process.env.REFAZER_SNIPER_DEEP_REQUIRES_HISTORY, "true") !== "false";
 const SNIPER_HISTORY_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_HISTORY_ENABLED, "true") !== "false";
 const SNIPER_HISTORY_DEPTH = Number(process.env.REFAZER_SNIPER_HISTORY_DEPTH || 1000);
 const SNIPER_HISTORY_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_INTERVAL_MS || 30 * 60 * 1000);
@@ -6687,6 +6688,7 @@ let sniperHistoryWorkerTimer = null;
 let sniperHistoryLastRun = null;
 let sniperHistoryLastError = "";
 let sniperHistoryLastSummary = null;
+let robloxPublicRateLimitStrikes = 0;
 const SNIPER_HISTORY_CURRENT_PATH = path.join(__dirname, "data", "sniper_history_current.json");
 const SNIPER_HISTORY_SNAPSHOTS_PATH = path.join(__dirname, "data", "sniper_history_snapshots.jsonl");
 
@@ -7034,7 +7036,9 @@ async function fetchRobloxPublicJson(url, options = {}) {
         console.warn(`Roblox public catalog returned 429; trying mirror for ${url}`);
         continue;
       }
-      robloxPublicRateLimitedUntil = Date.now() + Math.max(lastRateLimitDelay, ROBLOX_RATE_LIMIT_PAUSE_MS);
+      robloxPublicRateLimitStrikes = Math.min(6, robloxPublicRateLimitStrikes + 1);
+      const strikeBackoffMs = ROBLOX_RATE_LIMIT_PAUSE_MS * Math.pow(2, robloxPublicRateLimitStrikes - 1);
+      robloxPublicRateLimitedUntil = Date.now() + Math.max(lastRateLimitDelay, strikeBackoffMs);
       throw lastError;
     }
 
@@ -7047,6 +7051,7 @@ async function fetchRobloxPublicJson(url, options = {}) {
     if (isMirror) {
       console.log(`Roblox public mirror served: ${targetUrl}`);
     }
+    robloxPublicRateLimitStrikes = 0;
     return JSON.parse(text);
   }
 
@@ -7892,6 +7897,26 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       candidates: staleCached.length,
     };
     return staleCached;
+  }
+
+  if (depth === "deep" && SNIPER_DEEP_REQUIRES_HISTORY && !limitedOnly) {
+    const currentHistoryDebug =
+      lastSniperDebug?.request?.window === window &&
+      lastSniperDebug?.request?.category === category &&
+      lastSniperDebug?.request?.maxAgeDays === maxAgeDays;
+    lastSniperDebug = {
+      ...(currentHistoryDebug ? lastSniperDebug : {}),
+      fromHistory: Boolean(currentHistoryDebug && lastSniperDebug?.fromHistory),
+      cacheTooSmall: Boolean(currentHistoryDebug && lastSniperDebug?.cacheTooSmall),
+      request: { window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly },
+      candidates: 0,
+      partial: true,
+      partialReason:
+        currentHistoryDebug && lastSniperDebug?.cacheTooSmall
+          ? `Deep cache is still warming for this category (${lastSniperDebug.scannedRows || 0}/${lastSniperDebug.cacheMinRows || SNIPER_HISTORY_MIN_ROWS_DEEP} rows ready).`
+          : "Deep scan requires background history cache to avoid Roblox rate-limits.",
+    };
+    return [];
   }
 
   lastSniperDebug = {
