@@ -6645,7 +6645,7 @@ const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAI
 const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
 const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
 const SNIPER_QUEUE_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_QUEUE_WAIT_LIMIT_MS || 30000);
-const SNIPER_DEEP_REQUIRES_HISTORY = cleanEnv(process.env.REFAZER_SNIPER_DEEP_REQUIRES_HISTORY, "true") !== "false";
+const SNIPER_DEEP_REQUIRES_HISTORY = cleanEnv(process.env.REFAZER_SNIPER_DEEP_REQUIRES_HISTORY, "false") === "true";
 const SNIPER_HISTORY_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_HISTORY_ENABLED, "true") !== "false";
 const SNIPER_HISTORY_DEPTH = Number(process.env.REFAZER_SNIPER_HISTORY_DEPTH || 1000);
 const SNIPER_HISTORY_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_INTERVAL_MS || 30 * 60 * 1000);
@@ -6682,6 +6682,7 @@ const SNIPER_ALERT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_ALERT_MA
 const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AGE_DAYS || 90);
 const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
+const ROBLOX_PUBLIC_MIRROR_FIRST = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_FIRST, "true") !== "false";
 let sniperBusyUntil = 0;
 let sniperHistoryWorkerRunning = false;
 let sniperHistoryWorkerTimer = null;
@@ -6990,15 +6991,14 @@ async function fetchRobloxAssetDeliveryV2(assetId) {
 }
 
 function robloxPublicUrlVariants(url) {
-  const variants = [url];
-  if (!ROBLOX_PUBLIC_MIRROR_ENABLED) return variants;
+  if (!ROBLOX_PUBLIC_MIRROR_ENABLED) return [url];
 
   const mirrorUrl = url
     .replace("https://catalog.roblox.com/", "https://catalog.roproxy.com/")
     .replace("https://economy.roblox.com/", "https://economy.roproxy.com/");
 
-  if (mirrorUrl !== url) variants.push(mirrorUrl);
-  return variants;
+  if (mirrorUrl === url) return [url];
+  return ROBLOX_PUBLIC_MIRROR_FIRST ? [mirrorUrl, url] : [url, mirrorUrl];
 }
 
 async function fetchRobloxPublicJson(url, options = {}) {
@@ -7008,9 +7008,9 @@ async function fetchRobloxPublicJson(url, options = {}) {
 
   for (let index = 0; index < variants.length; index += 1) {
     const targetUrl = variants[index];
-    const isMirror = index > 0;
+    const isMirror = targetUrl.includes(".roproxy.com/");
 
-    if (!isMirror) {
+    if (index === 0 || !isMirror) {
       try {
         await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
       } catch (err) {
@@ -7033,7 +7033,7 @@ async function fetchRobloxPublicJson(url, options = {}) {
       lastRateLimitDelay = Math.max(lastRateLimitDelay, retryDelay);
       lastError = new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
       if (index < variants.length - 1) {
-        console.warn(`Roblox public catalog returned 429; trying mirror for ${url}`);
+        console.warn(`${isMirror ? "Roblox public mirror" : "Roblox public catalog"} returned 429; trying fallback for ${url}`);
         continue;
       }
       robloxPublicRateLimitStrikes = Math.min(6, robloxPublicRateLimitStrikes + 1);
