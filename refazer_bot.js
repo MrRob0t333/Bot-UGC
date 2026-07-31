@@ -120,6 +120,7 @@ const HYPER3D_TEXTURE_DELIGHT = cleanEnv(process.env.HYPER3D_TEXTURE_DELIGHT, "f
 const HYPER3D_USE_ORIGINAL_ALPHA = cleanEnv(process.env.HYPER3D_USE_ORIGINAL_ALPHA, "false") === "true";
 const HYPER3D_USE_QUALITY_OVERRIDE = cleanEnv(process.env.HYPER3D_USE_QUALITY_OVERRIDE, "false") === "true";
 const HYPER3D_SITE_LIKE_MODE = cleanEnv(process.env.HYPER3D_SITE_LIKE_MODE, "true") !== "false";
+const HYPER3D_SEND_TRIANGLE_TARGET = cleanEnv(process.env.HYPER3D_SEND_TRIANGLE_TARGET, "false") === "true";
 const MODEL_PROVIDER = cleanEnv(process.env.MODEL_PROVIDER, "auto").toLowerCase();
 const MODEL_DELIVERY_MODE = cleanEnv(process.env.REFAZER_MODEL_DELIVERY_MODE, "channel").toLowerCase();
 const PAYMENT_PROVIDER = cleanEnv(process.env.PAYMENT_PROVIDER, "stripe").toLowerCase();
@@ -10247,7 +10248,9 @@ function hyper3dTriangleTarget(triangles) {
 }
 
 function shouldSendHyper3dTriangleTarget(triangles) {
-  return HYPER3D_USE_QUALITY_OVERRIDE || Boolean(Number(triangles));
+  if (HYPER3D_USE_QUALITY_OVERRIDE || HYPER3D_SEND_TRIANGLE_TARGET) return Boolean(Number(triangles));
+  if (HYPER3D_SITE_LIKE_MODE) return false;
+  return Boolean(Number(triangles));
 }
 
 function appendHyper3dOptions(form, { prompt, texture, triangles, useAlpha = HYPER3D_USE_ORIGINAL_ALPHA, modelQuality = null }) {
