@@ -8238,6 +8238,32 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     }
   }
 
+  if (!enriched.length && !inferred.length && category !== "all" && category !== "collectibles") {
+    const rawFallbackLimit = sniperDeadlineExceeded(deadlineAt)
+      ? Math.max(limit * 3, 15)
+      : Math.max(limit, 5);
+    for (const item of unique.slice(0, rawFallbackLimit)) {
+      if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
+      if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
+      if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
+      if (!sniperCategoryMatches(category, item, {})) continue;
+      const id = catalogItemId(item);
+      const candidate = buildSniperCandidate(item, {}, category, true, {
+        marketplaceRank: marketplaceRankById.get(String(id)),
+        sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
+      });
+      candidate.reasons.push(sniperDeadlineExceeded(deadlineAt)
+        ? "deadline fallback: verified catalog type"
+        : "raw fallback: verified catalog type");
+      enriched.push(candidate);
+      if (enriched.length >= Math.max(limit, 5)) break;
+    }
+    if (enriched.length) {
+      lastSniperDebug.partial = true;
+      lastSniperDebug.partialReason ||= "Built candidates from verified catalog rows after the detail scan could not finish.";
+    }
+  }
+
   if (!enriched.length && !inferred.length && ["all", "accessories", "clothing", "collectibles"].includes(category)) {
     const deadlineFallback = sniperDeadlineExceeded(deadlineAt);
     const fallbackLimit = sniperDeadlineExceeded(deadlineAt)
