@@ -320,7 +320,8 @@ views = {
     "front_right.png": (1, -1, 0),
     "back_left.png": (-1, 1, 0),
     "back_right.png": (1, 1, 0),
-    "up.png": (0, -1, 0.85),
+    # Top context view: mostly above, with a small front bias so orientation stays readable.
+    "up.png": (0, -0.22, 1.0),
     "down.png": (0, 1, -0.85),
 }
 

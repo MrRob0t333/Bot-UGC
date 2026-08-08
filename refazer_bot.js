@@ -160,7 +160,7 @@ const DEFAULT_RENDER_SETTINGS = {
   exposure: 0.15,
   lightPower: 1,
 };
-const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v4";
+const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v5";
 const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "normal").toLowerCase();
 const TEXTURE_TONES = {
   normal: {
