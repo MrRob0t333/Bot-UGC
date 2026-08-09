@@ -6629,7 +6629,7 @@ const robloxHealth = {
 const sniperCatalogCache = new Map();
 const sniperInFlightScans = new Map();
 let lastSniperDebug = null;
-const SNIPER_CACHE_VERSION = "typed-v2-manual-keyword-only";
+const SNIPER_CACHE_VERSION = "typed-v2-strict-limited-signals";
 const SNIPER_CATALOG_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_CACHE_TTL_MS || 45 * 1000);
 const SNIPER_CATALOG_STALE_CACHE_TTL_MS = Number(process.env.REFAZER_SNIPER_STALE_CACHE_TTL_MS || 5 * 60 * 1000);
 const SNIPER_CATALOG_CACHE_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_CACHE_ENABLED, "true") !== "false";
@@ -7396,14 +7396,15 @@ function catalogLimitedSignals(item, details = {}) {
     details.unitsAvailableForConsumption,
     details.UnitsAvailableForConsumption
   );
-  const isCollectible = restrictions.some(value => value.includes("collectible") || value.includes("limited"))
+  const hasCollectibleRestriction = restrictions.some(value => value.includes("collectible") || value.includes("limited"));
+  const isCollectible = hasCollectibleRestriction
     || Boolean(collectibleId)
     || hasResellers
-    || resalePrice > 0
-    || totalQuantity > 0;
+    || resalePrice > 0;
 
   return {
     isCollectible,
+    hasCollectibleRestriction,
     restrictions,
     collectibleId,
     hasResellers,
