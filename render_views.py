@@ -178,6 +178,7 @@ lighting_presets = {
         "bottom": 390,
         "size": 2.8,
         "world": 0.42,
+        "world_strength": 0.32,
         "weights": {
             "Front_Light": 1.15,
             "Back_Light": 0.80,
@@ -191,6 +192,7 @@ lighting_presets = {
         "bottom": 360,
         "size": 3.4,
         "world": 0.62,
+        "world_strength": 0.48,
         "weights": {
             "Front_Light": 1.00,
             "Back_Light": 0.85,
@@ -204,6 +206,7 @@ lighting_presets = {
         "bottom": 40,
         "size": 1.5,
         "world": 0.12,
+        "world_strength": 0.08,
         "weights": {
             "Front_Light": 1.35,
             "Back_Light": 0.12,
@@ -212,11 +215,12 @@ lighting_presets = {
         },
     },
     "flat": {
-        "energy": 520,
-        "top": 520,
-        "bottom": 520,
+        "energy": 560,
+        "top": 600,
+        "bottom": 560,
         "size": 4.2,
-        "world": 0.72,
+        "world": 0.82,
+        "world_strength": 0.72,
         "weights": {
             "Front_Light": 1.00,
             "Back_Light": 1.00,
@@ -266,10 +270,16 @@ for name, location in light_positions:
 bpy.data.objects["Top_Light"].data.energy = preset["top"] * light_power * top_energy_scale
 bpy.data.objects["Bottom_Light"].data.energy = preset["bottom"] * light_power * top_energy_scale
 
-# Mundo neutro
+# Mundo neutro. Blender defaults to a node-based world, so setting only
+# world.color does not reliably affect the active Background shader.
 world = bpy.context.scene.world or bpy.data.worlds.new("World")
 bpy.context.scene.world = world
 world.color = (preset["world"], preset["world"], preset["world"])
+world.use_nodes = True
+background = world.node_tree.nodes.get("Background") if world.node_tree else None
+if background:
+    background.inputs["Color"].default_value = (preset["world"], preset["world"], preset["world"], 1.0)
+    background.inputs["Strength"].default_value = preset["world_strength"]
 
 scene = bpy.context.scene
 render_resolution = int(os.environ.get("REFAZER_RENDER_RESOLUTION", "768"))
