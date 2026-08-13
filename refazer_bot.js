@@ -500,12 +500,16 @@ const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 const PENDING_MULTIVIEW_PATH = path.join(__dirname, "data", "pending_multiview_actions.json");
 const PENDING_MULTIVIEW_TTL_MS = 6 * 60 * 60 * 1000;
 const LIMITED_WATCH_PATH = path.join(__dirname, "data", "limited-watch.json");
+const LIMITED_WATCH_LOG_PATH = path.join(__dirname, "data", "limited-watch.log.jsonl");
+const LIMITED_PRICE_HISTORY_LIMIT = Math.max(20, Number.isFinite(Number(process.env.LIMITED_PRICE_HISTORY_LIMIT)) ? Number(process.env.LIMITED_PRICE_HISTORY_LIMIT) : 500);
 // One second is the fastest supported mode for a very small watch list. Requests
 // remain sequential and overlapping runs are skipped to protect the public API.
-const LIMITED_CHECK_INTERVAL_MS = Math.max(1_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
+const LIMITED_CHECK_INTERVAL_MS = Math.max(1_000, Number.isFinite(Number(process.env.LIMITED_CHECK_INTERVAL_MS)) ? Number(process.env.LIMITED_CHECK_INTERVAL_MS) : 60_000);
 const LIMITED_ALERT_USER_ID = cleanEnv(process.env.LIMITED_ALERT_USER_ID);
 let limitedWatchCheckInProgress = false;
 const limitedWatchLastLoggedState = new Map();
+let limitedWatchCursor = 0;
+let limitedWatchPriorityAssetId = null;
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error("Falta REFAZER_DISCORD_TOKEN, REFAZER_CLIENT_ID ou REFAZER_GUILD_ID no .env.");
@@ -1130,6 +1134,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName("limited_list")
     .setDescription("Admin: lists monitored Roblox Limited alerts")
+    .toJSON(),
+
+  new SlashCommandBuilder()
+    .setName("limited_history")
+    .setDescription("Admin: shows saved resale-price history for a Roblox Limited")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Roblox asset ID").setRequired(true)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -7041,7 +7053,7 @@ function robloxPublicUrlVariants(url) {
 }
 
 async function fetchRobloxPublicJson(url, options = {}) {
-  const variants = robloxPublicUrlVariants(url);
+  const variants = options.officialOnly ? [url] : robloxPublicUrlVariants(url);
   let lastError = null;
   let lastRateLimitDelay = 0;
 
@@ -7121,6 +7133,33 @@ function writeLimitedWatch(watch) {
   fs.writeFileSync(LIMITED_WATCH_PATH, JSON.stringify(watch, null, 2));
 }
 
+function appendLimitedWatchLog(entry) {
+  try {
+    fs.mkdirSync(path.dirname(LIMITED_WATCH_LOG_PATH), { recursive: true });
+    fs.appendFileSync(LIMITED_WATCH_LOG_PATH, `${JSON.stringify(entry)}\n`);
+  } catch (err) {
+    console.warn("Could not append Limited watch log:", err.message || err);
+  }
+}
+
+function finiteLimitedPrice(value) {
+  const price = Number(value);
+  return value !== null && value !== "" && Number.isFinite(price) ? price : null;
+}
+
+function recordLimitedPrice(item, assetId, price, checkedAt) {
+  const previousPrice = finiteLimitedPrice(item.lastPrice);
+  if (previousPrice === price) return { changed: false, previousPrice };
+
+  item.history = Array.isArray(item.history) ? item.history : [];
+  item.history.push({ at: checkedAt, price });
+  if (item.history.length > LIMITED_PRICE_HISTORY_LIMIT) {
+    item.history.splice(0, item.history.length - LIMITED_PRICE_HISTORY_LIMIT);
+  }
+  appendLimitedWatchLog({ type: "price", at: checkedAt, assetId, previousPrice, price });
+  return { changed: true, previousPrice };
+}
+
 function normalizeLimitedAssetId(value) {
   const match = String(value || "").match(/\d+/);
   return match ? match[0] : null;
@@ -7129,7 +7168,7 @@ function normalizeLimitedAssetId(value) {
 async function fetchLimitedResaleDetails(assetId) {
   const details = await fetchRobloxPublicJson(
     `https://economy.roblox.com/v2/assets/${encodeURIComponent(assetId)}/details`,
-    { maxWaitMs: 20_000 }
+    { maxWaitMs: 20_000, officialOnly: true }
   );
   const collectibleDetails = details.CollectiblesItemDetails || details.collectiblesItemDetails || {};
   const lowestResalePrice = normalizeCatalogNumber(
@@ -7163,78 +7202,90 @@ async function runLimitedWatchCheck() {
       return;
     }
 
-    let changed = false;
-    for (const [assetId, item] of entries) {
-      try {
-        const details = await fetchLimitedResaleDetails(assetId);
-        const price = details.lowestResalePrice;
-        const targetPrice = Number(item.targetPrice);
-        if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
+    // One official API request per cycle. This keeps multiple watched items
+    // predictable and avoids the proxy/thread burst used by unsafe snipers.
+    const priorityIndex = limitedWatchPriorityAssetId
+      ? entries.findIndex(([assetId]) => assetId === limitedWatchPriorityAssetId)
+      : -1;
+    const selectedIndex = priorityIndex >= 0
+      ? priorityIndex
+      : limitedWatchCursor % entries.length;
+    const [assetId, item] = entries[selectedIndex];
+    limitedWatchPriorityAssetId = null;
+    limitedWatchCursor = (selectedIndex + 1) % entries.length;
 
-        item.name = details.name;
-        item.lastCheckedAt = new Date().toISOString();
-        item.lastPrice = price;
-        const logState = `${price ?? "no-resale"}:${item.armed !== false}`;
-        if (limitedWatchLastLoggedState.get(assetId) !== logState) {
-          limitedWatchLastLoggedState.set(assetId, logState);
-          console.log(`[limited_watch] asset=${assetId} price=${price ?? "none"} target=${targetPrice} armed=${item.armed !== false}`);
-        }
+    try {
+      const details = await fetchLimitedResaleDetails(assetId);
+      const price = details.lowestResalePrice;
+      const targetPrice = Number(item.targetPrice);
+      if (!Number.isFinite(targetPrice) || targetPrice <= 0) return;
 
-        if (!price) {
-          changed = true;
-          continue;
-        }
-
-        if (price > targetPrice) {
-          if (!item.armed) item.armed = true;
-          item.lastAlertPrice = null;
-          changed = true;
-          continue;
-        }
-
-        // Send one alert for every distinct lowest-resale price below the target.
-        // This catches new under-target listings without repeating the same price
-        // on every polling cycle.
-        if (Number(item.lastAlertPrice) !== price) {
-          const previousAlertPrice = Number.isFinite(Number(item.lastAlertPrice))
-            ? Number(item.lastAlertPrice)
-            : null;
-          const direction = previousAlertPrice === null
-            ? "Target reached"
-            : price < previousAlertPrice
-              ? "Price dropped again"
-              : "Price changed";
-          const mention = LIMITED_ALERT_USER_ID ? `<@${LIMITED_ALERT_USER_ID}>\n` : "";
-          await channel.send({
-            content:
-              `${mention}## 🔔 Roblox Limited Price Alert\n` +
-              `**${details.name}**\n` +
-              `**${direction}**\n` +
-              `Lowest resale: **${price.toLocaleString("en-US")} Robux**\n` +
-              `Your target: **${targetPrice.toLocaleString("en-US")} Robux**\n` +
-              `https://www.roblox.com/catalog/${assetId}`,
-            allowedMentions: LIMITED_ALERT_USER_ID ? { users: [LIMITED_ALERT_USER_ID] } : { parse: [] },
-            components: [
-              new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                  .setStyle(ButtonStyle.Link)
-                  .setLabel("Open official purchase page")
-                  .setURL(`https://www.roblox.com/catalog/${assetId}`)
-              ),
-            ],
-          });
-          item.armed = false;
-          item.lastAlertPrice = price;
-          item.lastAlertedAt = new Date().toISOString();
-          console.log(`[limited_watch] alert asset=${assetId} price=${price} target=${targetPrice}`);
-        }
-        changed = true;
-      } catch (err) {
-        console.warn(`[limited_watch] check failed asset=${assetId}:`, err.message || err);
+      const checkedAt = new Date().toISOString();
+      const { changed: priceChanged, previousPrice } = recordLimitedPrice(item, assetId, price, checkedAt);
+      item.name = details.name;
+      item.lastCheckedAt = checkedAt;
+      item.lastPrice = price;
+      const logState = `${price ?? "no-resale"}:${item.armed !== false}`;
+      if (limitedWatchLastLoggedState.get(assetId) !== logState) {
+        limitedWatchLastLoggedState.set(assetId, logState);
+        console.log(`[limited_watch] asset=${assetId} price=${price ?? "none"} target=${targetPrice} armed=${item.armed !== false}`);
       }
-    }
 
-    if (changed) writeLimitedWatch(watch);
+      if (!price) {
+        if (priceChanged) writeLimitedWatch(watch);
+        return;
+      }
+
+      if (price > targetPrice) {
+        const stateChanged = item.armed === false || item.lastAlertPrice !== null;
+        item.armed = true;
+        item.lastAlertPrice = null;
+        if (priceChanged || stateChanged) writeLimitedWatch(watch);
+        return;
+      }
+
+      // Send one alert for every distinct lowest-resale price below the target.
+      if (Number(item.lastAlertPrice) !== price) {
+        const previousAlertPrice = finiteLimitedPrice(item.lastAlertPrice) ?? previousPrice;
+        const direction = previousAlertPrice === null
+          ? "Target reached"
+          : price < previousAlertPrice
+            ? "Price dropped again"
+            : "Price changed";
+        const targetDifference = targetPrice - price;
+        const priceDifference = previousAlertPrice === null ? null : price - previousAlertPrice;
+        const mention = LIMITED_ALERT_USER_ID ? `<@${LIMITED_ALERT_USER_ID}>\n` : "";
+        await channel.send({
+          content:
+            `${mention}## Roblox Limited Price Alert\n` +
+            `**${details.name}**\n` +
+            `**${direction}**\n` +
+            `Lowest resale: **${price.toLocaleString("en-US")} Robux**\n` +
+            (priceDifference === null ? "" : `Change: **${priceDifference > 0 ? "+" : ""}${priceDifference.toLocaleString("en-US")} Robux**\n`) +
+            `Below target by: **${targetDifference.toLocaleString("en-US")} Robux**\n` +
+            `Your target: **${targetPrice.toLocaleString("en-US")} Robux**\n` +
+            `https://www.roblox.com/catalog/${assetId}`,
+          allowedMentions: LIMITED_ALERT_USER_ID ? { users: [LIMITED_ALERT_USER_ID] } : { parse: [] },
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setLabel("Open official purchase page")
+                .setURL(`https://www.roblox.com/catalog/${assetId}`)
+            ),
+          ],
+        });
+        item.armed = false;
+        item.lastAlertPrice = price;
+        item.lastAlertedAt = checkedAt;
+        appendLimitedWatchLog({ type: "alert", at: checkedAt, assetId, price, targetPrice, previousPrice: previousAlertPrice });
+        console.log(`[limited_watch] alert asset=${assetId} price=${price} target=${targetPrice}`);
+      }
+      if (priceChanged || item.lastAlertedAt === checkedAt) writeLimitedWatch(watch);
+    } catch (err) {
+      appendLimitedWatchLog({ type: "error", at: new Date().toISOString(), assetId, error: String(err.message || err) });
+      console.warn(`[limited_watch] check failed asset=${assetId}:`, err.message || err);
+    }
   } finally {
     limitedWatchCheckInProgress = false;
   }
@@ -13819,6 +13870,7 @@ client.on("interactionCreate", async interaction => {
     "limited_add",
     "limited_remove",
     "limited_list",
+    "limited_history",
     "bulk_steal_clothing",
     "bulk_steal",
     "views",
@@ -14949,7 +15001,7 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (["limited_alert_channel", "limited_add", "limited_remove", "limited_list"].includes(interaction.commandName)) {
+    if (["limited_alert_channel", "limited_add", "limited_remove", "limited_list", "limited_history"].includes(interaction.commandName)) {
       if (!userIsAdmin(interaction)) {
         await interaction.reply({ content: "## Admin Only\nThis Limited alert configuration is restricted to the team.", flags: 64 });
         return;
@@ -14986,6 +15038,7 @@ client.on("interactionCreate", async interaction => {
           addedBy: interaction.user.id,
         };
         writeLimitedWatch(watch);
+        limitedWatchPriorityAssetId = assetId;
         await interaction.reply({
           content:
             "## ✅ Limited Added\n" +
@@ -15010,14 +15063,34 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      if (interaction.commandName === "limited_history") {
+        const assetId = normalizeLimitedAssetId(interaction.options.getString("id"));
+        const item = assetId ? watch.items[assetId] : null;
+        if (!item) {
+          await interaction.reply({ content: "## Limited Not Found\nThis asset is not being monitored.", flags: 64 });
+          return;
+        }
+        const history = Array.isArray(item.history) ? item.history.slice(-20).reverse() : [];
+        const lines = history.length
+          ? history.map(entry => `- <t:${Math.floor(Date.parse(entry.at) / 1000)}:R> — **${Number(entry.price).toLocaleString("en-US")} Robux**`).join("\n")
+          : "No saved price changes yet.";
+        await interaction.reply({
+          content: `## Limited Price History\n**${item.name || `Asset ${assetId}`}** — \`${assetId}\`\nTarget: **${Number(item.targetPrice).toLocaleString("en-US")} Robux**\n\n${lines}`,
+          flags: 64,
+        });
+        return;
+      }
+
       const entries = Object.values(watch.items || {});
       if (!entries.length) {
         await interaction.reply({ content: "## Limited Watch List\nNo Limiteds are being monitored yet.", flags: 64 });
         return;
       }
       const lines = entries.slice(0, 50).map(item => {
-        const lastPrice = Number.isFinite(Number(item.lastPrice)) ? `${Number(item.lastPrice).toLocaleString("en-US")} Robux` : "not checked yet";
-        return `- **${item.name || `Asset ${item.id}`}** — target: **${Number(item.targetPrice).toLocaleString("en-US")}** | last: ${lastPrice} | ${item.armed === false ? "waiting to re-arm" : "armed"} | \`${item.id}\``;
+        const lastPriceValue = finiteLimitedPrice(item.lastPrice);
+        const lastPrice = lastPriceValue === null ? "not checked yet" : `${lastPriceValue.toLocaleString("en-US")} Robux`;
+        const historyCount = Array.isArray(item.history) ? item.history.length : 0;
+        return `- **${item.name || `Asset ${item.id}`}** — target: **${Number(item.targetPrice).toLocaleString("en-US")}** | last: ${lastPrice} | history: ${historyCount} | ${item.armed === false ? "waiting to re-arm" : "armed"} | \`${item.id}\``;
       });
       await interaction.reply({
         content: `## 🔔 Limited Watch List\n**Alert channel:** ${watch.channelId ? `<#${watch.channelId}>` : "not configured"}\n**Check interval:** ${Math.round(LIMITED_CHECK_INTERVAL_MS / 1000)}s\n\n${lines.join("\n")}`,
