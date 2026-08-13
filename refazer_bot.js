@@ -7187,22 +7187,36 @@ async function runLimitedWatchCheck() {
 
         if (price > targetPrice) {
           if (!item.armed) item.armed = true;
+          item.lastAlertPrice = null;
           changed = true;
           continue;
         }
 
-        if (item.armed !== false) {
+        // Send one alert for every distinct lowest-resale price below the target.
+        // This catches new under-target listings without repeating the same price
+        // on every polling cycle.
+        if (Number(item.lastAlertPrice) !== price) {
+          const previousAlertPrice = Number.isFinite(Number(item.lastAlertPrice))
+            ? Number(item.lastAlertPrice)
+            : null;
+          const direction = previousAlertPrice === null
+            ? "Target reached"
+            : price < previousAlertPrice
+              ? "Price dropped again"
+              : "Price changed";
           const mention = LIMITED_ALERT_USER_ID ? `<@${LIMITED_ALERT_USER_ID}>\n` : "";
           await channel.send({
             content:
               `${mention}## 🔔 Roblox Limited Price Alert\n` +
               `**${details.name}**\n` +
+              `**${direction}**\n` +
               `Lowest resale: **${price.toLocaleString("en-US")} Robux**\n` +
               `Your target: **${targetPrice.toLocaleString("en-US")} Robux**\n` +
               `https://www.roblox.com/catalog/${assetId}`,
             allowedMentions: LIMITED_ALERT_USER_ID ? { users: [LIMITED_ALERT_USER_ID] } : { parse: [] },
           });
           item.armed = false;
+          item.lastAlertPrice = price;
           item.lastAlertedAt = new Date().toISOString();
           console.log(`[limited_watch] alert asset=${assetId} price=${price} target=${targetPrice}`);
         }
