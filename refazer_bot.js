@@ -500,7 +500,9 @@ const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 const PENDING_MULTIVIEW_PATH = path.join(__dirname, "data", "pending_multiview_actions.json");
 const PENDING_MULTIVIEW_TTL_MS = 6 * 60 * 60 * 1000;
 const LIMITED_WATCH_PATH = path.join(__dirname, "data", "limited-watch.json");
-const LIMITED_CHECK_INTERVAL_MS = Math.max(10_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
+// Two seconds is the fastest supported mode for a small watch list. Requests
+// remain sequential and overlapping runs are skipped to protect the public API.
+const LIMITED_CHECK_INTERVAL_MS = Math.max(2_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
 const LIMITED_ALERT_USER_ID = cleanEnv(process.env.LIMITED_ALERT_USER_ID);
 let limitedWatchCheckInProgress = false;
 
