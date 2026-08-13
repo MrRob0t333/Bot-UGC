@@ -1115,7 +1115,7 @@ const commands = [
       o.setName("id").setDescription("Roblox asset ID").setRequired(true)
     )
     .addIntegerOption(o =>
-      o.setName("preco").setDescription("Alert when lowest resale is at or below this Robux price (default 10000)").setRequired(false).setMinValue(1)
+      o.setName("preco").setDescription("Alert when lowest resale is at or below this Robux price (default 100)").setRequired(false).setMinValue(1)
     )
     .toJSON(),
 
@@ -14963,7 +14963,7 @@ client.on("interactionCreate", async interaction => {
 
       if (interaction.commandName === "limited_add") {
         const assetId = normalizeLimitedAssetId(interaction.options.getString("id"));
-        const targetPrice = interaction.options.getInteger("preco") ?? 10_000;
+        const targetPrice = interaction.options.getInteger("preco") ?? 100;
         if (!assetId) {
           await interaction.reply({ content: "## Invalid Asset ID\nProvide a Roblox asset ID or catalog link.", flags: 64 });
           return;
