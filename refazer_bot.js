@@ -500,9 +500,9 @@ const WALLET_DB_PATH = path.join(__dirname, "data", "refazer_wallet.json");
 const PENDING_MULTIVIEW_PATH = path.join(__dirname, "data", "pending_multiview_actions.json");
 const PENDING_MULTIVIEW_TTL_MS = 6 * 60 * 60 * 1000;
 const LIMITED_WATCH_PATH = path.join(__dirname, "data", "limited-watch.json");
-// Two seconds is the fastest supported mode for a small watch list. Requests
+// One second is the fastest supported mode for a very small watch list. Requests
 // remain sequential and overlapping runs are skipped to protect the public API.
-const LIMITED_CHECK_INTERVAL_MS = Math.max(2_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
+const LIMITED_CHECK_INTERVAL_MS = Math.max(1_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
 const LIMITED_ALERT_USER_ID = cleanEnv(process.env.LIMITED_ALERT_USER_ID);
 let limitedWatchCheckInProgress = false;
 const limitedWatchLastLoggedState = new Map();
@@ -7214,6 +7214,14 @@ async function runLimitedWatchCheck() {
               `Your target: **${targetPrice.toLocaleString("en-US")} Robux**\n` +
               `https://www.roblox.com/catalog/${assetId}`,
             allowedMentions: LIMITED_ALERT_USER_ID ? { users: [LIMITED_ALERT_USER_ID] } : { parse: [] },
+            components: [
+              new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setStyle(ButtonStyle.Link)
+                  .setLabel("Open official purchase page")
+                  .setURL(`https://www.roblox.com/catalog/${assetId}`)
+              ),
+            ],
           });
           item.armed = false;
           item.lastAlertPrice = price;
