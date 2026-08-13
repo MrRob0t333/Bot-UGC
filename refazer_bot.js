@@ -505,6 +505,7 @@ const LIMITED_WATCH_PATH = path.join(__dirname, "data", "limited-watch.json");
 const LIMITED_CHECK_INTERVAL_MS = Math.max(2_000, Number(process.env.LIMITED_CHECK_INTERVAL_MS || 60_000));
 const LIMITED_ALERT_USER_ID = cleanEnv(process.env.LIMITED_ALERT_USER_ID);
 let limitedWatchCheckInProgress = false;
+const limitedWatchLastLoggedState = new Map();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
   console.error("Falta REFAZER_DISCORD_TOKEN, REFAZER_CLIENT_ID ou REFAZER_GUILD_ID no .env.");
@@ -7126,19 +7127,24 @@ function normalizeLimitedAssetId(value) {
 }
 
 async function fetchLimitedResaleDetails(assetId) {
-  const resellers = await fetchRobloxPublicJson(
-    `https://economy.roblox.com/v1/assets/${encodeURIComponent(assetId)}/resellers?limit=10&sortOrder=Asc`,
+  const details = await fetchRobloxPublicJson(
+    `https://economy.roblox.com/v2/assets/${encodeURIComponent(assetId)}/details`,
     { maxWaitMs: 20_000 }
   );
-  const lowestListing = Array.isArray(resellers?.data)
-    ? resellers.data.find(entry => Number.isFinite(Number(entry?.price)) && Number(entry.price) > 0)
-    : null;
-  const lowestResalePrice = Number(lowestListing?.price) || null;
+  const collectibleDetails = details.CollectiblesItemDetails || details.collectiblesItemDetails || {};
+  const lowestResalePrice = normalizeCatalogNumber(
+    collectibleDetails.CollectibleLowestResalePrice,
+    collectibleDetails.collectibleLowestResalePrice,
+    details.CollectibleLowestResalePrice,
+    details.collectibleLowestResalePrice,
+    details.lowestResalePrice,
+    details.LowestResalePrice
+  ) || null;
   return {
     id: String(assetId),
-    name: `Limited ${assetId}`,
-    lowestResalePrice: lowestResalePrice > 0 ? lowestResalePrice : null,
-    hasResellers: Boolean(lowestListing),
+    name: details.Name || details.name || `Limited ${assetId}`,
+    lowestResalePrice,
+    hasResellers: Boolean(lowestResalePrice),
   };
 }
 
@@ -7168,6 +7174,11 @@ async function runLimitedWatchCheck() {
         item.name = details.name;
         item.lastCheckedAt = new Date().toISOString();
         item.lastPrice = price;
+        const logState = `${price ?? "no-resale"}:${item.armed !== false}`;
+        if (limitedWatchLastLoggedState.get(assetId) !== logState) {
+          limitedWatchLastLoggedState.set(assetId, logState);
+          console.log(`[limited_watch] asset=${assetId} price=${price ?? "none"} target=${targetPrice} armed=${item.armed !== false}`);
+        }
 
         if (!price) {
           changed = true;
