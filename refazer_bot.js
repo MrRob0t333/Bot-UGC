@@ -7270,7 +7270,7 @@ async function runLimitedWatchCheck() {
             new ActionRowBuilder().addComponents(
               new ButtonBuilder()
                 .setStyle(ButtonStyle.Link)
-                .setLabel("Abrir no Roblox")
+                .setLabel("Comprar no Roblox")
                 .setURL(`https://www.roblox.com/catalog/${assetId}`)
             ),
           ],
