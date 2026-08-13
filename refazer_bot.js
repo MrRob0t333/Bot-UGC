@@ -7124,21 +7124,19 @@ function normalizeLimitedAssetId(value) {
 }
 
 async function fetchLimitedResaleDetails(assetId) {
-  const details = await fetchRobloxPublicJson(
-    `https://economy.roblox.com/v2/assets/${encodeURIComponent(assetId)}/details`,
+  const resellers = await fetchRobloxPublicJson(
+    `https://economy.roblox.com/v1/assets/${encodeURIComponent(assetId)}/resellers?limit=10&sortOrder=Asc`,
     { maxWaitMs: 20_000 }
   );
-  const lowestResalePrice = normalizeCatalogNumber(
-    details.lowestResalePrice,
-    details.LowestResalePrice,
-    details.price,
-    details.Price
-  );
+  const lowestListing = Array.isArray(resellers?.data)
+    ? resellers.data.find(entry => Number.isFinite(Number(entry?.price)) && Number(entry.price) > 0)
+    : null;
+  const lowestResalePrice = Number(lowestListing?.price) || null;
   return {
     id: String(assetId),
-    name: details.name || details.Name || `Limited ${assetId}`,
+    name: `Limited ${assetId}`,
     lowestResalePrice: lowestResalePrice > 0 ? lowestResalePrice : null,
-    hasResellers: Boolean(details.hasResellers ?? details.HasResellers),
+    hasResellers: Boolean(lowestListing),
   };
 }
 
