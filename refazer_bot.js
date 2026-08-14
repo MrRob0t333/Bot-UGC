@@ -1145,6 +1145,14 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("limited_analyze")
+    .setDescription("Admin: summarizes public signals and saved price trend for a Limited")
+    .addStringOption(o =>
+      o.setName("id").setDescription("Roblox asset ID or catalog link").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("bulk_steal_clothing")
     .setDescription("Copies classic clothing templates in bulk")
     .addStringOption(o =>
@@ -7184,7 +7192,67 @@ async function fetchLimitedResaleDetails(assetId) {
     name: details.Name || details.name || `Limited ${assetId}`,
     lowestResalePrice,
     hasResellers: Boolean(lowestResalePrice),
+    totalQuantity: normalizeCatalogNumber(
+      collectibleDetails.TotalQuantity,
+      collectibleDetails.totalQuantity,
+      details.TotalQuantity,
+      details.totalQuantity
+    ) || null,
+    createdAt: details.Created || details.created || null,
   };
+}
+
+function formatLimitedAnalysis({ assetId, item, details }) {
+  const currentPrice = finiteLimitedPrice(details.lowestResalePrice);
+  const history = (Array.isArray(item?.history) ? item.history : [])
+    .map(entry => ({ at: Date.parse(entry?.at), price: finiteLimitedPrice(entry?.price) }))
+    .filter(entry => Number.isFinite(entry.at) && entry.price !== null)
+    .sort((a, b) => a.at - b.at);
+  const sample = currentPrice === null
+    ? history
+    : [...history.filter(entry => entry.price !== currentPrice), { at: Date.now(), price: currentPrice }]
+      .sort((a, b) => a.at - b.at);
+  const prices = sample.map(entry => entry.price);
+  const createdAt = details.createdAt ? Date.parse(details.createdAt) : NaN;
+  const ageDays = Number.isFinite(createdAt) ? Math.max(0, Math.floor((Date.now() - createdAt) / 86_400_000)) : null;
+  const observationHours = sample.length >= 2 ? Math.max(0, (sample.at(-1).at - sample[0].at) / 3_600_000) : 0;
+  const minimum = prices.length ? Math.min(...prices) : null;
+  const maximum = prices.length ? Math.max(...prices) : null;
+  const first = sample[0];
+  const last = sample.at(-1);
+  const trendPerDay = observationHours > 0
+    ? ((last.price - first.price) / observationHours) * 24
+    : null;
+  const averageStep = sample.length >= 2
+    ? sample.slice(1).reduce((sum, entry, index) => sum + Math.abs(entry.price - sample[index].price), 0) / (sample.length - 1)
+    : null;
+  const observationLabel = sample.length >= 8 && observationHours >= 24
+    ? "strong"
+    : sample.length >= 3 && observationHours >= 6
+      ? "limited"
+      : "too small for a trend";
+  const robux = value => value === null || value === undefined ? "unavailable" : `${Math.round(value).toLocaleString("en-US")} Robux`;
+  const lines = [
+    "## Limited Market Analysis",
+    `**${details.name}** - \`${assetId}\``,
+    `Current lowest resale: **${robux(currentPrice)}**`,
+    `Supply: **${details.totalQuantity === null ? "unavailable" : details.totalQuantity.toLocaleString("en-US")}** | Created: **${ageDays === null ? "unavailable" : `${ageDays}d ago`}**`,
+    "",
+    "### Observed Price Data",
+    `Saved observations: **${history.length}** | Data confidence: **${observationLabel}**`,
+    prices.length ? `Observed range: **${robux(minimum)} - ${robux(maximum)}**` : "Observed range: **no saved prices yet**",
+  ];
+
+  if (trendPerDay !== null) {
+    const sign = trendPerDay > 0 ? "+" : "";
+    lines.push(`Observed drift: **${sign}${Math.round(trendPerDay).toLocaleString("en-US")} Robux/day** over ${Math.max(1, Math.round(observationHours))}h.`);
+    lines.push(`Mechanical 7-day extension: **${robux(currentPrice + trendPerDay * 7)}** if this same drift continued.`);
+  } else {
+    lines.push("Trend: **not enough saved observations yet**. Keep it monitored to build a meaningful history.");
+  }
+  if (averageStep !== null) lines.push(`Average recorded price move: **${robux(averageStep)}**.`);
+  lines.push("", "### Important", "This is public-data analysis, not a price prediction or a buy/sell recommendation. Roblox does not expose reliable recent-sale volume through this endpoint, so liquidity cannot be confirmed from this report alone.");
+  return lines.join("\n");
 }
 
 async function runLimitedWatchCheck() {
@@ -13871,6 +13939,7 @@ client.on("interactionCreate", async interaction => {
     "limited_remove",
     "limited_list",
     "limited_history",
+    "limited_analyze",
     "bulk_steal_clothing",
     "bulk_steal",
     "views",
@@ -15001,7 +15070,7 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (["limited_alert_channel", "limited_add", "limited_remove", "limited_list", "limited_history"].includes(interaction.commandName)) {
+    if (["limited_alert_channel", "limited_add", "limited_remove", "limited_list", "limited_history", "limited_analyze"].includes(interaction.commandName)) {
       if (!userIsAdmin(interaction)) {
         await interaction.reply({ content: "## Admin Only\nThis Limited alert configuration is restricted to the team.", flags: 64 });
         return;
@@ -15078,6 +15147,24 @@ client.on("interactionCreate", async interaction => {
           content: `## Limited Price History\n**${item.name || `Asset ${assetId}`}** — \`${assetId}\`\nTarget: **${Number(item.targetPrice).toLocaleString("en-US")} Robux**\n\n${lines}`,
           flags: 64,
         });
+        return;
+      }
+
+      if (interaction.commandName === "limited_analyze") {
+        const assetId = normalizeLimitedAssetId(interaction.options.getString("id"));
+        if (!assetId) {
+          await interaction.reply({ content: "## Invalid Asset ID\nProvide a Roblox asset ID or catalog link.", flags: 64 });
+          return;
+        }
+        await interaction.deferReply({ flags: 64 });
+        const item = watch.items[assetId] || null;
+        try {
+          const details = await fetchLimitedResaleDetails(assetId);
+          await interaction.editReply(formatLimitedAnalysis({ assetId, item, details }));
+        } catch (err) {
+          await interaction.editReply(`## Limited Analysis Unavailable\nThe official Roblox price endpoint did not respond for \`${assetId}\`. Try again shortly.`);
+          console.warn(`[limited_analyze] failed asset=${assetId}:`, err.message || err);
+        }
         return;
       }
 
