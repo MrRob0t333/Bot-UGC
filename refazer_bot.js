@@ -8826,18 +8826,6 @@ function sniperCandidatePoolTarget(limit = 5) {
   return Math.max(SNIPER_CANDIDATE_POOL_MIN, Number(limit || 0) * 6);
 }
 
-function sniperCandidateFamilyKey(candidate) {
-  const ignored = new Set([
-    "accessory", "accessories", "addon", "add", "on", "recolor", "recolour", "color", "colour",
-    "black", "white", "pink", "red", "blue", "green", "purple", "brown", "gray", "grey",
-    "dark", "light", "gold", "silver", "basic", "cute", "new", "limited", "ugc",
-  ]);
-  const words = normalizeSniperText(candidate?.name || "")
-    .split(/[^a-z0-9]+/)
-    .filter(word => word.length > 2 && !ignored.has(word));
-  return words.slice(0, 2).join(" ") || String(candidate?.id || "");
-}
-
 function pickSniperCandidates(candidates, userId, count = 1) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
@@ -8851,30 +8839,23 @@ function pickSniperCandidates(candidates, userId, count = 1) {
 
   const pool = [...fresh, ...seenFallback].slice(0, sniperCandidatePoolTarget(count));
   const selected = [];
-  const selectedFamilies = new Set();
 
   while (pool.length && selected.length < count) {
-    const hasDifferentFamily = pool.some(candidate => !selectedFamilies.has(sniperCandidateFamilyKey(candidate)));
-    const eligible = hasDifferentFamily
-      ? pool.filter(candidate => !selectedFamilies.has(sniperCandidateFamilyKey(candidate)))
-      : pool;
-    const totalWeight = eligible.reduce((sum, candidate, index) => {
+    const totalWeight = pool.reduce((sum, candidate, index) => {
       return sum + Math.max(1, candidate.score) + Math.max(0, 10 - index);
     }, 0);
     let cursor = Math.random() * totalWeight;
-    let chosenCandidate = eligible[0];
+    let chosenIndex = 0;
 
-    for (let index = 0; index < eligible.length; index += 1) {
-      cursor -= Math.max(1, eligible[index].score) + Math.max(0, 10 - index);
+    for (let index = 0; index < pool.length; index += 1) {
+      cursor -= Math.max(1, pool[index].score) + Math.max(0, 10 - index);
       if (cursor <= 0) {
-        chosenCandidate = eligible[index];
+        chosenIndex = index;
         break;
       }
     }
 
-    const chosenIndex = pool.indexOf(chosenCandidate);
     selected.push(pool.splice(chosenIndex, 1)[0]);
-    selectedFamilies.add(sniperCandidateFamilyKey(chosenCandidate));
   }
 
   return selected;
