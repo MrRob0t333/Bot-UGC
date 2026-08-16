@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const zlib = require("zlib");
 const { execFile, execFileSync } = require("child_process");
 const { promisify } = require("util");
+const { ProxyAgent } = require("undici");
 const execFileAsync = promisify(execFile);
 
 const {
@@ -6742,6 +6743,8 @@ const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AG
 const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 const ROBLOX_PUBLIC_MIRROR_FIRST = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_FIRST, "true") !== "false";
+const ROBLOX_PUBLIC_PROXY_URL = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_PROXY_URL);
+let robloxPublicProxyDispatcher = null;
 let sniperBusyUntil = 0;
 let sniperHistoryWorkerRunning = false;
 let sniperHistoryWorkerTimer = null;
@@ -7060,6 +7063,14 @@ function robloxPublicUrlVariants(url) {
   return ROBLOX_PUBLIC_MIRROR_FIRST ? [mirrorUrl, url] : [url, mirrorUrl];
 }
 
+function getRobloxPublicProxyDispatcher() {
+  if (!ROBLOX_PUBLIC_PROXY_URL) return null;
+  if (!robloxPublicProxyDispatcher) {
+    robloxPublicProxyDispatcher = new ProxyAgent(ROBLOX_PUBLIC_PROXY_URL);
+  }
+  return robloxPublicProxyDispatcher;
+}
+
 async function fetchRobloxPublicJson(url, options = {}) {
   const variants = options.officialOnly ? [url] : robloxPublicUrlVariants(url);
   let lastError = null;
@@ -7082,8 +7093,10 @@ async function fetchRobloxPublicJson(url, options = {}) {
       }
     }
 
+    const dispatcher = getRobloxPublicProxyDispatcher();
     const res = await fetch(targetUrl, {
       headers: robloxHeaders({}, ""),
+      ...(dispatcher ? { dispatcher } : {}),
     });
     const text = await res.text();
 
