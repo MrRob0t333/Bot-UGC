@@ -6701,6 +6701,7 @@ const SNIPER_NORMAL_SCAN_ROWS = Number(process.env.REFAZER_SNIPER_NORMAL_SCAN_RO
 const SNIPER_DEEP_SCAN_ROWS = Number(process.env.REFAZER_SNIPER_DEEP_SCAN_ROWS || 1000);
 const SNIPER_LIMITED_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DETAIL_SCAN_LIMIT || 90);
 const SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT = Number(process.env.REFAZER_SNIPER_LIMITED_DEEP_DETAIL_SCAN_LIMIT || 180);
+const SNIPER_CANDIDATE_POOL_MIN = Number(process.env.REFAZER_SNIPER_CANDIDATE_POOL_MIN || 40);
 const SNIPER_PUBLIC_WAIT_LIMIT_MS = Number(process.env.REFAZER_SNIPER_PUBLIC_WAIT_LIMIT_MS || 15000);
 const SNIPER_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_PAGE_DELAY_MS || 1600);
 const SNIPER_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_CATEGORY_DELAY_MS || 2500);
@@ -8511,7 +8512,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     });
     if (candidate.categoryVerified || category === "all" || category === "collectibles") enriched.push(candidate);
     else inferred.push(candidate);
-    if (enriched.length + inferred.length >= Math.max(limit, 3)) break;
+    if (enriched.length + inferred.length >= sniperCandidatePoolTarget(limit)) break;
   }
 
   if (!enriched.length && category !== "all" && category !== "collectibles") {
@@ -8535,7 +8536,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         marketplaceRank: marketplaceRankById.get(String(id)),
         sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, details)) || category : category,
       }));
-      if (enriched.length >= Math.max(limit, 3)) break;
+      if (enriched.length >= sniperCandidatePoolTarget(limit)) break;
     }
   }
 
@@ -8571,7 +8572,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         ? "deadline fallback: verified catalog type"
         : "raw fallback: verified catalog type");
       enriched.push(candidate);
-      if (enriched.length >= Math.max(limit, 5)) break;
+      if (enriched.length >= sniperCandidatePoolTarget(limit)) break;
     }
     if (enriched.length) {
       lastSniperDebug.partial = true;
@@ -8597,7 +8598,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
         ? "deadline fallback: raw catalog signal"
         : "broad fallback: category not confirmed");
       inferred.push(candidate);
-      if (inferred.length >= Math.max(limit, 5)) break;
+      if (inferred.length >= sniperCandidatePoolTarget(limit)) break;
     }
     if (deadlineFallback && inferred.length) {
       lastSniperDebug.partial = true;
@@ -8617,7 +8618,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
     if (aRank !== bRank) return aRank - bRank;
     return b.score - a.score;
-  }).slice(0, Math.max(15, limit * 3));
+  }).slice(0, sniperCandidatePoolTarget(limit));
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
@@ -8821,6 +8822,22 @@ function sniperSeenIdsFor(user) {
   return user.sniperSeenIds;
 }
 
+function sniperCandidatePoolTarget(limit = 5) {
+  return Math.max(SNIPER_CANDIDATE_POOL_MIN, Number(limit || 0) * 6);
+}
+
+function sniperCandidateFamilyKey(candidate) {
+  const ignored = new Set([
+    "accessory", "accessories", "addon", "add", "on", "recolor", "recolour", "color", "colour",
+    "black", "white", "pink", "red", "blue", "green", "purple", "brown", "gray", "grey",
+    "dark", "light", "gold", "silver", "basic", "cute", "new", "limited", "ugc",
+  ]);
+  const words = normalizeSniperText(candidate?.name || "")
+    .split(/[^a-z0-9]+/)
+    .filter(word => word.length > 2 && !ignored.has(word));
+  return words.slice(0, 2).join(" ") || String(candidate?.id || "");
+}
+
 function pickSniperCandidates(candidates, userId, count = 1) {
   const db = readWalletDb();
   const user = walletUser(db, userId);
@@ -8832,25 +8849,32 @@ function pickSniperCandidates(candidates, userId, count = 1) {
     return [...fresh, ...seenFallback].slice(0, count);
   }
 
-  const pool = [...fresh, ...seenFallback].slice(0, Math.max(10, count * 3));
+  const pool = [...fresh, ...seenFallback].slice(0, sniperCandidatePoolTarget(count));
   const selected = [];
+  const selectedFamilies = new Set();
 
   while (pool.length && selected.length < count) {
-    const totalWeight = pool.reduce((sum, candidate, index) => {
+    const hasDifferentFamily = pool.some(candidate => !selectedFamilies.has(sniperCandidateFamilyKey(candidate)));
+    const eligible = hasDifferentFamily
+      ? pool.filter(candidate => !selectedFamilies.has(sniperCandidateFamilyKey(candidate)))
+      : pool;
+    const totalWeight = eligible.reduce((sum, candidate, index) => {
       return sum + Math.max(1, candidate.score) + Math.max(0, 10 - index);
     }, 0);
     let cursor = Math.random() * totalWeight;
-    let chosenIndex = 0;
+    let chosenCandidate = eligible[0];
 
-    for (let index = 0; index < pool.length; index += 1) {
-      cursor -= Math.max(1, pool[index].score) + Math.max(0, 10 - index);
+    for (let index = 0; index < eligible.length; index += 1) {
+      cursor -= Math.max(1, eligible[index].score) + Math.max(0, 10 - index);
       if (cursor <= 0) {
-        chosenIndex = index;
+        chosenCandidate = eligible[index];
         break;
       }
     }
 
+    const chosenIndex = pool.indexOf(chosenCandidate);
     selected.push(pool.splice(chosenIndex, 1)[0]);
+    selectedFamilies.add(sniperCandidateFamilyKey(chosenCandidate));
   }
 
   return selected;
