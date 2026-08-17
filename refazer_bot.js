@@ -6746,6 +6746,7 @@ const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_
 const ROBLOX_PUBLIC_MIRROR_FIRST = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_FIRST, "true") !== "false";
 const ROBLOX_PUBLIC_PROXY_URL = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_PROXY_URL);
 let robloxPublicProxyDispatcher = null;
+const robloxPublicCsrfTokens = new Map();
 let sniperBusyUntil = 0;
 let sniperHistoryWorkerRunning = false;
 let sniperHistoryWorkerTimer = null;
@@ -7128,6 +7129,60 @@ async function fetchRobloxPublicJson(url, options = {}) {
   }
 
   throw lastError || new Error("Roblox public catalog request failed.");
+}
+
+async function fetchRobloxCatalogItemDetailsBatch(itemIds, options = {}) {
+  const items = [...new Set(itemIds.map(String).filter(Boolean))].map(id => ({ itemType: "Asset", id: Number(id) }));
+  if (!items.length) return [];
+
+  const url = "https://catalog.roblox.com/v1/catalog/items/details";
+  const variants = robloxPublicUrlVariants(url);
+  let lastError = null;
+
+  for (let index = 0; index < variants.length; index += 1) {
+    const targetUrl = variants[index];
+    const origin = new URL(targetUrl).origin;
+    const dispatcher = getRobloxPublicProxyDispatcher();
+    const request = async () => {
+      const headers = robloxHeaders({ "content-type": "application/json" }, "");
+      const csrfToken = robloxPublicCsrfTokens.get(origin);
+      if (csrfToken) headers["x-csrf-token"] = csrfToken;
+      return fetch(targetUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ items }),
+        ...(dispatcher ? { dispatcher } : {}),
+      });
+    };
+
+    try {
+      await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+      let res = await request();
+      const csrfToken = res.headers.get("x-csrf-token");
+      if (res.status === 403 && csrfToken) {
+        robloxPublicCsrfTokens.set(origin, csrfToken);
+        res = await request();
+      }
+      const text = await res.text();
+      if (res.status === 429) {
+        lastError = new Error(`Roblox catalog is rate-limiting public detail batches. Last response (429): ${text.slice(0, 300)}`);
+        if (index < variants.length - 1) continue;
+        throw lastError;
+      }
+      if (!res.ok) {
+        lastError = new Error(`Roblox catalog detail batch failed (${res.status}): ${text.slice(0, 300)}`);
+        if (index < variants.length - 1) continue;
+        throw lastError;
+      }
+      const json = JSON.parse(text);
+      return Array.isArray(json.data) ? json.data : [];
+    } catch (err) {
+      lastError = err;
+      if (index >= variants.length - 1) throw err;
+    }
+  }
+
+  throw lastError || new Error("Roblox catalog detail batch failed.");
 }
 
 function emptyLimitedWatch() {
@@ -8469,6 +8524,33 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
   lastSniperDebug.uniqueRows = unique.length;
 
+  const batchDetailsById = new Map();
+  if (Number.isFinite(maxAgeDays) && !limitedOnly) {
+    const batchSize = 100;
+    for (let offset = 0; offset < unique.length; offset += batchSize) {
+      if (sniperDeadlineExceeded(deadlineAt)) {
+        lastSniperDebug.partial = true;
+        lastSniperDebug.partialReason ||= "Stopped detail batches after reaching the command deadline.";
+        break;
+      }
+      try {
+        const details = await fetchRobloxCatalogItemDetailsBatch(
+          unique.slice(offset, offset + batchSize).map(catalogItemId),
+          { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS }
+        );
+        for (const detail of details) {
+          const id = catalogItemId(detail);
+          if (id) batchDetailsById.set(String(id), detail);
+        }
+      } catch (err) {
+        lastSniperDebug.partial = true;
+        lastSniperDebug.partialReason ||= `Catalog detail batch failed: ${String(err.message || err).slice(0, 200)}`;
+        break;
+      }
+    }
+  }
+  lastSniperDebug.batchDetails = batchDetailsById.size;
+
   const shouldFetchDetailsForCategory = limitedOnly || (category && !["all", "collectibles"].includes(category));
   const enriched = [];
   const inferred = [];
@@ -8482,21 +8564,23 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
     const scopedCategoryDetails = sniperScopedCategoryDetails(category, item);
     const hasCategorySignal = sniperCategoryCanBeVerified(category, item, scopedCategoryDetails) || sniperNameSuggestsCategory(category, item, scopedCategoryDetails);
-    const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
+    const batchDetails = batchDetailsById.get(String(id)) || {};
+    const rowDetails = { ...scopedCategoryDetails, ...batchDetails };
+    const hasAgeSignal = Boolean(catalogItemCreatedAt(item, rowDetails));
 
     // V2 catalog rows already include asset type, price and creation time for
     // typed categories such as Hair. Use those verified signals immediately;
     // one deep scan should not spend its whole deadline re-fetching the same data.
-    const categoryVerifiedInRow = sniperCategoryCanBeVerified(category, item, scopedCategoryDetails)
-      && sniperCategoryMatches(category, item, scopedCategoryDetails);
+    const categoryVerifiedInRow = sniperCategoryCanBeVerified(category, item, rowDetails)
+      && sniperCategoryMatches(category, item, rowDetails);
     if (
       !limitedOnly
       && categoryVerifiedInRow
       && hasAgeSignal
-      && sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)
-      && sniperAgeMatchesFilter(item, {}, maxAgeDays)
+      && sniperPriceMatchesFilter(item, rowDetails, minPrice, maxPrice)
+      && sniperAgeMatchesFilter(item, rowDetails, maxAgeDays)
     ) {
-      enriched.push(buildSniperCandidate(item, scopedCategoryDetails, category, true, {
+      enriched.push(buildSniperCandidate(item, rowDetails, category, true, {
         marketplaceRank: marketplaceRankById.get(String(id)),
         sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
       }));
@@ -8510,7 +8594,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
     const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
     const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
-    const details = { ...scopedCategoryDetails, ...economyDetails, ...catalogDetails };
+    const details = { ...rowDetails, ...economyDetails, ...catalogDetails };
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
 
@@ -8945,6 +9029,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     debug?.freshnessRecovery ? "Source: Newest catalog order due to the max-age filter" : null,
     `Scanned rows: ${rawRows}`,
     `Unique rows: ${uniqueRows}`,
+    Number.isFinite(debug?.batchDetails) ? `Verified item details: ${debug.batchDetails}` : null,
     `Qualified pool: ${qualifiedCount}`,
     `Returned: ${returnedCount}`,
     debug?.historyCollectedAt ? `Cache updated: ${debug.historyCollectedAt}` : null,
@@ -15285,7 +15370,7 @@ client.on("interactionCreate", async interaction => {
 
       const sniperTimeoutMs = Math.max(
         SNIPER_COMMAND_TIMEOUT_MS,
-        depth === "deep" ? 140000 : 95000,
+        depth === "deep" && Number.isFinite(maxAgeDays) ? 300000 : depth === "deep" ? 140000 : 95000,
         resultCount > 25 ? 95000 : resultCount > 10 ? 80000 : SNIPER_COMMAND_TIMEOUT_MS
       );
       const queueWaitMs = Math.max(0, sniperBusyUntil - Date.now());
