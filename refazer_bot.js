@@ -8468,7 +8468,6 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       ? unique.length
     : Math.max(limit, Math.min(SNIPER_DETAIL_LIMIT, unique.length));
   for (const item of unique.slice(0, detailsLimit)) {
-    if (sniperDeadlineExceeded(deadlineAt)) break;
     const id = catalogItemId(item);
     const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
     const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
@@ -8493,6 +8492,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       if (enriched.length + inferred.length >= sniperCandidatePoolTarget(limit)) break;
       continue;
     }
+
+    // The deadline only stops extra HTTP detail requests. Local catalog-row
+    // filtering above remains cheap and must finish even after a deep scan.
+    if (sniperDeadlineExceeded(deadlineAt)) break;
 
     const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
     const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
