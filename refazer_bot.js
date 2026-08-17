@@ -8555,10 +8555,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   if (!enriched.length && !inferred.length && category !== "all" && category !== "collectibles") {
-    const rawFallbackLimit = sniperDeadlineExceeded(deadlineAt)
-      ? Math.max(limit * 3, 15)
-      : Math.max(limit, 5);
-    for (const item of unique.slice(0, rawFallbackLimit)) {
+    // When the command deadline is reached, all catalog pages already in
+    // memory can still be filtered locally. Do not throw away a deep scan
+    // just because the remote detail phase ran out of time.
+    const rawFallbackRows = sniperDeadlineExceeded(deadlineAt)
+      ? unique
+      : unique.slice(0, Math.max(limit, 5));
+    for (const item of rawFallbackRows) {
       if (!sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)) continue;
       if (!sniperLimitedMatchesFilter(item, {}, limitedOnly)) continue;
       if (!sniperAgeMatchesFilter(item, {}, maxAgeDays)) continue;
