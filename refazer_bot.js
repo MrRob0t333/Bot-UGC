@@ -8191,7 +8191,13 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     return historyCandidates;
   }
 
-  const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
+  const configuredWindowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
+  // A sales window can be dominated by old products that happen to sell well
+  // today. When an explicit publishing-age cap is requested, first obtain a
+  // newest-first pool from the same asset category so the cap is actionable.
+  const windowAttempts = Number.isFinite(maxAgeDays) && window !== "recent"
+    ? [{ SortType: "3", _sniperFreshnessRecovery: true }, ...configuredWindowAttempts]
+    : configuredWindowAttempts;
   const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
@@ -8325,9 +8331,10 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           assertSniperDeadline(deadlineAt);
         }
         const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
+        const freshnessRecovery = attemptParams._sniperFreshnessRecovery === true;
         const debugAttempt = {
           category: searchCategory,
-          reason: queryVariant.reason,
+          reason: freshnessRecovery ? "newest-first recovery for max age" : queryVariant.reason,
           endpoint: useV2Search ? "v2" : "v1",
           params: new URLSearchParams({ ...baseParams, ...normalizedAttemptParams }).toString(),
           rows: 0,
@@ -8369,7 +8376,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           data.push(...collected);
           if (collected.length) {
             lastError = null;
-            searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
+            searchFallbackReason = freshnessRecovery
+              ? "newest-first catalog fallback for max age"
+              : queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             if (data.length >= targetRawRows) break;
             if (sniperDeadlineExceeded(deadlineAt)) {
               stopScanning = true;
