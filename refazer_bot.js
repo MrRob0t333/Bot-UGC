@@ -6769,10 +6769,9 @@ const SNIPER_ACCESSORY_SUBCATEGORIES = [
 
 function sniperSearchCategoriesFor(category) {
   if (category === "accessories") return SNIPER_ACCESSORY_SUBCATEGORIES;
-  return [
-    category,
-    ...(SNIPER_CATEGORY_FALLBACKS[category] || []),
-  ].filter((item, index, list) => item && list.indexOf(item) === index);
+  // A category report must preserve the category's real catalog ranking.
+  // Falling back to an all-catalog search mixes unrelated rank positions.
+  return category ? [category] : ["all"];
 }
 
 function isRobloxRateLimitError(err) {
@@ -8192,13 +8191,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     return historyCandidates;
   }
 
-  const configuredWindowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
-  // A sales window can be dominated by old products that happen to sell well
-  // today. When an explicit publishing-age cap is requested, first obtain a
-  // newest-first pool from the same asset category so the cap is actionable.
-  const windowAttempts = Number.isFinite(maxAgeDays) && window !== "recent"
-    ? [{ SortType: "3", _sniperFreshnessRecovery: true }, ...configuredWindowAttempts]
-    : configuredWindowAttempts;
+  const windowAttempts = SNIPER_WINDOW_PARAMS[window] || SNIPER_WINDOW_PARAMS.recent;
   const cacheKey = sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly });
   const cached = getSniperCachedCandidates(cacheKey);
   if (cached) {
@@ -8332,10 +8325,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           assertSniperDeadline(deadlineAt);
         }
         const normalizedAttemptParams = sniperWindowParamsForSearch(attemptParams, useV2Search);
-        const freshnessRecovery = attemptParams._sniperFreshnessRecovery === true;
         const debugAttempt = {
           category: searchCategory,
-          reason: freshnessRecovery ? "newest-first recovery for max age" : queryVariant.reason,
+          reason: queryVariant.reason,
           endpoint: useV2Search ? "v2" : "v1",
           params: new URLSearchParams({ ...baseParams, ...normalizedAttemptParams }).toString(),
           rows: 0,
@@ -8377,10 +8369,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
           data.push(...collected);
           if (collected.length) {
             lastError = null;
-            searchFallbackReason = freshnessRecovery
-              ? "newest-first catalog fallback for max age"
-              : queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
-            if (freshnessRecovery) lastSniperDebug.freshnessRecovery = true;
+            searchFallbackReason = queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
             if (data.length >= targetRawRows) break;
             if (sniperDeadlineExceeded(deadlineAt)) {
               stopScanning = true;
@@ -8651,19 +8640,14 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   const finalPool = enriched.length ? enriched : inferred;
-  const newestFirstRecovery = searchFallbackReason.includes("newest-first");
   const candidates = finalPool.sort((a, b) => {
     const aRank = Number.isFinite(a.marketplaceRank) ? a.marketplaceRank : Number.POSITIVE_INFINITY;
     const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
-    if (newestFirstRecovery && b.score !== a.score) return b.score - a.score;
     if (aRank !== bRank) return aRank - bRank;
     return b.score - a.score;
   }).slice(0, sniperCandidatePoolTarget(limit)).map(candidate => ({
     ...candidate,
-    marketplaceRankLabel: newestFirstRecovery ? "newest catalog position" : candidate.marketplaceRankLabel,
-    reasons: newestFirstRecovery
-      ? [...candidate.reasons, "source: newest-first catalog for max age"]
-      : candidate.reasons,
+    marketplaceRankLabel: "market rank",
   }));
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
@@ -8935,7 +8919,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
   const uniqueRows = Number(debug?.uniqueRows) || 0;
   const filters = [
     limitedOnly ? "Mode: Limited / collectible only" : null,
-    `Window: ${SNIPER_WINDOW_LABELS[window] || window}${debug?.freshnessRecovery ? " (fresh-item fallback)" : ""}`,
+    `Window: ${SNIPER_WINDOW_LABELS[window] || window}`,
     `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
     `Depth: ${depth === "deep" ? "Deep" : "Normal"}`,
     keyword ? `Keyword: ${keyword}` : null,
@@ -15346,9 +15330,12 @@ client.on("interactionCreate", async interaction => {
         })}`);
 
         if (!candidates.length) {
+          const ageFilterHint = Number.isFinite(maxAgeDays)
+            ? `No item in the scanned ${SNIPER_WINDOW_LABELS[window] || window} ranking matched the ${maxAgeDays}-day age limit.`
+            : null;
           await interaction.editReply(
             "## No sniper candidates found\n" +
-            "No charge was deducted. Try a broader category, remove the keyword, or change the price range."
+            (ageFilterHint || "No charge was deducted. Try a broader category, remove the keyword, or change the price range.")
           );
           if (userIsAdmin(interaction)) {
             await interaction.followUp({
