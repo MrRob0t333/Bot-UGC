@@ -8380,6 +8380,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
             searchFallbackReason = freshnessRecovery
               ? "newest-first catalog fallback for max age"
               : queryVariant.reason === "requested filters" ? "" : queryVariant.reason;
+            if (freshnessRecovery) lastSniperDebug.freshnessRecovery = true;
             if (data.length >= targetRawRows) break;
             if (sniperDeadlineExceeded(deadlineAt)) {
               stopScanning = true;
@@ -8660,6 +8661,9 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }).slice(0, sniperCandidatePoolTarget(limit)).map(candidate => ({
     ...candidate,
     marketplaceRankLabel: newestFirstRecovery ? "newest catalog position" : candidate.marketplaceRankLabel,
+    reasons: newestFirstRecovery
+      ? [...candidate.reasons, "source: newest-first catalog for max age"]
+      : candidate.reasons,
   }));
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
@@ -8931,7 +8935,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
   const uniqueRows = Number(debug?.uniqueRows) || 0;
   const filters = [
     limitedOnly ? "Mode: Limited / collectible only" : null,
-    `Window: ${SNIPER_WINDOW_LABELS[window] || window}`,
+    `Window: ${SNIPER_WINDOW_LABELS[window] || window}${debug?.freshnessRecovery ? " (fresh-item fallback)" : ""}`,
     `Category: ${SNIPER_CATEGORY_LABELS[category] || category}`,
     `Depth: ${depth === "deep" ? "Deep" : "Normal"}`,
     keyword ? `Keyword: ${keyword}` : null,
@@ -8942,6 +8946,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
 
   const scanStats = [
     fromHistory ? "Source: Background history cache" : null,
+    debug?.freshnessRecovery ? "Source: Newest catalog order due to the max-age filter" : null,
     `Scanned rows: ${rawRows}`,
     `Unique rows: ${uniqueRows}`,
     `Qualified pool: ${qualifiedCount}`,
