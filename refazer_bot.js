@@ -8473,6 +8473,27 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
     const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
     const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
+
+    // V2 catalog rows already include asset type, price and creation time for
+    // typed categories such as Hair. Use those verified signals immediately;
+    // one deep scan should not spend its whole deadline re-fetching the same data.
+    const categoryVerifiedInRow = sniperCategoryCanBeVerified(category, item, {})
+      && sniperCategoryMatches(category, item, {});
+    if (
+      !limitedOnly
+      && categoryVerifiedInRow
+      && hasAgeSignal
+      && sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)
+      && sniperAgeMatchesFilter(item, {}, maxAgeDays)
+    ) {
+      enriched.push(buildSniperCandidate(item, {}, category, true, {
+        marketplaceRank: marketplaceRankById.get(String(id)),
+        sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
+      }));
+      if (enriched.length + inferred.length >= sniperCandidatePoolTarget(limit)) break;
+      continue;
+    }
+
     const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
     const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
     const details = { ...economyDetails, ...catalogDetails };
