@@ -7656,6 +7656,16 @@ function sniperCategoryCanBeVerified(category, item, details = {}) {
   return catalogAssetTypeId(item, details) !== null;
 }
 
+function sniperScopedCategoryDetails(category, item) {
+  if (catalogAssetTypeId(item, {}) !== null) return {};
+  const allowedTypes = SNIPER_CATEGORY_ASSET_TYPES[category];
+  // The V2 request itself is restricted to this single type. Some catalog
+  // rows omit assetTypeId, so retain the server-side scope for local filtering.
+  return Array.isArray(allowedTypes) && allowedTypes.length === 1
+    ? { AssetTypeId: allowedTypes[0] }
+    : {};
+}
+
 function catalogItemPrice(item, details = {}) {
   const candidates = [
     item.price,
@@ -8470,14 +8480,15 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   for (const item of unique.slice(0, detailsLimit)) {
     const id = catalogItemId(item);
     const detailOptions = { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS };
-    const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
+    const scopedCategoryDetails = sniperScopedCategoryDetails(category, item);
+    const hasCategorySignal = sniperCategoryCanBeVerified(category, item, scopedCategoryDetails) || sniperNameSuggestsCategory(category, item, scopedCategoryDetails);
     const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
 
     // V2 catalog rows already include asset type, price and creation time for
     // typed categories such as Hair. Use those verified signals immediately;
     // one deep scan should not spend its whole deadline re-fetching the same data.
-    const categoryVerifiedInRow = sniperCategoryCanBeVerified(category, item, {})
-      && sniperCategoryMatches(category, item, {});
+    const categoryVerifiedInRow = sniperCategoryCanBeVerified(category, item, scopedCategoryDetails)
+      && sniperCategoryMatches(category, item, scopedCategoryDetails);
     if (
       !limitedOnly
       && categoryVerifiedInRow
@@ -8485,7 +8496,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
       && sniperPriceMatchesFilter(item, {}, minPrice, maxPrice)
       && sniperAgeMatchesFilter(item, {}, maxAgeDays)
     ) {
-      enriched.push(buildSniperCandidate(item, {}, category, true, {
+      enriched.push(buildSniperCandidate(item, scopedCategoryDetails, category, true, {
         marketplaceRank: marketplaceRankById.get(String(id)),
         sourceCategory: category === "accessories" ? sniperCategoryFromAssetType(catalogAssetTypeId(item, {})) || category : category,
       }));
@@ -8499,7 +8510,7 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
 
     const economyDetails = shouldFetchDetailsForCategory && !hasCategorySignal ? await fetchCatalogDetailsSafe(id, detailOptions) : {};
     const catalogDetails = limitedOnly || (Number.isFinite(maxAgeDays) && !hasAgeSignal) ? await fetchCatalogItemDetailsSafe(id, detailOptions) : {};
-    const details = { ...economyDetails, ...catalogDetails };
+    const details = { ...scopedCategoryDetails, ...economyDetails, ...catalogDetails };
     const canVerify = sniperCategoryCanBeVerified(category, item, details);
     const matches = sniperCategoryMatches(category, item, details);
 
@@ -8543,7 +8554,8 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
     for (const item of unique.slice(0, detailsLimit)) {
       if (sniperDeadlineExceeded(deadlineAt)) break;
       const id = catalogItemId(item);
-      const hasCategorySignal = sniperCategoryCanBeVerified(category, item, {}) || sniperNameSuggestsCategory(category, item, {});
+      const scopedCategoryDetails = sniperScopedCategoryDetails(category, item);
+      const hasCategorySignal = sniperCategoryCanBeVerified(category, item, scopedCategoryDetails) || sniperNameSuggestsCategory(category, item, scopedCategoryDetails);
       const hasAgeSignal = Boolean(catalogItemCreatedAt(item, {}));
       const economyDetails = !hasCategorySignal
         ? await fetchCatalogDetailsSafe(id, { maxWaitMs: SNIPER_PUBLIC_WAIT_LIMIT_MS })
