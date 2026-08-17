@@ -7880,6 +7880,7 @@ function buildSniperCandidate(item, details = {}, category = "all", categoryVeri
     available: limitedSignals.available,
     hasResellers: limitedSignals.hasResellers,
     marketplaceRank: Number.isFinite(options.marketplaceRank) ? options.marketplaceRank : null,
+    marketplaceRankLabel: options.marketplaceRankLabel || "market rank",
     sourceCategory: options.sourceCategory || category,
     score: breakdown.score,
     reasons: [
@@ -8649,12 +8650,17 @@ async function fetchSniperCandidates({ window, category, keyword, minPrice, maxP
   }
 
   const finalPool = enriched.length ? enriched : inferred;
+  const newestFirstRecovery = searchFallbackReason.includes("newest-first");
   const candidates = finalPool.sort((a, b) => {
     const aRank = Number.isFinite(a.marketplaceRank) ? a.marketplaceRank : Number.POSITIVE_INFINITY;
     const bRank = Number.isFinite(b.marketplaceRank) ? b.marketplaceRank : Number.POSITIVE_INFINITY;
+    if (newestFirstRecovery && b.score !== a.score) return b.score - a.score;
     if (aRank !== bRank) return aRank - bRank;
     return b.score - a.score;
-  }).slice(0, sniperCandidatePoolTarget(limit));
+  }).slice(0, sniperCandidatePoolTarget(limit)).map(candidate => ({
+    ...candidate,
+    marketplaceRankLabel: newestFirstRecovery ? "newest catalog position" : candidate.marketplaceRankLabel,
+  }));
   lastSniperDebug.enriched = enriched.length;
   lastSniperDebug.inferred = inferred.length;
   lastSniperDebug.candidates = candidates.length;
@@ -8953,7 +8959,7 @@ function formatSniperReport({ candidates, quote, window, category, keyword, minP
     const age = daysSince(parseRobloxDate(candidate.createdAt));
     const ageText = age === null ? "unknown age" : `${age}d old`;
     const rankText = Number.isFinite(candidate.marketplaceRank)
-      ? `market rank #${candidate.marketplaceRank}`
+      ? `${candidate.marketplaceRankLabel || "market rank"} #${candidate.marketplaceRank}`
       : null;
     const sourceCategoryText = candidate.sourceCategory && candidate.sourceCategory !== category
       ? SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory
