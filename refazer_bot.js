@@ -6659,7 +6659,9 @@ function robloxHeaders(extra = {}, cookie = ROBLOX_COOKIES[0]) {
   const headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+    // Keep catalog names in their original English catalog locale. Interface
+    // text is localized separately and should not alter creator-provided names.
+    "Accept-Language": "en-US,en;q=0.9",
     ...extra,
   };
 
@@ -13993,6 +13995,13 @@ client.on("interactionCreate", async interaction => {
 
     try {
       const resetPath = await createResetTemplateImage(action);
+      let originalName = action.name;
+      try {
+        const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${action.catalogId}/details`);
+        originalName = details.Name || originalName;
+      } catch (nameError) {
+        console.warn(`Could not refresh original clothing name for ${action.catalogId}:`, nameError.message || nameError);
+      }
       markClothingTemplateActionUsed(action.id);
       if (action.source !== "bulk") {
         await interaction.message.delete().catch(() => {});
@@ -14000,7 +14009,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.channel.send({
         content:
           `## Clothing Template Reset\n` +
-          `**Item:** ${action.name}\n` +
+          `**Item:** ${originalName}\n` +
           `**Catalog ID:** \`${action.catalogId}\`\n` +
           `**Template ID:** \`${action.templateId}\`\n` +
           `**Type:** ${action.typeLabel}\n\n` +
@@ -16128,6 +16137,27 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply();
 
       try {
+        const target = await classifyStealTarget(id);
+        if (target.kind === "clothing") {
+          const clothingLabel = clothingTypeLabel(target.assetTypeId);
+          const message = lang === "pt-BR"
+            ? "## Este item nao possui views 3D\n" +
+              `**Tipo detectado:** ${clothingLabel} classica\n\n` +
+              "Este tipo de item usa uma textura 2D e nao contem uma malha 3D (`MeshId`) para o Blender renderizar. " +
+              "Use `/steal` para baixar o template original."
+            : lang === "es"
+              ? "## Este item no tiene vistas 3D\n" +
+                `**Tipo detectado:** ${clothingLabel} clasica\n\n` +
+                "Este tipo de item usa una textura 2D y no contiene una malla 3D (`MeshId`) que Blender pueda renderizar. " +
+                "Usa `/steal` para descargar la plantilla original."
+              : "## This item has no 3D views\n" +
+                `**Detected type:** classic ${clothingLabel}\n\n` +
+                "This item uses a 2D texture and has no 3D mesh (`MeshId`) for Blender to render. " +
+                "Use `/steal` to download the original template.";
+          await interaction.editReply(message);
+          return;
+        }
+
         const angleDescription = useAiFiveViews
           ? (lang === "pt-BR"
             ? "imagens de referência de frente, direita, costas, esquerda e cima"
