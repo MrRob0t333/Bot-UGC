@@ -289,8 +289,14 @@ scene.render.film_transparent = os.environ.get("REFAZER_RENDER_TRANSPARENT_BACKG
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
 
-scene.view_settings.view_transform = "Standard"
-scene.view_settings.look = "None"
+# AgX rolls off bright highlights instead of clipping light textures to white.
+# Fall back for older Blender installations that do not provide AgX.
+try:
+    scene.view_settings.view_transform = "AgX"
+    scene.view_settings.look = "AgX - Medium High Contrast"
+except Exception:
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
 scene.view_settings.exposure = render_settings["exposure"]
 scene.view_settings.gamma = 1.0
 

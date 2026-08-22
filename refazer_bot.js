@@ -161,7 +161,7 @@ const DEFAULT_RENDER_SETTINGS = {
   exposure: 0.15,
   lightPower: 1,
 };
-const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v6";
+const VIEW_RENDER_CACHE_VERSION = "ai-flat-reference-v7";
 const RAW_DEFAULT_TEXTURE_TONE = cleanEnv(process.env.REFAZER_DEFAULT_TEXTURE_TONE, "normal").toLowerCase();
 const TEXTURE_TONES = {
   normal: {
@@ -9006,7 +9006,7 @@ function markSniperCandidatesSeen(userId, candidates) {
 }
 
 function sniperViewsCommand(itemId) {
-  return `/views id: ${itemId} lighting: Flat inspection pov: Your default angles: Multiview 4 - front/right/back/left ior: 1 roughness: 1 exposure: 1 light_power: 0.20 - very soft`;
+  return `/views id: ${itemId} lighting: Flat inspection pov: Your default angles: Multiview 4 - front/right/back/left ior: 1 roughness: 1 exposure: 0.15 light_power: 0.50 - balanced`;
 }
 
 function formatSniperReport({ candidates, quote, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly = false, debug }) {
