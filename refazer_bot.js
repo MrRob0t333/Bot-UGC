@@ -9395,7 +9395,7 @@ async function handleClassicClothingSteal(interaction, idInput, sourceCommand = 
           : lang === "es"
             ? "El archivo original del template está adjunto abajo.\n\nUsa **Reset Template** para recibir esta misma ropa con una guia visible encima."
             : "Original template file is attached below.\n\nUse **Reset Template** to receive this same clothing with a visible template guide on top."),
-      files: [publicImageAttachment(result.filePath, `${result.catalogId}_template.png`)],
+      files: [publicImageAttachment(result.filePath, publicClothingTemplateAttachmentName(result.name, result.catalogId))],
       components: [clothingResetButton(resetAction.id)],
     });
   } catch (err) {
@@ -11401,11 +11401,45 @@ async function generateModelWithTripo(imagePaths, difference, tempDir, sourceGlb
   };
 }
 
-function attachmentsFromPaths(paths) {
+function publicAssetFileStem(name, assetId) {
+  const normalizedName = String(name || "Roblox Asset")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 90) || "Roblox Asset";
+  return `${normalizedName} - ${assetId}`;
+}
+
+function publicCopiedAssetAttachmentName(file, { assetName, assetId }) {
+  const extension = path.extname(file).toLowerCase() || ".bin";
+  const baseName = path.basename(file).toLowerCase();
+  const label = extension === ".glb"
+    ? "model"
+    : extension === ".obj"
+      ? "mesh"
+      : extension === ".rbxm" || extension === ".rbxmx"
+        ? "source"
+        : /texture|image|\.png|\.jpg|\.jpeg|\.webp/.test(baseName)
+          ? "texture"
+          : "file";
+  return `${publicAssetFileStem(assetName, assetId)} - ${label}${extension}`;
+}
+
+function publicClothingTemplateAttachmentName(name, catalogId, variant = "template") {
+  return `${publicAssetFileStem(name, catalogId)} - ${variant}.png`;
+}
+
+function attachmentsFromPaths(paths, asset = null) {
   return paths
     .filter(Boolean)
     .filter(file => fs.existsSync(file))
-    .map(file => new AttachmentBuilder(file));
+    .map(file => new AttachmentBuilder(file, {
+      name: asset?.assetId
+        ? publicCopiedAssetAttachmentName(file, asset)
+        : path.basename(file),
+    }));
 }
 
 function formatBytes(bytes) {
@@ -14014,7 +14048,7 @@ client.on("interactionCreate", async interaction => {
           `**Template ID:** \`${action.templateId}\`\n` +
           `**Type:** ${action.typeLabel}\n\n` +
           "Template guide applied on top.",
-        files: [publicImageAttachment(resetPath, `${action.catalogId}_reset_template.png`)],
+        files: [publicImageAttachment(resetPath, publicClothingTemplateAttachmentName(originalName, action.catalogId, "reset-template"))],
       });
       await interaction.editReply("Template reset sent.");
     } catch (err) {
@@ -15760,7 +15794,10 @@ client.on("interactionCreate", async interaction => {
                 `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
                 `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
                 "📦 Original files are attached below.",
-          files: attachmentsFromPaths(files).slice(0, 10),
+          files: attachmentsFromPaths(files, {
+            assetId: id,
+            assetName: target.details?.Name || `Roblox Asset ${id}`,
+          }).slice(0, 10),
         });
       } catch (err) {
         console.error(err);
