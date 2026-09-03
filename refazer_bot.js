@@ -974,6 +974,14 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("steal2")
+    .setDescription("Admin: copy UGC with texture brightness -5 and contrast +10")
+    .addStringOption(o =>
+      o.setName("id").setDescription("UGC ID or Roblox catalog URL").setRequired(true)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("sniper")
     .setDescription("Admin market radar for recent best-selling Roblox UGC items")
     .addStringOption(o =>
@@ -9546,6 +9554,33 @@ function exportGlb(objPath, texturePath, glbPath) {
   );
 }
 
+async function applyPhotopeaTextureAdjustment(result) {
+  if (!result?.hasTexture || !result.texturePath || !fs.existsSync(result.texturePath)) {
+    throw new Error("This UGC has no supported single texture to adjust.");
+  }
+
+  const adjustedPath = result.texturePath.replace(/\.[^.]+$/, "_photopea.png");
+  const scriptPath = path.join(__dirname, "scripts", "adjust_texture_photopea.py");
+  const candidates = [PYTHON_PATH, "python3", "python", "py"]
+    .filter((item, index, list) => item && list.indexOf(item) === index);
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync(candidate, [scriptPath, result.texturePath, adjustedPath], { timeout: 30000 });
+      fs.copyFileSync(adjustedPath, result.texturePath);
+      fs.unlinkSync(adjustedPath);
+      exportGlb(result.objPath, result.texturePath, result.glbPath);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (err.code !== "ENOENT") break;
+    }
+  }
+
+  throw lastError || new Error("Could not adjust the UGC texture.");
+}
+
 function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
   const tone = TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE];
   const normalizedAdjustments = normalizeTextureAdjustments(adjustments);
@@ -14121,6 +14156,7 @@ client.on("interactionCreate", async interaction => {
     "admin_status",
     "copiar",
     "steal",
+    "steal2",
     "sniper",
     "limited_sniper",
     "limited_alert_channel",
@@ -15693,13 +15729,29 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (interaction.commandName === "copiar" || interaction.commandName === "steal") {
+    if (["copiar", "steal", "steal2"].includes(interaction.commandName)) {
       const lang = languageFor(interaction);
       const id = interaction.options.getString("id").trim();
+      const isTextureAdjustedSteal = interaction.commandName === "steal2";
+
+      if (isTextureAdjustedSteal && !userIsAdmin(interaction)) {
+        await interaction.reply({
+          content: "## Admin only\nThe steal2 command is available only to bot admins.",
+          flags: 64,
+        });
+        return;
+      }
+
       await interaction.deferReply();
       const target = await classifyStealTarget(id);
 
       if (target.kind === "clothing") {
+        if (isTextureAdjustedSteal) {
+          await interaction.editReply(
+            "## Unsupported item type\nSteal2 adjusts a 3D UGC texture. Classic clothing uses a 2D template; use steal for this item."
+          );
+          return;
+        }
         await handleClassicClothingSteal(interaction, id, interaction.commandName);
         return;
       }
@@ -15756,6 +15808,9 @@ client.on("interactionCreate", async interaction => {
 
       try {
         const result = await processUGC(id, { render: false });
+        if (isTextureAdjustedSteal) {
+          await applyPhotopeaTextureAdjustment(result);
+        }
         const files = [
           result.glbPath,
           result.objPath,
@@ -15767,8 +15822,8 @@ client.on("interactionCreate", async interaction => {
           userId: interaction.user.id,
           amount: quote.walletAmount,
           actorId: client.user.id,
-          reason: "Copia de modelo original",
-          meta: { command: "copiar", serviceKey: "copy", ugcId: id, priceBrl: quote.price },
+          reason: isTextureAdjustedSteal ? "Original model copied with texture adjustment" : "Copia de modelo original",
+          meta: { command: isTextureAdjustedSteal ? "steal2" : "copiar", serviceKey: "copy", ugcId: id, priceBrl: quote.price },
         });
         const usage = addCopyUsage(interaction.user.id, 1);
         const finalQuote = calculateCopyPrice(interaction, usage.count);
