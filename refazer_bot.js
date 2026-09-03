@@ -9600,6 +9600,35 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
   throw lastError || new Error("Could not adjust the UGC texture.");
 }
 
+async function repackUvAndBakeTexture(result) {
+  if (!result?.objPath || !result?.texturePath || !result?.glbPath || !fs.existsSync(result.objPath) || !fs.existsSync(result.texturePath)) {
+    throw new Error("This item does not have the files required for safe UV rebake.");
+  }
+
+  const rebakedTexturePath = result.texturePath.replace(/\.[^.]+$/, "_uv-rebaked.png");
+  const scriptPath = path.join(__dirname, "scripts", "rebake_uv.py");
+  await execFileAsync(BLENDER_PATH, [
+    "--background",
+    "--factory-startup",
+    "--python",
+    scriptPath,
+    "--",
+    result.objPath,
+    result.texturePath,
+    rebakedTexturePath,
+    result.glbPath,
+    "1024",
+  ], { timeout: 180000 });
+
+  if (!fs.existsSync(rebakedTexturePath) || !fs.existsSync(result.glbPath)) {
+    throw new Error("UV rebake did not produce a complete model and texture.");
+  }
+
+  result.texturePath = rebakedTexturePath;
+  result.uvRepacked = true;
+  console.log("[steal2] UV repack complete texture=" + path.basename(rebakedTexturePath));
+}
+
 function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
   const tone = TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE];
   const normalizedAdjustments = normalizeTextureAdjustments(adjustments);
@@ -13600,7 +13629,7 @@ async function processSteal2Batch(interaction, action) {
     content: "## Processing authorized UGC assets\n" +
       "**Items:** " + action.ids.length + "\n" +
       "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
-      "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n\n" +
+      "**UV:** " + (action.repackUv ? "Repack + bake" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n\n" +
       "The bot will send each completed asset separately.",
     components: [steal2BatchButtons(action.id, true)],
   });
@@ -13620,12 +13649,12 @@ async function processSteal2Batch(interaction, action) {
 
       const result = await processUGC(id, { render: false });
       await applyPhotopeaTextureAdjustment(result, action.controls);
-      const files = [
-        result.glbPath,
-        result.objPath,
-        result.rbxmPath,
-        result.hasTexture ? result.texturePath : null,
-      ];
+      if (action.repackUv) {
+        await repackUvAndBakeTexture(result);
+      }
+      const files = action.repackUv
+        ? [result.glbPath, result.texturePath]
+        : [result.glbPath, result.objPath, result.rbxmPath, result.hasTexture ? result.texturePath : null];
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
@@ -13637,6 +13666,7 @@ async function processSteal2Batch(interaction, action) {
           ugcId: id,
           priceBrl: quote.price,
           textureAdjustment: action.controls,
+          uvMode: action.repackUv ? "repack_bake" : "preserve",
           batchId: action.id,
         },
       });
@@ -13649,7 +13679,7 @@ async function processSteal2Batch(interaction, action) {
         content: "## Asset copied\n" +
           "**Item " + (index + 1) + "/" + action.ids.length + ":** " + id + "\n" +
           "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
-          "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n" +
+          "**UV:** " + (action.repackUv ? "Repack + bake" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n" +
           "**Remaining balance:** " + formatTokenAmount(debit.balance),
         files: attachmentsFromPaths(files, {
           assetId: id,
@@ -13695,10 +13725,12 @@ client.on("interactionCreate", async interaction => {
     }
 
     const authorization = interaction.fields.getTextInputValue("authorization").trim().toUpperCase();
-    if (authorization !== "AUTHORIZED") {
-      await interaction.reply({ content: "## Confirmation required\nType AUTHORIZED to confirm you have permission to process every submitted asset.", flags: 64 });
+    const authorizationMatch = authorization.match(/^AUTHORIZED\s+([YN])$/);
+    if (!authorizationMatch) {
+      await interaction.reply({ content: "## Confirmation required\nType AUTHORIZED Y for UV repack + bake, or AUTHORIZED N to preserve UV.", flags: 64 });
       return;
     }
+    const repackUv = authorizationMatch[1] === "Y";
 
     const readNumber = (field, fallback) => {
       const raw = interaction.fields.getTextInputValue(field).trim().replace(",", ".");
@@ -13715,6 +13747,7 @@ client.on("interactionCreate", async interaction => {
       userId: interaction.user.id,
       ids,
       controls,
+      repackUv,
       createdAt: Date.now(),
     });
 
@@ -13723,7 +13756,7 @@ client.on("interactionCreate", async interaction => {
         "**Items:** " + ids.length + "/20\n" +
         "**IDs:** " + ids.join(", ") + "\n" +
         "**Texture:** Brightness " + controls.brightness + ", contrast " + controls.contrast + ", saturation " + controls.saturation.toFixed(2) + "x\n" +
-        "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n\n" +
+        "**UV:** " + (repackUv ? "Repack + bake" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n\n" +
         "Only continue for assets you own or are licensed to process. Service Credits are charged only for completed deliveries.",
       components: [steal2BatchButtons(actionId)],
       flags: 64,
@@ -15965,7 +15998,7 @@ client.on("interactionCreate", async interaction => {
         new ActionRowBuilder().addComponents(input("brightness", "Brightness (-25 to 25; default -5)", { required: false, placeholder: "-5", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("contrast", "Contrast (-20 to 40; default 10)", { required: false, placeholder: "10", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("saturation", "Saturation (0.00 to 2.50; default 1.00)", { required: false, placeholder: "1.00", maxLength: 8 })),
-        new ActionRowBuilder().addComponents(input("authorization", "Type AUTHORIZED for assets you own/license", { placeholder: "AUTHORIZED", maxLength: 10 }))
+        new ActionRowBuilder().addComponents(input("authorization", "AUTHORIZED Y rebakes UV; N preserves UV", { placeholder: "AUTHORIZED N", maxLength: 12 }))
       );
       await interaction.showModal(modal);
       return;
