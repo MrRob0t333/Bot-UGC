@@ -23,6 +23,9 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require("discord.js");
 
 const LIGHT_POWER_CHOICES = [
@@ -975,19 +978,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("steal2")
-    .setDescription("Admin: copy UGC with safe texture controls")
-    .addStringOption(o =>
-      o.setName("id").setDescription("UGC ID or Roblox catalog URL").setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName("brightness").setDescription("Texture brightness. Default -5; safe range -20 to 10").setRequired(false).setMinValue(-20).setMaxValue(10)
-    )
-    .addIntegerOption(o =>
-      o.setName("contrast").setDescription("Texture contrast. Default 10; safe range 0 to 20").setRequired(false).setMinValue(0).setMaxValue(20)
-    )
-    .addNumberOption(o =>
-      o.setName("saturation").setDescription("Texture saturation multiplier. Default 1.00; safe range 0.80 to 1.20").setRequired(false).setMinValue(0.8).setMaxValue(1.2)
-    )
+    .setDescription("Admin: guided batch copy with safe texture controls")
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -9568,9 +9559,10 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
     throw new Error("This UGC has no supported single texture to adjust.");
   }
 
-  const brightness = clampNumber(adjustments.brightness, -20, 10, -5);
-  const contrast = clampNumber(adjustments.contrast, 0, 20, 10);
-  const saturation = clampNumber(adjustments.saturation, 0.8, 1.2, 1);
+  const brightness = clampNumber(adjustments.brightness, -25, 25, -5);
+  const contrast = clampNumber(adjustments.contrast, -20, 40, 10);
+  const saturation = clampNumber(adjustments.saturation, 0, 2.5, 1);
+  const maxTextureDimension = Math.round(clampNumber(adjustments.maxTextureDimension, 64, 1024, 1024));
   const adjustedPath = result.texturePath.replace(/\.[^.]+$/, "_photopea.png");
   const scriptPath = path.join(__dirname, "scripts", "adjust_texture_photopea.py");
   const candidates = [PYTHON_PATH, "python3", "python", "py"]
@@ -9587,6 +9579,7 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
         String(brightness),
         String(contrast),
         String(saturation),
+        String(maxTextureDimension),
       ], { timeout: 30000 });
       const adjustedHash = crypto.createHash("sha256").update(fs.readFileSync(adjustedPath)).digest("hex");
       if (originalHash === adjustedHash) {
@@ -9595,8 +9588,8 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
       fs.copyFileSync(adjustedPath, result.texturePath);
       fs.unlinkSync(adjustedPath);
       exportGlb(result.objPath, result.texturePath, result.glbPath);
-      result.textureAdjustment = { brightness, contrast, saturation, originalHash, adjustedHash };
-      console.log("[steal2] texture adjusted brightness=" + brightness + " contrast=" + contrast + " saturation=" + saturation + " source=" + originalHash.slice(0, 12) + " result=" + adjustedHash.slice(0, 12));
+      result.textureAdjustment = { brightness, contrast, saturation, maxTextureDimension, originalHash, adjustedHash };
+      console.log("[steal2] texture adjusted brightness=" + brightness + " contrast=" + contrast + " saturation=" + saturation + " maxDimension=" + maxTextureDimension + " source=" + originalHash.slice(0, 12) + " result=" + adjustedHash.slice(0, 12));
       return;
     } catch (err) {
       lastError = err;
@@ -13064,6 +13057,12 @@ function fullUgcViewAttachments(renderDir) {
     .filter(Boolean);
 }
 
+function parseSteal2Ids(raw) {
+  return [...new Set(String(raw || "")
+    .match(/\d{3,}/g) || [])]
+    .slice(0, 20);
+}
+
 function parseBulkIds(raw) {
   return [...new Set(String(raw || "")
     .split(/[\s,;]+/)
@@ -13565,9 +13564,198 @@ client.on("messageCreate", async message => {
   });
 });
 
+const pendingSteal2Batches = new Map();
+const STEAL2_BATCH_TTL_MS = 15 * 60 * 1000;
+
+function steal2BatchControls(raw = {}) {
+  return {
+    brightness: clampNumber(raw.brightness, -25, 25, -5),
+    contrast: clampNumber(raw.contrast, -20, 40, 10),
+    saturation: clampNumber(raw.saturation, 0, 2.5, 1),
+  };
+}
+
+function steal2BatchButtons(actionId, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("steal2_confirm:" + actionId)
+      .setLabel(disabled ? "Processing" : "Copy authorized assets")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId("steal2_cancel:" + actionId)
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled)
+  );
+}
+
+async function processSteal2Batch(interaction, action) {
+  const quote = calculateCopyPrice(interaction);
+  let copied = 0;
+  let failed = 0;
+  let charged = 0;
+
+  await interaction.update({
+    content: "## Processing authorized UGC assets\n" +
+      "**Items:** " + action.ids.length + "\n" +
+      "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
+      "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n\n" +
+      "The bot will send each completed asset separately.",
+    components: [steal2BatchButtons(action.id, true)],
+  });
+
+  for (let index = 0; index < action.ids.length; index += 1) {
+    const id = action.ids[index];
+    try {
+      const balance = walletAvailableBalance(interaction.user.id, "copy");
+      if (balance < quote.walletAmount) {
+        throw new Error("Insufficient Service Credits for this item.");
+      }
+
+      const target = await classifyStealTarget(id);
+      if (target.kind === "clothing") {
+        throw new Error("Classic clothing is not supported by steal2.");
+      }
+
+      const result = await processUGC(id, { render: false });
+      await applyPhotopeaTextureAdjustment(result, action.controls);
+      const files = [
+        result.glbPath,
+        result.objPath,
+        result.rbxmPath,
+        result.hasTexture ? result.texturePath : null,
+      ];
+      const debit = removeWalletBalance({
+        userId: interaction.user.id,
+        amount: quote.walletAmount,
+        actorId: client.user.id,
+        reason: "Authorized batch copy with texture adjustment",
+        meta: {
+          command: "steal2",
+          serviceKey: "copy",
+          ugcId: id,
+          priceBrl: quote.price,
+          textureAdjustment: action.controls,
+          batchId: action.id,
+        },
+      });
+      if (!debit.ok) throw new Error("Could not reserve Service Credits for this item.");
+      addCopyUsage(interaction.user.id, 1);
+      charged += quote.walletAmount;
+      copied += 1;
+
+      await interaction.followUp({
+        content: "## Asset copied\n" +
+          "**Item " + (index + 1) + "/" + action.ids.length + ":** " + id + "\n" +
+          "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
+          "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n" +
+          "**Remaining balance:** " + formatTokenAmount(debit.balance),
+        files: attachmentsFromPaths(files, {
+          assetId: id,
+          assetName: target.details?.Name || "Roblox Asset " + id,
+        }).slice(0, 10),
+      });
+    } catch (err) {
+      failed += 1;
+      console.error("[steal2] batch item failed", id, err);
+      await interaction.followUp({
+        content: "## Asset skipped\n**Item " + (index + 1) + "/" + action.ids.length + ":** " + id + "\n" +
+          String(err.message || err).slice(0, 500),
+        flags: 64,
+      }).catch(() => {});
+    }
+
+    if (index < action.ids.length - 1) {
+      await wait(Math.max(1000, BULK_ITEM_DELAY_MS));
+    }
+  }
+
+  await interaction.followUp({
+    content: "## Steal2 batch finished\n" +
+      "**Copied:** " + copied + "/" + action.ids.length + "\n" +
+      "**Skipped:** " + failed + "\n" +
+      "**Charged:** " + formatTokenAmount(charged) + "\n" +
+      "**Remaining balance:** " + formatTokenAmount(walletBalance(interaction.user.id)),
+    flags: 64,
+  }).catch(() => {});
+}
+
 client.on("interactionCreate", async interaction => {
+  if (interaction.isModalSubmit() && interaction.customId === "steal2_config") {
+    if (!userIsAdmin(interaction)) {
+      await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
+      return;
+    }
+
+    const ids = parseSteal2Ids(interaction.fields.getTextInputValue("ids"));
+    if (!ids.length) {
+      await interaction.reply({ content: "## No valid UGC IDs\nSend one to twenty numeric Roblox catalog IDs.", flags: 64 });
+      return;
+    }
+
+    const authorization = interaction.fields.getTextInputValue("authorization").trim().toUpperCase();
+    if (authorization !== "AUTHORIZED") {
+      await interaction.reply({ content: "## Confirmation required\nType AUTHORIZED to confirm you have permission to process every submitted asset.", flags: 64 });
+      return;
+    }
+
+    const readNumber = (field, fallback) => {
+      const raw = interaction.fields.getTextInputValue(field).trim().replace(",", ".");
+      return raw ? Number(raw) : fallback;
+    };
+    const controls = steal2BatchControls({
+      brightness: readNumber("brightness", -5),
+      contrast: readNumber("contrast", 10),
+      saturation: readNumber("saturation", 1),
+    });
+    const actionId = crypto.randomBytes(9).toString("hex");
+    pendingSteal2Batches.set(actionId, {
+      id: actionId,
+      userId: interaction.user.id,
+      ids,
+      controls,
+      createdAt: Date.now(),
+    });
+
+    await interaction.reply({
+      content: "## Review authorized batch\n" +
+        "**Items:** " + ids.length + "/20\n" +
+        "**IDs:** " + ids.join(", ") + "\n" +
+        "**Texture:** Brightness " + controls.brightness + ", contrast " + controls.contrast + ", saturation " + controls.saturation.toFixed(2) + "x\n" +
+        "**UV:** Preserved | **Texture size:** proportional, up to 1024px\n\n" +
+        "Only continue for assets you own or are licensed to process. Service Credits are charged only for completed deliveries.",
+      components: [steal2BatchButtons(actionId)],
+      flags: 64,
+    });
+    return;
+  }
+
   if (interaction.isButton()) {
     const [kind, actionId, extra] = String(interaction.customId || "").split(":");
+    if (kind === "steal2_cancel") {
+      const action = pendingSteal2Batches.get(actionId);
+      if (!action || action.userId !== interaction.user.id) {
+        await interaction.reply({ content: "This batch request expired or belongs to another admin.", flags: 64 });
+        return;
+      }
+      pendingSteal2Batches.delete(actionId);
+      await interaction.update({ content: "## Steal2 batch cancelled\nNo Service Credits were charged.", components: [steal2BatchButtons(actionId, true)] });
+      return;
+    }
+
+    if (kind === "steal2_confirm") {
+      const action = pendingSteal2Batches.get(actionId);
+      if (!action || action.userId !== interaction.user.id || Date.now() - action.createdAt > STEAL2_BATCH_TTL_MS) {
+        pendingSteal2Batches.delete(actionId);
+        await interaction.reply({ content: "This batch request expired. Run /steal2 again.", flags: 64 });
+        return;
+      }
+      pendingSteal2Batches.delete(actionId);
+      await processSteal2Batch(interaction, action);
+      return;
+    }
+
     if (kind === "guided3d_start") {
       await interaction.deferReply({ flags: 64 });
       const triangles = normalizeTriangleLimit(actionId);
@@ -15755,7 +15943,35 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (["copiar", "steal", "steal2"].includes(interaction.commandName)) {
+    if (interaction.commandName === "steal2") {
+      if (!userIsAdmin(interaction)) {
+        await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId("steal2_config")
+        .setTitle("Steal2 - Authorized assets");
+      const input = (id, label, options = {}) => new TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(options.paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
+        .setRequired(options.required !== false)
+        .setPlaceholder(options.placeholder || "")
+        .setValue(options.value || "")
+        .setMaxLength(options.maxLength || 400);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(input("ids", "UGC IDs, spaces or commas (up to 20)", { paragraph: true, placeholder: "123456 789012", maxLength: 400 })),
+        new ActionRowBuilder().addComponents(input("brightness", "Brightness (-25 to 25; default -5)", { required: false, placeholder: "-5", maxLength: 8 })),
+        new ActionRowBuilder().addComponents(input("contrast", "Contrast (-20 to 40; default 10)", { required: false, placeholder: "10", maxLength: 8 })),
+        new ActionRowBuilder().addComponents(input("saturation", "Saturation (0.00 to 2.50; default 1.00)", { required: false, placeholder: "1.00", maxLength: 8 })),
+        new ActionRowBuilder().addComponents(input("authorization", "Type AUTHORIZED for assets you own/license", { placeholder: "AUTHORIZED", maxLength: 10 }))
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (["copiar", "steal"].includes(interaction.commandName)) {
       const lang = languageFor(interaction);
       const id = interaction.options.getString("id").trim();
       const isTextureAdjustedSteal = interaction.commandName === "steal2";
