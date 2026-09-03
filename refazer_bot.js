@@ -13725,12 +13725,11 @@ client.on("interactionCreate", async interaction => {
     }
 
     const authorization = interaction.fields.getTextInputValue("authorization").trim().toUpperCase();
-    const authorizationMatch = authorization.match(/^AUTHORIZED\s+([YN])$/);
-    if (!authorizationMatch) {
-      await interaction.reply({ content: "## Confirmation required\nType AUTHORIZED Y for UV repack + bake, or AUTHORIZED N to preserve UV.", flags: 64 });
+    if (!/^[YN]$/.test(authorization)) {
+      await interaction.reply({ content: "## Confirmation required\nType Y for UV repack + bake, or N to preserve UV.", flags: 64 });
       return;
     }
-    const repackUv = authorizationMatch[1] === "Y";
+    const repackUv = authorization === "Y";
 
     const readNumber = (field, fallback) => {
       const raw = interaction.fields.getTextInputValue(field).trim().replace(",", ".");
@@ -15998,7 +15997,7 @@ client.on("interactionCreate", async interaction => {
         new ActionRowBuilder().addComponents(input("brightness", "Brightness (-25 to 25; default -5)", { required: false, placeholder: "-5", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("contrast", "Contrast (-20 to 40; default 10)", { required: false, placeholder: "10", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("saturation", "Saturation (0.00 to 2.50; default 1.00)", { required: false, placeholder: "1.00", maxLength: 8 })),
-        new ActionRowBuilder().addComponents(input("authorization", "AUTHORIZED Y rebakes UV; N preserves UV", { placeholder: "AUTHORIZED N", maxLength: 12 }))
+        new ActionRowBuilder().addComponents(input("authorization", "Y = UV rebake; N = preserve UV", { placeholder: "N", maxLength: 1 }))
       );
       await interaction.showModal(modal);
       return;

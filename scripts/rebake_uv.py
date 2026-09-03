@@ -15,6 +15,12 @@ def has_transparency(image):
     return any(pixels[index] < 0.999 for index in range(3, len(pixels), 4))
 
 
+def color_range(image):
+    pixels = image.pixels[:]
+    colors = pixels[0::4] + pixels[1::4] + pixels[2::4]
+    return max(colors) - min(colors) if colors else 0
+
+
 def main():
     if len(sys.argv) < 6:
         fail("usage: rebake_uv.py input.obj source.png output.png output.glb [size]")
@@ -87,10 +93,15 @@ def main():
     scene.render.bake.margin = 16
     bpy.ops.object.bake(type="EMIT", use_clear=True, margin=16)
 
+    if color_range(source_image) > 0.02 and color_range(target_image) < 0.005:
+        fail("UV bake produced an empty texture; original asset was preserved")
+
     output_texture.parent.mkdir(parents=True, exist_ok=True)
+    target_image.filepath = str(output_texture)
     target_image.filepath_raw = str(output_texture)
     target_image.file_format = "PNG"
     target_image.save()
+    target_image.pack()
 
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
