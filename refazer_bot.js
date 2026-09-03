@@ -975,9 +975,18 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("steal2")
-    .setDescription("Admin: copy UGC with texture brightness -5 and contrast +10")
+    .setDescription("Admin: copy UGC with safe texture controls")
     .addStringOption(o =>
       o.setName("id").setDescription("UGC ID or Roblox catalog URL").setRequired(true)
+    )
+    .addIntegerOption(o =>
+      o.setName("brightness").setDescription("Texture brightness. Default -5; safe range -20 to 10").setRequired(false).setMinValue(-20).setMaxValue(10)
+    )
+    .addIntegerOption(o =>
+      o.setName("contrast").setDescription("Texture contrast. Default 10; safe range 0 to 20").setRequired(false).setMinValue(0).setMaxValue(20)
+    )
+    .addNumberOption(o =>
+      o.setName("saturation").setDescription("Texture saturation multiplier. Default 1.00; safe range 0.80 to 1.20").setRequired(false).setMinValue(0.8).setMaxValue(1.2)
     )
     .toJSON(),
 
@@ -9554,11 +9563,14 @@ function exportGlb(objPath, texturePath, glbPath) {
   );
 }
 
-async function applyPhotopeaTextureAdjustment(result) {
+async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
   if (!result?.hasTexture || !result.texturePath || !fs.existsSync(result.texturePath)) {
     throw new Error("This UGC has no supported single texture to adjust.");
   }
 
+  const brightness = clampNumber(adjustments.brightness, -20, 10, -5);
+  const contrast = clampNumber(adjustments.contrast, 0, 20, 10);
+  const saturation = clampNumber(adjustments.saturation, 0.8, 1.2, 1);
   const adjustedPath = result.texturePath.replace(/\.[^.]+$/, "_photopea.png");
   const scriptPath = path.join(__dirname, "scripts", "adjust_texture_photopea.py");
   const candidates = [PYTHON_PATH, "python3", "python", "py"]
@@ -9567,10 +9579,24 @@ async function applyPhotopeaTextureAdjustment(result) {
 
   for (const candidate of candidates) {
     try {
-      await execFileAsync(candidate, [scriptPath, result.texturePath, adjustedPath], { timeout: 30000 });
+      const originalHash = crypto.createHash("sha256").update(fs.readFileSync(result.texturePath)).digest("hex");
+      await execFileAsync(candidate, [
+        scriptPath,
+        result.texturePath,
+        adjustedPath,
+        String(brightness),
+        String(contrast),
+        String(saturation),
+      ], { timeout: 30000 });
+      const adjustedHash = crypto.createHash("sha256").update(fs.readFileSync(adjustedPath)).digest("hex");
+      if (originalHash === adjustedHash) {
+        throw new Error("Texture adjustment produced no pixel change; original texture was not delivered.");
+      }
       fs.copyFileSync(adjustedPath, result.texturePath);
       fs.unlinkSync(adjustedPath);
       exportGlb(result.objPath, result.texturePath, result.glbPath);
+      result.textureAdjustment = { brightness, contrast, saturation, originalHash, adjustedHash };
+      console.log("[steal2] texture adjusted brightness=" + brightness + " contrast=" + contrast + " saturation=" + saturation + " source=" + originalHash.slice(0, 12) + " result=" + adjustedHash.slice(0, 12));
       return;
     } catch (err) {
       lastError = err;
@@ -15733,6 +15759,11 @@ client.on("interactionCreate", async interaction => {
       const lang = languageFor(interaction);
       const id = interaction.options.getString("id").trim();
       const isTextureAdjustedSteal = interaction.commandName === "steal2";
+      const textureAdjustment = {
+        brightness: isTextureAdjustedSteal ? (interaction.options.getInteger("brightness") ?? -5) : 0,
+        contrast: isTextureAdjustedSteal ? (interaction.options.getInteger("contrast") ?? 10) : 0,
+        saturation: isTextureAdjustedSteal ? (interaction.options.getNumber("saturation") ?? 1) : 1,
+      };
 
       if (isTextureAdjustedSteal && !userIsAdmin(interaction)) {
         await interaction.reply({
@@ -15806,10 +15837,18 @@ client.on("interactionCreate", async interaction => {
               "⏳ Preparing original files..."
       );
 
+      const textureAdjustmentText = !isTextureAdjustedSteal
+        ? ""
+        : lang === "pt-BR"
+          ? "**Ajuste da textura:** Brilho " + textureAdjustment.brightness + ", contraste +" + textureAdjustment.contrast + ", saturação " + textureAdjustment.saturation.toFixed(2) + "x\n"
+          : lang === "es"
+            ? "**Ajuste de textura:** Brillo " + textureAdjustment.brightness + ", contraste +" + textureAdjustment.contrast + ", saturación " + textureAdjustment.saturation.toFixed(2) + "x\n"
+            : "**Texture adjustment:** Brightness " + textureAdjustment.brightness + ", contrast +" + textureAdjustment.contrast + ", saturation " + textureAdjustment.saturation.toFixed(2) + "x\n";
+
       try {
         const result = await processUGC(id, { render: false });
         if (isTextureAdjustedSteal) {
-          await applyPhotopeaTextureAdjustment(result);
+          await applyPhotopeaTextureAdjustment(result, textureAdjustment);
         }
         const files = [
           result.glbPath,
@@ -15823,7 +15862,13 @@ client.on("interactionCreate", async interaction => {
           amount: quote.walletAmount,
           actorId: client.user.id,
           reason: isTextureAdjustedSteal ? "Original model copied with texture adjustment" : "Copia de modelo original",
-          meta: { command: isTextureAdjustedSteal ? "steal2" : "copiar", serviceKey: "copy", ugcId: id, priceBrl: quote.price },
+          meta: {
+            command: isTextureAdjustedSteal ? "steal2" : "copiar",
+            serviceKey: "copy",
+            ugcId: id,
+            priceBrl: quote.price,
+            textureAdjustment: isTextureAdjustedSteal ? textureAdjustment : null,
+          },
         });
         const usage = addCopyUsage(interaction.user.id, 1);
         const finalQuote = calculateCopyPrice(interaction, usage.count);
@@ -15834,20 +15879,23 @@ client.on("interactionCreate", async interaction => {
               `**UGC:** \`${id}\`\n` +
               `${formatCopyAllowance(finalQuote, lang)}\n` +
               `**Preço:** ${formatTokenAmount(quote.walletAmount)}\n` +
-              `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+              `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n` +
+              textureAdjustmentText + "\n" +
               "📦 Arquivos originais anexados abaixo."
             : lang === "es"
               ? `## ✅ Asset copiado\n` +
                 `**UGC:** \`${id}\`\n` +
                 `${formatCopyAllowance(finalQuote, lang)}\n` +
                 `**Precio:** ${formatTokenAmount(quote.walletAmount)}\n` +
-                `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+                `**Saldo restante:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n` +
+                textureAdjustmentText + "\n" +
                 "📦 Archivos originales adjuntos abajo."
               : `## ✅ Asset Copied\n` +
                 `**UGC:** \`${id}\`\n` +
                 `${formatCopyAllowance(finalQuote, lang)}\n` +
                 `**Price:** ${formatTokenAmount(quote.walletAmount)}\n` +
-                `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n\n` +
+                `**Remaining balance:** ${formatTokenAmount(debit.ok ? debit.balance : walletBalance(interaction.user.id))}\n` +
+                textureAdjustmentText + "\n" +
                 "📦 Original files are attached below.",
           files: attachmentsFromPaths(files, {
             assetId: id,
