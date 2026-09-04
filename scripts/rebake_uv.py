@@ -62,7 +62,7 @@ def main():
     bpy.context.view_layer.objects.active = mesh
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(angle_limit=1.15192, island_margin=0.03, correct_aspect=True, scale_to_bounds=False)
+    bpy.ops.uv.smart_project(angle_limit=1.15192, island_margin=0.03, correct_aspect=True, scale_to_bounds=True)
     bpy.ops.object.mode_set(mode="OBJECT")
 
     material = bpy.data.materials.new(name="VelvetRebakeSource")
