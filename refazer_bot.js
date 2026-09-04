@@ -9608,8 +9608,8 @@ async function repackUvAndBakeTexture(result) {
   const rebakedTexturePath = result.texturePath.replace(/\.[^.]+$/, "_uv-rebaked.png");
   const rebakedGlbPath = result.glbPath.replace(/\.glb$/i, "_uv-rebaked.glb");
   const scriptPath = path.join(__dirname, "scripts", "rebake_uv.py");
-  fs.unlinkSync(rebakedTexturePath, { force: true });
-  fs.unlinkSync(rebakedGlbPath, { force: true });
+  fs.rmSync(rebakedTexturePath, { force: true });
+  fs.rmSync(rebakedGlbPath, { force: true });
   const { stdout, stderr } = await execFileAsync(BLENDER_PATH, [
     "--background",
     "--factory-startup",
