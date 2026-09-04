@@ -9812,7 +9812,8 @@ async function processUGC(ugcId, options = {}) {
 
   const ugcText = ugcBuffer.toString("utf8");
   const meshId = extractAssetId(ugcText, ["MeshId", "MeshID", "Mesh"]);
-  const textureId = extractAssetId(ugcText, ["TextureId", "TextureID", "Texture"]);
+  // Modern UGC can store the diffuse map on SurfaceAppearance instead of TextureId.
+  const textureId = extractAssetId(ugcText, ["TextureId", "TextureID", "ColorMap", "ColorMapContent", "DiffuseTexture", "AlbedoMap", "Texture"]);
 
   if (!meshId) {
     throw new Error(`Nao consegui encontrar MeshId no UGC ${ugcId}.`);
@@ -13622,7 +13623,15 @@ async function processSteal2Batch(interaction, action) {
       }
 
       const result = await processUGC(id, { render: false });
-      await applyPhotopeaTextureAdjustment(result, action.controls);
+      let textureAdjusted = true;
+      try {
+        await applyPhotopeaTextureAdjustment(result, action.controls);
+      } catch (err) {
+        const detail = String(err.message || err);
+        if (detail !== "This UGC has no supported single texture to adjust.") throw err;
+        textureAdjusted = false;
+        console.warn("[steal2] no editable external texture; preserving source model for " + id);
+      }
       const files = [result.glbPath, result.objPath, result.rbxmPath, result.hasTexture ? result.texturePath : null];
       const debit = removeWalletBalance({
         userId: interaction.user.id,
@@ -13634,7 +13643,8 @@ async function processSteal2Batch(interaction, action) {
           serviceKey: "copy",
           ugcId: id,
           priceBrl: quote.price,
-          textureAdjustment: action.controls,
+          textureAdjustment: textureAdjusted ? action.controls : null,
+          textureAdjustmentUnavailable: !textureAdjusted,
           uvMode: "preserve",
           batchId: action.id,
         },
@@ -13647,8 +13657,10 @@ async function processSteal2Batch(interaction, action) {
       await interaction.followUp({
         content: "## Asset copied\n" +
           "**Item " + (index + 1) + "/" + action.ids.length + ":** " + id + "\n" +
-          "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
-          "**UV:** Preserved (safe) | **Texture size:** proportional, up to 1024px\n" +
+          "**Texture:** " + (textureAdjusted
+            ? "Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x"
+            : "Original preserved (no editable external texture)") + "\n" +
+          "**UV:** Preserved (safe) | **Texture size:** " + (textureAdjusted ? "proportional, up to 1024px" : "source unchanged") + "\n" +
           "**Remaining balance:** " + formatTokenAmount(debit.balance),
         files: attachmentsFromPaths(files, {
           assetId: id,
