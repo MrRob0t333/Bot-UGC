@@ -9606,8 +9606,11 @@ async function repackUvAndBakeTexture(result) {
   }
 
   const rebakedTexturePath = result.texturePath.replace(/\.[^.]+$/, "_uv-rebaked.png");
+  const rebakedGlbPath = result.glbPath.replace(/\.glb$/i, "_uv-rebaked.glb");
   const scriptPath = path.join(__dirname, "scripts", "rebake_uv.py");
-  await execFileAsync(BLENDER_PATH, [
+  fs.unlinkSync(rebakedTexturePath, { force: true });
+  fs.unlinkSync(rebakedGlbPath, { force: true });
+  const { stdout, stderr } = await execFileAsync(BLENDER_PATH, [
     "--background",
     "--factory-startup",
     "--python",
@@ -9616,17 +9619,20 @@ async function repackUvAndBakeTexture(result) {
     result.objPath,
     result.texturePath,
     rebakedTexturePath,
-    result.glbPath,
+    rebakedGlbPath,
     "1024",
   ], { timeout: 180000 });
+  if (stdout) console.log("[steal2] UV rebake Blender output: " + String(stdout).slice(-2000));
+  if (stderr) console.warn("[steal2] UV rebake Blender warnings: " + String(stderr).slice(-2000));
 
-  if (!fs.existsSync(rebakedTexturePath) || !fs.existsSync(result.glbPath)) {
-    throw new Error("UV rebake did not produce a complete model and texture.");
+  if (!fs.existsSync(rebakedTexturePath) || !fs.existsSync(rebakedGlbPath)) {
+    throw new Error("UV rebake did not produce its temporary model and texture files.");
   }
 
+  fs.copyFileSync(rebakedGlbPath, result.glbPath);
   result.texturePath = rebakedTexturePath;
   result.uvRepacked = true;
-  console.log("[steal2] UV repack complete texture=" + path.basename(rebakedTexturePath));
+  console.log("[steal2] UV repack complete model=" + path.basename(rebakedGlbPath) + " texture=" + path.basename(rebakedTexturePath));
 }
 
 function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
