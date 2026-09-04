@@ -9633,14 +9633,15 @@ async function repackUvAndBakeTexture(result) {
   if (blenderResult.stdout) console.log("[steal2] UV rebake Blender output: " + String(blenderResult.stdout).slice(-2000));
   if (blenderResult.stderr) console.warn("[steal2] UV rebake Blender warnings: " + String(blenderResult.stderr).slice(-2000));
 
-  if (!fs.existsSync(rebakedTexturePath) || !fs.existsSync(rebakedGlbPath)) {
-    throw new Error("UV rebake did not produce its temporary model and texture files.");
+  const hasRebakedTextureFile = fs.existsSync(rebakedTexturePath);
+  if (!fs.existsSync(rebakedGlbPath)) {
+    throw new Error("UV rebake did not produce its temporary GLB model (external texture file: " + (hasRebakedTextureFile ? "present" : "missing") + ").");
   }
 
   fs.copyFileSync(rebakedGlbPath, result.glbPath);
-  result.texturePath = rebakedTexturePath;
+  result.texturePath = hasRebakedTextureFile ? rebakedTexturePath : null;
   result.uvRepacked = true;
-  console.log("[steal2] UV repack complete model=" + path.basename(rebakedGlbPath) + " texture=" + path.basename(rebakedTexturePath));
+  console.log("[steal2] UV repack complete model=" + path.basename(rebakedGlbPath) + " externalTexture=" + (hasRebakedTextureFile ? path.basename(rebakedTexturePath) : "embedded-only"));
 }
 
 function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
