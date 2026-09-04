@@ -9602,47 +9602,6 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
   throw lastError || new Error("Could not adjust the UGC texture.");
 }
 
-async function repackUvAndBakeTexture(result) {
-  if (!result?.objPath || !result?.texturePath || !result?.glbPath || !fs.existsSync(result.objPath) || !fs.existsSync(result.texturePath)) {
-    throw new Error("This item does not have the files required for safe UV rebake.");
-  }
-
-  const rebakedTexturePath = result.texturePath.replace(/\.[^.]+$/, "_uv-rebaked.png");
-  const rebakedGlbPath = result.glbPath.replace(/\.glb$/i, "_uv-rebaked.glb");
-  const scriptPath = path.join(__dirname, "scripts", "rebake_uv.py");
-  fs.rmSync(rebakedTexturePath, { force: true });
-  fs.rmSync(rebakedGlbPath, { force: true });
-  let blenderResult;
-  try {
-    blenderResult = await execFileAsync(BLENDER_PATH, [
-    "--background",
-    "--factory-startup",
-    "--python",
-    scriptPath,
-    "--",
-    result.objPath,
-    result.texturePath,
-    rebakedTexturePath,
-    rebakedGlbPath,
-    "1024",
-    ], { timeout: 180000 });
-  } catch (err) {
-    const detail = String(err.stderr || err.stdout || err.message || err).replace(/\s+/g, " ").slice(-900);
-    throw new Error("Blender UV rebake failed: " + detail);
-  }
-  if (blenderResult.stdout) console.log("[steal2] UV rebake Blender output: " + String(blenderResult.stdout).slice(-2000));
-  if (blenderResult.stderr) console.warn("[steal2] UV rebake Blender warnings: " + String(blenderResult.stderr).slice(-2000));
-
-  const hasRebakedTextureFile = fs.existsSync(rebakedTexturePath);
-  if (!fs.existsSync(rebakedGlbPath)) {
-    throw new Error("UV rebake did not produce its temporary GLB model (external texture file: " + (hasRebakedTextureFile ? "present" : "missing") + ").");
-  }
-
-  fs.copyFileSync(rebakedGlbPath, result.glbPath);
-  result.texturePath = hasRebakedTextureFile ? rebakedTexturePath : null;
-  result.uvRepacked = true;
-  console.log("[steal2] UV repack complete model=" + path.basename(rebakedGlbPath) + " externalTexture=" + (hasRebakedTextureFile ? path.basename(rebakedTexturePath) : "embedded-only"));
-}
 
 function textureToneConfig(textureTone = DEFAULT_TEXTURE_TONE, adjustments = DEFAULT_TEXTURE_ADJUSTMENTS) {
   const tone = TEXTURE_TONES[normalizeTextureTone(textureTone)] || TEXTURE_TONES[DEFAULT_TEXTURE_TONE];
@@ -13644,7 +13603,7 @@ async function processSteal2Batch(interaction, action) {
     content: "## Processing authorized UGC assets\n" +
       "**Items:** " + action.ids.length + "\n" +
       "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
-      "**UV:** " + (action.repackUv ? "Repack requested; compatible items are rebaked" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n\n" +
+      "**UV:** Preserved (safe) | **Texture size:** proportional, up to 1024px\n\n" +
       "The bot will send each completed asset separately.",
     components: [steal2BatchButtons(action.id, true)],
   });
@@ -13664,20 +13623,7 @@ async function processSteal2Batch(interaction, action) {
 
       const result = await processUGC(id, { render: false });
       await applyPhotopeaTextureAdjustment(result, action.controls);
-      let uvRepacked = false;
-      let uvFallbackReason = "";
-      if (action.repackUv) {
-        try {
-          await repackUvAndBakeTexture(result);
-          uvRepacked = true;
-        } catch (err) {
-          uvFallbackReason = String(err.message || err).replace(/\s+/g, " ").slice(-500);
-          console.warn("[steal2] UV rebake fallback for " + id + ": " + uvFallbackReason);
-        }
-      }
-      const files = uvRepacked
-        ? [result.glbPath, result.texturePath]
-        : [result.glbPath, result.objPath, result.rbxmPath, result.hasTexture ? result.texturePath : null];
+      const files = [result.glbPath, result.objPath, result.rbxmPath, result.hasTexture ? result.texturePath : null];
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
@@ -13689,8 +13635,7 @@ async function processSteal2Batch(interaction, action) {
           ugcId: id,
           priceBrl: quote.price,
           textureAdjustment: action.controls,
-          uvMode: uvRepacked ? "repack_bake" : "preserve",
-          uvFallbackReason: uvFallbackReason || null,
+          uvMode: "preserve",
           batchId: action.id,
         },
       });
@@ -13703,8 +13648,7 @@ async function processSteal2Batch(interaction, action) {
         content: "## Asset copied\n" +
           "**Item " + (index + 1) + "/" + action.ids.length + ":** " + id + "\n" +
           "**Texture:** Brightness " + action.controls.brightness + ", contrast " + action.controls.contrast + ", saturation " + action.controls.saturation.toFixed(2) + "x\n" +
-          "**UV:** " + (uvRepacked ? "Repack + bake" : action.repackUv ? "Preserved (rebake fallback)" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n" +
-          (uvFallbackReason ? "**Rebake note:** " + uvFallbackReason + "\n" : "") +
+          "**UV:** Preserved (safe) | **Texture size:** proportional, up to 1024px\n" +
           "**Remaining balance:** " + formatTokenAmount(debit.balance),
         files: attachmentsFromPaths(files, {
           assetId: id,
@@ -13750,12 +13694,10 @@ client.on("interactionCreate", async interaction => {
     }
 
     const authorization = interaction.fields.getTextInputValue("authorization").trim().toUpperCase();
-    if (!/^[YN]$/.test(authorization)) {
-      await interaction.reply({ content: "## Confirmation required\nType Y for UV repack + bake, or N to preserve UV.", flags: 64 });
+    if (authorization !== "CONFIRM") {
+      await interaction.reply({ content: "## Confirmation required\nType CONFIRM to process the authorized assets with UV preservation.", flags: 64 });
       return;
     }
-    const repackUv = authorization === "Y";
-
     const readNumber = (field, fallback) => {
       const raw = interaction.fields.getTextInputValue(field).trim().replace(",", ".");
       return raw ? Number(raw) : fallback;
@@ -13771,7 +13713,6 @@ client.on("interactionCreate", async interaction => {
       userId: interaction.user.id,
       ids,
       controls,
-      repackUv,
       createdAt: Date.now(),
     });
 
@@ -13780,7 +13721,7 @@ client.on("interactionCreate", async interaction => {
         "**Items:** " + ids.length + "/20\n" +
         "**IDs:** " + ids.join(", ") + "\n" +
         "**Texture:** Brightness " + controls.brightness + ", contrast " + controls.contrast + ", saturation " + controls.saturation.toFixed(2) + "x\n" +
-        "**UV:** " + (repackUv ? "Repack + bake" : "Preserved") + " | **Texture size:** proportional, up to 1024px\n\n" +
+        "**UV:** Preserved (safe) | **Texture size:** proportional, up to 1024px\n\n" +
         "Only continue for assets you own or are licensed to process. Service Credits are charged only for completed deliveries.",
       components: [steal2BatchButtons(actionId)],
       flags: 64,
@@ -16022,7 +15963,7 @@ client.on("interactionCreate", async interaction => {
         new ActionRowBuilder().addComponents(input("brightness", "Brightness (-25 to 25; default -5)", { required: false, placeholder: "-5", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("contrast", "Contrast (-20 to 40; default 10)", { required: false, placeholder: "10", maxLength: 8 })),
         new ActionRowBuilder().addComponents(input("saturation", "Saturation (0.00 to 2.50; default 1.00)", { required: false, placeholder: "1.00", maxLength: 8 })),
-        new ActionRowBuilder().addComponents(input("authorization", "Y = UV rebake; N = preserve UV", { placeholder: "N", maxLength: 1 }))
+        new ActionRowBuilder().addComponents(input("authorization", "Type CONFIRM to process authorized assets", { placeholder: "CONFIRM", maxLength: 7 }))
       );
       await interaction.showModal(modal);
       return;
