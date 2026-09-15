@@ -1052,6 +1052,34 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("trend_radar")
+    .setDescription("Admin: finds fresh Roblox UGC name clusters that are rising together")
+    .addStringOption(o =>
+      o.setName("window").setDescription("Ranking window already tracked by the history worker").setRequired(false)
+        .addChoices(
+          { name: "Best yesterday", value: "yesterday" },
+          { name: "Best this week", value: "week" }
+        )
+    )
+    .addStringOption(o =>
+      o.setName("category").setDescription("Catalog category").setRequired(false)
+        .addChoices(
+          { name: "All tracked categories", value: "all" },
+          { name: "Hats", value: "hats" },
+          { name: "Hair", value: "hair" },
+          { name: "Face accessories", value: "face_accessories" },
+          { name: "Back accessories", value: "back_accessories" },
+          { name: "Front accessories", value: "front_accessories" },
+          { name: "Shoulder accessories", value: "shoulder_accessories" },
+          { name: "Layered clothing", value: "layered_clothing" }
+        )
+    )
+    .addIntegerOption(o =>
+      o.setName("results").setDescription("Trend clusters to show").setRequired(false).setMinValue(1).setMaxValue(10)
+    )
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("limited_sniper")
     .setDescription("Admin radar for best-selling Roblox limited / collectible UGC items")
     .addStringOption(o =>
@@ -6752,6 +6780,20 @@ const SNIPER_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_ALERT_MIN_R
 const SNIPER_ALERT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_ALERT_MAX_CURRENT_RANK || 250);
 const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AGE_DAYS || 90);
 const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
+const SNIPER_TREND_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_TREND_ENABLED, "true") !== "false";
+const SNIPER_TREND_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_TREND_MAX_AGE_DAYS || 28);
+const SNIPER_TREND_MIN_CLUSTER_ITEMS = Number(process.env.REFAZER_SNIPER_TREND_MIN_CLUSTER_ITEMS || 3);
+const SNIPER_TREND_MIN_RISING_ITEMS = Number(process.env.REFAZER_SNIPER_TREND_MIN_RISING_ITEMS || 2);
+const SNIPER_TREND_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_TREND_MIN_RANK_GAIN || 25);
+const SNIPER_TREND_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_TREND_MAX_CURRENT_RANK || 500);
+const SNIPER_TREND_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_TREND_ALERT_MAX_PER_SCAN || 3);
+const SNIPER_TREND_ALERT_SCORE_STEP = Number(process.env.REFAZER_SNIPER_TREND_ALERT_SCORE_STEP || 12);
+const SNIPER_TREND_HISTORY_SCANS = Number(process.env.REFAZER_SNIPER_TREND_HISTORY_SCANS || 4);
+const SNIPER_BREAKOUT_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_BREAKOUT_ENABLED, "true") !== "false";
+const SNIPER_BREAKOUT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_BREAKOUT_MAX_AGE_DAYS || 14);
+const SNIPER_BREAKOUT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_BREAKOUT_MIN_RANK_GAIN || 70);
+const SNIPER_BREAKOUT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_BREAKOUT_MAX_CURRENT_RANK || 700);
+const SNIPER_BREAKOUT_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_BREAKOUT_ALERT_MAX_PER_SCAN || 3);
 const ROBLOX_PUBLIC_MIRROR_ENABLED = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED, "true") !== "false";
 const ROBLOX_PUBLIC_MIRROR_FIRST = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_MIRROR_FIRST, "true") !== "false";
 const ROBLOX_PUBLIC_PROXY_URL = cleanEnv(process.env.REFAZER_ROBLOX_PUBLIC_PROXY_URL);
@@ -6918,6 +6960,8 @@ function formatAdminSystemStatusMessage() {
     uiLine("Last history error", sniperHistoryLastError || "none"),
     uiLine("Alert channel", SNIPER_ALERT_CHANNEL_ID ? `<#${SNIPER_ALERT_CHANNEL_ID}>` : "disabled"),
     uiLine("Alert threshold", `+${SNIPER_ALERT_MIN_RANK_GAIN} ranks into top ${SNIPER_ALERT_MAX_CURRENT_RANK}`),
+    uiLine("Trend radar", SNIPER_TREND_ENABLED ? `${SNIPER_TREND_MIN_CLUSTER_ITEMS}+ related new items, ${SNIPER_TREND_MIN_RISING_ITEMS}+ rising` : "off"),
+    uiLine("Breakout radar", SNIPER_BREAKOUT_ENABLED ? `up to ${SNIPER_BREAKOUT_MAX_AGE_DAYS}d, +${SNIPER_BREAKOUT_MIN_RANK_GAIN} ranks` : "off"),
     "",
     "Use `/admin_roblox_status` for detailed Roblox cookie diagnostics.",
   ].join("\n");
@@ -8168,6 +8212,254 @@ function buildSniperRankAlerts({ previousScan, scan }) {
     .slice(0, Math.max(1, SNIPER_ALERT_MAX_PER_SCAN));
 }
 
+const SNIPER_TREND_NOISE_TOKENS = new Set([
+  "ugc", "accessory", "accessories", "item", "new", "with", "and", "the", "for", "from", "your", "my",
+  "hair", "hat", "head", "face", "back", "front", "shoulder", "waist", "neck", "layered", "classic",
+  "black", "white", "red", "blue", "pink", "green", "brown", "grey", "gray", "gold", "silver"
+]);
+
+function sniperTrendTokens(name) {
+  return [...new Set(
+    normalizeSniperText(name || "")
+      .split(/[^a-z0-9]+/)
+      .filter(token => token.length >= 3 && !SNIPER_TREND_NOISE_TOKENS.has(token) && !/^\d+$/.test(token))
+  )].slice(0, 8);
+}
+
+function sniperTrendKeys(item) {
+  const tokens = sniperTrendTokens(item?.name || item?.item?.name || "");
+  const keys = [];
+  for (let left = 0; left < tokens.length; left += 1) {
+    for (let right = left + 1; right < tokens.length; right += 1) {
+      keys.push([tokens[left], tokens[right]].sort().join(" | "));
+    }
+  }
+  return keys;
+}
+
+function sniperTrendPriorObservations(previousScan, historyScans, id) {
+  const scans = [...(Array.isArray(historyScans) ? historyScans : []), previousScan]
+    .filter(scan => scan?.items?.length)
+    .filter((scan, index, list) => list.findIndex(candidate => candidate.collectedAt === scan.collectedAt) === index)
+    .sort((left, right) => Date.parse(left.collectedAt || 0) - Date.parse(right.collectedAt || 0));
+  const observations = [];
+  for (const scan of scans) {
+    const item = scan.items.find(candidate => String(candidate?.id || "") === String(id));
+    const rank = Number(item?.marketplaceRank);
+    if (item && Number.isFinite(rank)) observations.push({ item, rank, collectedAt: scan.collectedAt });
+  }
+  return observations;
+}
+
+function buildSniperTrendSignals({ previousScan, scan, historyScans = [] }) {
+  if (!SNIPER_TREND_ENABLED || !previousScan?.items?.length || !scan?.items?.length) return [];
+  const clusters = new Map();
+
+  for (const item of scan.items) {
+    const id = String(item?.id || "");
+    const currentRank = Number(item?.marketplaceRank);
+    const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+    if (!id || !Number.isFinite(currentRank) || currentRank > SNIPER_TREND_MAX_CURRENT_RANK) continue;
+    if (age === null || age < 0 || age > SNIPER_TREND_MAX_AGE_DAYS) continue;
+    const observations = sniperTrendPriorObservations(previousScan, historyScans, id);
+    const immediate = observations.at(-1) || null;
+    const earliest = observations[0] || null;
+    const immediateRankGain = immediate ? immediate.rank - currentRank : 0;
+    const sustainedRankGain = earliest ? earliest.rank - currentRank : 0;
+    const favoriteGain = earliest
+      ? Math.max(0, (Number(item.favoriteCount) || 0) - (Number(earliest.item.favoriteCount) || 0))
+      : 0;
+    for (const key of sniperTrendKeys(item)) {
+      const cluster = clusters.get(key) || [];
+      cluster.push({ item, currentRank, immediateRankGain, sustainedRankGain, favoriteGain, observations: observations.length, age });
+      clusters.set(key, cluster);
+    }
+  }
+
+  const signals = [];
+  for (const [key, entries] of clusters) {
+    const unique = [...new Map(entries.map(entry => [String(entry.item.id), entry])).values()];
+    const rising = unique.filter(entry => Math.max(entry.immediateRankGain, entry.sustainedRankGain) >= SNIPER_TREND_MIN_RANK_GAIN);
+    if (unique.length < SNIPER_TREND_MIN_CLUSTER_ITEMS || rising.length < SNIPER_TREND_MIN_RISING_ITEMS) continue;
+    const totalRankGain = rising.reduce((sum, entry) => sum + Math.max(entry.immediateRankGain, entry.sustainedRankGain), 0);
+    const favoriteGain = unique.reduce((sum, entry) => sum + entry.favoriteGain, 0);
+    const bestRank = Math.min(...unique.map(entry => entry.currentRank));
+    const creatorCount = new Set(unique.map(entry => normalizeSniperText(entry.item.creatorName || "unknown"))).size;
+    const score = Math.round(unique.length * 12 + rising.length * 14 + Math.min(40, totalRankGain / 10) + Math.min(18, favoriteGain / 8) + Math.min(8, Math.max(0, creatorCount - 1) * 3) + Math.max(0, 20 - bestRank / 25));
+    signals.push({ key, entries: unique.sort((a, b) => a.currentRank - b.currentRank), itemCount: unique.length, risingCount: rising.length, creatorCount, totalRankGain, favoriteGain, bestRank, score, window: scan.window, category: scan.category, collectedAt: scan.collectedAt });
+  }
+  return signals.sort((a, b) => b.score - a.score || b.totalRankGain - a.totalRankGain || b.favoriteGain - a.favoriteGain || a.bestRank - b.bestRank);
+}
+
+function buildSniperBreakoutSignals({ previousScan, scan, historyScans = [] }) {
+  if (!SNIPER_BREAKOUT_ENABLED || !previousScan?.items?.length || !scan?.items?.length) return [];
+  const signals = [];
+
+  for (const item of scan.items) {
+    const id = String(item?.id || "");
+    const currentRank = Number(item?.marketplaceRank);
+    const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+    if (!id || !Number.isFinite(currentRank) || currentRank > SNIPER_BREAKOUT_MAX_CURRENT_RANK) continue;
+    if (age === null || age < 0 || age > SNIPER_BREAKOUT_MAX_AGE_DAYS) continue;
+
+    const observations = sniperTrendPriorObservations(previousScan, historyScans, id);
+    const immediate = observations.at(-1) || null;
+    const earliest = observations[0] || null;
+    const rankGain = Math.max(
+      immediate ? immediate.rank - currentRank : 0,
+      earliest ? earliest.rank - currentRank : 0
+    );
+    if (rankGain < SNIPER_BREAKOUT_MIN_RANK_GAIN) continue;
+
+    const favorites = Number(item.favoriteCount) || 0;
+    const favoriteGain = earliest ? Math.max(0, favorites - (Number(earliest.item.favoriteCount) || 0)) : 0;
+    const score = Math.round(35 + Math.min(45, rankGain / 5) + Math.min(20, favoriteGain / 5) + Math.max(0, 10 - age / 2));
+    signals.push({ item, currentRank, rankGain, favoriteGain, favorites, age, score, window: scan.window, category: scan.category, collectedAt: scan.collectedAt });
+  }
+
+  return signals.sort((a, b) => b.score - a.score || b.rankGain - a.rankGain || a.currentRank - b.currentRank);
+}
+
+function buildSniperTrendAlerts({ previousScan, scan, historyScans = [], alertState = {} }) {
+  const signals = buildSniperTrendSignals({ previousScan, scan, historyScans });
+  const now = Date.now();
+  const seenAt = new Date(now).toISOString();
+  const activeKeys = new Set(signals.map(signal => scan.window + ":" + scan.category + ":" + signal.key));
+  for (const [key, state] of Object.entries(alertState)) {
+    if (!activeKeys.has(key) && now - Date.parse(state.lastSeenAt || 0) > 24 * 60 * 60 * 1000) delete alertState[key];
+  }
+
+  const pending = [];
+  for (const signal of signals) {
+    const stateKey = scan.window + ":" + scan.category + ":" + signal.key;
+    const previous = alertState[stateKey];
+    const materiallyStronger = previous && (signal.itemCount > Number(previous.itemCount || 0) || signal.risingCount > Number(previous.risingCount || 0) || signal.score >= Number(previous.score || 0) + SNIPER_TREND_ALERT_SCORE_STEP);
+    if (!previous || materiallyStronger) {
+      pending.push({ signal, stateKey });
+    } else {
+      previous.lastSeenAt = seenAt;
+    }
+  }
+
+  const selected = pending.slice(0, Math.max(1, SNIPER_TREND_ALERT_MAX_PER_SCAN));
+  for (const { signal, stateKey } of selected) {
+    alertState[stateKey] = { score: signal.score, itemCount: signal.itemCount, risingCount: signal.risingCount, lastAlertAt: seenAt, lastSeenAt: seenAt };
+  }
+  return { alerts: selected.map(item => item.signal), signals };
+}
+
+function buildSniperBreakoutAlerts({ previousScan, scan, historyScans = [], alertState = {} }) {
+  const signals = buildSniperBreakoutSignals({ previousScan, scan, historyScans });
+  const seenAt = new Date().toISOString();
+  const pending = [];
+
+  for (const signal of signals) {
+    const stateKey = scan.window + ":" + scan.category + ":" + signal.item.id;
+    const previous = alertState[stateKey];
+    if (!previous || signal.score >= Number(previous.score || 0) + SNIPER_TREND_ALERT_SCORE_STEP) {
+      pending.push({ signal, stateKey });
+    } else {
+      previous.lastSeenAt = seenAt;
+    }
+  }
+
+  const selected = pending.slice(0, Math.max(1, SNIPER_BREAKOUT_ALERT_MAX_PER_SCAN));
+  for (const { signal, stateKey } of selected) {
+    alertState[stateKey] = { score: signal.score, lastSeenAt: seenAt, lastAlertAt: seenAt };
+  }
+  return { alerts: selected.map(item => item.signal), signals };
+}
+function formatSniperTrendAlert(signal) {
+  const examples = signal.entries.slice(0, 3).map(entry => "- **" + String(entry.item.name || "Item " + entry.item.id).slice(0, 72) + "** - #" + entry.currentRank + (entry.rankGain > 0 ? " (+" + entry.rankGain + ")" : "") + " - https://www.roblox.com/catalog/" + entry.item.id);
+  return [
+    "# Emerging UGC Trend",
+    "**Name pattern:** " + signal.key.replaceAll(" | ", " + "),
+    "**Category:** " + (SNIPER_CATEGORY_LABELS[signal.category] || signal.category),
+    "**Fresh related items:** " + signal.itemCount + " | **Rising:** " + signal.risingCount + " | **Creators:** " + signal.creatorCount,
+    "**Combined rank gain:** +" + signal.totalRankGain + " | **Favorite gain:** +" + signal.favoriteGain,
+    "**Best current rank:** #" + signal.bestRank + " | **Signal score:** " + signal.score + "/100",
+    "",
+    ...examples,
+    "",
+    "Pattern signal only. Review originality, demand and rights before acting.",
+  ].join("\n");
+}
+
+function formatSniperBreakoutAlert(signal) {
+  const item = signal.item;
+  return [
+    "# Early UGC Breakout",
+    "**" + String(item.name || "Item " + item.id).slice(0, 80) + "**",
+    "**Creator:** " + String(item.creatorName || "Unknown").slice(0, 60),
+    "",
+    "**Category:** " + (SNIPER_CATEGORY_LABELS[signal.category] || signal.category),
+    "**Rank movement:** +" + signal.rankGain + " to #" + signal.currentRank,
+    "**Freshness:** " + signal.age + "d | **Favorite gain:** +" + signal.favoriteGain + " | **Signal score:** " + signal.score + "/100",
+    "",
+    "https://www.roblox.com/catalog/" + item.id,
+    "Pattern signal only. Review demand and rights before acting.",
+  ].join("\n");
+}
+
+async function sendSniperTrendAlerts(alerts) {
+  if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
+  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  for (const alert of alerts) {
+    await channel.send({ content: formatSniperTrendAlert(alert) }).catch(err => console.warn("[sniper_trend] could not send alert:", err.message || err));
+    await wait(750);
+  }
+}
+
+async function sendSniperBreakoutAlerts(alerts) {
+  if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
+  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  for (const alert of alerts) {
+    await channel.send({ content: formatSniperBreakoutAlert(alert) }).catch(err => console.warn("[sniper_breakout] could not send alert:", err.message || err));
+    await wait(750);
+  }
+}
+
+function getSniperTrendSignalsFromHistory({ window, category }) {
+  const current = readSniperHistoryCurrent();
+  const scans = latestSniperHistoryScansFor(category, window);
+  return scans.flatMap(scan => {
+    const key = sniperHistoryScanKey(scan.window, scan.category);
+    return buildSniperTrendSignals({ previousScan: current.previousScans?.[key], scan, historyScans: current.recentScans?.[key] || [] });
+  }).sort((a, b) => b.score - a.score || b.totalRankGain - a.totalRankGain);
+}
+
+function getSniperBreakoutSignalsFromHistory({ window, category }) {
+  const current = readSniperHistoryCurrent();
+  const scans = latestSniperHistoryScansFor(category, window);
+  return scans.flatMap(scan => {
+    const key = sniperHistoryScanKey(scan.window, scan.category);
+    return buildSniperBreakoutSignals({ previousScan: current.previousScans?.[key], scan, historyScans: current.recentScans?.[key] || [] });
+  }).sort((a, b) => b.score - a.score || b.rankGain - a.rankGain);
+}
+
+function formatSniperTrendRadar(signals, breakouts, window, category, limit) {
+  if (!signals.length && !breakouts.length) return "# Trend Radar\nNo confirmed emerging clusters or early breakouts yet. The radar needs two completed history snapshots for the same category before it can measure momentum.";
+  const lines = ["# Trend Radar", "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window), "**Category:** " + (SNIPER_CATEGORY_LABELS[category] || category), "**Method:** recent items (up to " + SNIPER_TREND_MAX_AGE_DAYS + " days), 3+ related names and 2+ rising ranks.", ""];
+  for (const signal of signals.slice(0, limit)) {
+    const examples = signal.entries.slice(0, 3).map(entry => String(entry.item.name || "Item " + entry.item.id).slice(0, 48)).join(" | ");
+    lines.push("## " + signal.key.replaceAll(" | ", " + "));
+    lines.push("**Signal:** " + signal.score + "/100 | **Related:** " + signal.itemCount + " | **Rising:** " + signal.risingCount + " | **Creators:** " + signal.creatorCount + " | **Rank gain:** +" + signal.totalRankGain + " | **Favorites:** +" + signal.favoriteGain + " | **Best:** #" + signal.bestRank);
+    lines.push(examples, "");
+  }
+  if (breakouts.length) {
+    lines.push("## Early Breakouts");
+    for (const signal of breakouts.slice(0, limit)) {
+      lines.push("**" + String(signal.item.name || "Item " + signal.item.id).slice(0, 64) + "** - #" + signal.currentRank + " ( +" + signal.rankGain + " ) - " + signal.age + "d - " + signal.score + "/100");
+      lines.push("https://www.roblox.com/catalog/" + signal.item.id);
+    }
+    lines.push("");
+  }
+  lines.push("Pattern signal only; it does not predict sales or profit.");
+  return lines.join("\n");
+}
+
 function formatSniperAlert(alert) {
   const item = alert.item;
   const candidate = buildSniperCandidate(item, {}, alert.category, true, {
@@ -8849,9 +9141,18 @@ function saveSniperHistoryScan({ window, category, rows, partialReason = "" }) {
   current.version = 1;
   current.updatedAt = collectedAt;
   current.scans ||= {};
+  current.recentScans ||= {};
+  current.trendAlerts ||= {};
+  current.breakoutAlerts ||= {};
+  current.previousScans ||= {};
   const scanKey = sniperHistoryScanKey(window, category);
   const previousScan = current.scans[scanKey] || null;
   const alerts = buildSniperRankAlerts({ previousScan, scan });
+  const historyScans = Array.isArray(current.recentScans[scanKey]) ? current.recentScans[scanKey] : [];
+  const trend = buildSniperTrendAlerts({ previousScan, scan, historyScans, alertState: current.trendAlerts });
+  const breakout = buildSniperBreakoutAlerts({ previousScan, scan, historyScans, alertState: current.breakoutAlerts });
+  current.previousScans[scanKey] = previousScan;
+  current.recentScans[scanKey] = [...historyScans, scan].slice(-Math.max(2, SNIPER_TREND_HISTORY_SCANS));
   current.scans[scanKey] = scan;
   writeSniperHistoryCurrent(current);
   appendSniperHistorySnapshot({
@@ -8863,7 +9164,14 @@ function saveSniperHistoryScan({ window, category, rows, partialReason = "" }) {
     uniqueRows: compactItems.length,
     topIds: compactItems.slice(0, 50).map(item => item.id),
   });
-  return { scan, alerts };
+  return {
+    scan,
+    alerts,
+    trendAlerts: trend.alerts,
+    trendSignals: trend.signals,
+    breakoutAlerts: breakout.alerts,
+    breakoutSignals: breakout.signals,
+  };
 }
 
 function pruneSniperHistorySnapshots() {
@@ -8892,7 +9200,7 @@ async function runSniperHistoryWorkerCycle() {
   if (!SNIPER_HISTORY_ENABLED || sniperHistoryWorkerRunning) return;
   sniperHistoryWorkerRunning = true;
   const startedAt = Date.now();
-  const summary = { scans: 0, rows: 0, alerts: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
+  const summary = { scans: 0, rows: 0, alerts: 0, trendAlerts: 0, breakoutAlerts: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
 
   try {
     for (const window of SNIPER_HISTORY_WINDOWS) {
@@ -8906,7 +9214,7 @@ async function runSniperHistoryWorkerCycle() {
         }
 
         const collected = await collectSniperHistoryRows({ window, category });
-        const { scan, alerts } = saveSniperHistoryScan({
+        const { scan, alerts, trendAlerts, breakoutAlerts } = saveSniperHistoryScan({
           window,
           category,
           rows: collected.rows,
@@ -8915,9 +9223,13 @@ async function runSniperHistoryWorkerCycle() {
         summary.scans += 1;
         summary.rows += scan.uniqueRows;
         summary.alerts += alerts.length;
+        summary.trendAlerts += trendAlerts.length;
+        summary.breakoutAlerts += breakoutAlerts.length;
         summary.categories.push(category);
         console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}${scan.partial ? " partial=yes" : ""}`);
         await sendSniperRankAlerts(alerts);
+        await sendSniperTrendAlerts(trendAlerts);
+        await sendSniperBreakoutAlerts(breakoutAlerts);
       }
     }
 
@@ -15632,6 +15944,21 @@ client.on("interactionCreate", async interaction => {
         content: `## 🔔 Limited Watch List\n**Alert channel:** ${watch.channelId ? `<#${watch.channelId}>` : "not configured"}\n**Check interval:** ${Math.round(LIMITED_CHECK_INTERVAL_MS / 1000)}s\n\n${lines.join("\n")}`,
         flags: 64,
       });
+      return;
+    }
+
+    if (interaction.commandName === "trend_radar") {
+      await interaction.deferReply({ flags: 64 });
+      if (!userIsAdmin(interaction)) {
+        await interaction.editReply("## Admin Only\nThis trend radar is restricted to the team.");
+        return;
+      }
+      const window = interaction.options.getString("window") || "yesterday";
+      const category = interaction.options.getString("category") || "all";
+      const limit = Math.max(1, Math.min(10, interaction.options.getInteger("results") || 5));
+      const signals = getSniperTrendSignalsFromHistory({ window, category });
+      const breakouts = getSniperBreakoutSignalsFromHistory({ window, category });
+      await interaction.editReply(formatSniperTrendRadar(signals, breakouts, window, category, limit));
       return;
     }
 
