@@ -15948,17 +15948,28 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "trend_radar") {
-      await interaction.deferReply({ flags: 64 });
-      if (!userIsAdmin(interaction)) {
-        await interaction.editReply("## Admin Only\nThis trend radar is restricted to the team.");
-        return;
+      try {
+        await interaction.deferReply({ flags: 64 });
+        if (!userIsAdmin(interaction)) {
+          await interaction.editReply("## Admin Only\nThis trend radar is restricted to the team.");
+          return;
+        }
+        const window = interaction.options.getString("window") || "yesterday";
+        const category = interaction.options.getString("category") || "all";
+        const limit = Math.max(1, Math.min(10, interaction.options.getInteger("results") || 5));
+        const signals = getSniperTrendSignalsFromHistory({ window, category });
+        const breakouts = getSniperBreakoutSignalsFromHistory({ window, category });
+        await interaction.editReply(formatSniperTrendRadar(signals, breakouts, window, category, limit));
+      } catch (err) {
+        const detail = String(err?.stack || err?.message || err).slice(0, 1200);
+        console.error("[trend_radar] command failed:", err);
+        const content = "## Trend Radar unavailable\nThe history data could not be read safely. No Roblox scan was started.\n\n## Admin diagnostic\n```\n" + detail + "\n```";
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply(content).catch(() => {});
+        } else {
+          await interaction.reply({ content, flags: 64 }).catch(() => {});
+        }
       }
-      const window = interaction.options.getString("window") || "yesterday";
-      const category = interaction.options.getString("category") || "all";
-      const limit = Math.max(1, Math.min(10, interaction.options.getInteger("results") || 5));
-      const signals = getSniperTrendSignalsFromHistory({ window, category });
-      const breakouts = getSniperBreakoutSignalsFromHistory({ window, category });
-      await interaction.editReply(formatSniperTrendRadar(signals, breakouts, window, category, limit));
       return;
     }
 
