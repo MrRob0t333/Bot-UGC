@@ -23,6 +23,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
+  PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -6751,6 +6752,9 @@ const SNIPER_HISTORY_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_INT
 const SNIPER_HISTORY_START_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_START_DELAY_MS || 60 * 1000);
 const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_PAGE_DELAY_MS || 6000);
 const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 30000);
+const SNIPER_HISTORY_TASK_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_TASK_INTERVAL_MS || 45 * 1000);
+const SNIPER_HISTORY_TASKS_PER_CYCLE = Math.max(1, Number(process.env.REFAZER_SNIPER_HISTORY_TASKS_PER_CYCLE || 1));
+const SNIPER_HISTORY_RECENT_DEPTH = Math.max(30, Number(process.env.REFAZER_SNIPER_HISTORY_RECENT_DEPTH || 60));
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
 const SNIPER_HISTORY_MIN_ROWS_NORMAL = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_NORMAL || 180);
 const SNIPER_HISTORY_MIN_ROWS_DEEP = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_DEEP || 600);
@@ -6925,6 +6929,10 @@ function formatAdminSystemStatusMessage() {
   const pendingPurchases = (db.purchaseRequests || []).filter(item => item.status === "pending").length;
   const pendingWithdrawals = (db.withdrawalRequests || []).filter(item => item.status === "pending").length;
   const sniperCooldownMs = Math.max(0, sniperBusyUntil - Date.now());
+  const historyState = readSniperHistoryCurrent();
+  const historyTasks = sniperHistoryTasks();
+  const historyCursor = historyTasks.length ? (Math.max(0, Number(historyState.indexerCursor) || 0) % historyTasks.length) : 0;
+  const nextHistoryTask = historyTasks[historyCursor];
 
   return [
     "# 🛡️ Velvet Admin Status",
@@ -6953,6 +6961,8 @@ function formatAdminSystemStatusMessage() {
     uiLine("Cooldown", sniperCooldownMs ? `${Math.ceil(sniperCooldownMs / 1000)}s` : "ready"),
     uiLine("Cache entries", sniperCatalogCache.size),
     uiLine("History worker", SNIPER_HISTORY_ENABLED ? (sniperHistoryWorkerRunning ? "running" : "enabled") : "disabled"),
+    uiLine("Indexer cadence", `${SNIPER_HISTORY_TASKS_PER_CYCLE} task / ${Math.round(SNIPER_HISTORY_TASK_INTERVAL_MS / 1000)}s`),
+    uiLine("Next index task", nextHistoryTask ? `${nextHistoryTask.kind}: ${nextHistoryTask.window}/${nextHistoryTask.category}` : "none"),
     uiLine("History depth", SNIPER_HISTORY_DEPTH),
     uiLine("History categories", SNIPER_HISTORY_CATEGORIES.join(", ") || "none"),
     uiLine("History windows", SNIPER_HISTORY_WINDOWS.join(", ") || "none"),
@@ -8429,10 +8439,34 @@ function formatSniperBreakoutAlert(signal) {
   ].join("\n");
 }
 
+async function sniperPrivateAlertChannel() {
+  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased?.() || !channel.guild) {
+    console.warn(`[sniper_history] alert channel not found or not text: ${SNIPER_ALERT_CHANNEL_ID}`);
+    return null;
+  }
+
+  const everyoneRole = channel.guild.roles.everyone;
+  try {
+    // This configured feed is for admin research only, never public discovery.
+    await channel.permissionOverwrites.edit(everyoneRole, { ViewChannel: false });
+    await channel.permissionOverwrites.edit(ADMIN_ROLE, { ViewChannel: true, SendMessages: true });
+  } catch (err) {
+    console.warn("[sniper_history] could not enforce private alert channel:", err.message || err);
+  }
+
+  const publicCanView = channel.permissionsFor(everyoneRole)?.has(PermissionFlagsBits.ViewChannel);
+  if (publicCanView) {
+    console.warn("[sniper_history] alert withheld because the configured channel is visible to @everyone");
+    return null;
+  }
+  return channel;
+}
+
 async function sendSniperTrendAlerts(alerts) {
   if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
-  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
-  if (!channel?.isTextBased?.()) return;
+  const channel = await sniperPrivateAlertChannel();
+  if (!channel) return;
   for (const alert of alerts) {
     await channel.send({ content: formatSniperTrendAlert(alert) }).catch(err => console.warn("[sniper_trend] could not send alert:", err.message || err));
     await wait(750);
@@ -8441,8 +8475,8 @@ async function sendSniperTrendAlerts(alerts) {
 
 async function sendSniperBreakoutAlerts(alerts) {
   if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
-  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
-  if (!channel?.isTextBased?.()) return;
+  const channel = await sniperPrivateAlertChannel();
+  if (!channel) return;
   for (const alert of alerts) {
     await channel.send({ content: formatSniperBreakoutAlert(alert) }).catch(err => console.warn("[sniper_breakout] could not send alert:", err.message || err));
     await wait(750);
@@ -8612,11 +8646,8 @@ function formatSniperAlert(alert) {
 
 async function sendSniperRankAlerts(alerts) {
   if (!SNIPER_ALERT_CHANNEL_ID || !alerts?.length) return;
-  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
-  if (!channel?.isTextBased?.()) {
-    console.warn(`[sniper_history] alert channel not found or not text: ${SNIPER_ALERT_CHANNEL_ID}`);
-    return;
-  }
+  const channel = await sniperPrivateAlertChannel();
+  if (!channel) return;
 
   for (const alert of alerts) {
     await channel.send({ content: formatSniperAlert(alert) }).catch(err => {
@@ -9319,6 +9350,29 @@ function pruneSniperHistorySnapshots() {
   }
 }
 
+function sniperHistoryTasks() {
+  const categories = SNIPER_HISTORY_CATEGORIES.filter(category => SNIPER_CATEGORY_LABELS[category] && sniperCanUseCatalogV2(category));
+  const rankedWindows = SNIPER_HISTORY_WINDOWS.filter(window => window !== "recent" && SNIPER_WINDOW_PARAMS[window]);
+  return [
+    // Fresh releases are inexpensive one/two-page scans and give the radar a
+    // continuously refreshed pool before the deeper sales rankings finish.
+    ...categories.map(category => ({ window: "recent", category, depth: SNIPER_HISTORY_RECENT_DEPTH, kind: "recent" })),
+    ...rankedWindows.flatMap(window => categories.map(category => ({ window, category, depth: SNIPER_HISTORY_DEPTH, kind: "ranking" }))),
+  ];
+}
+
+function nextSniperHistoryTasks(count) {
+  const tasks = sniperHistoryTasks();
+  if (!tasks.length) return [];
+  const current = readSniperHistoryCurrent();
+  const cursor = Math.max(0, Number(current.indexerCursor) || 0) % tasks.length;
+  const selected = Array.from({ length: Math.min(count, tasks.length) }, (_, index) => tasks[(cursor + index) % tasks.length]);
+  current.indexerCursor = (cursor + selected.length) % tasks.length;
+  current.indexerUpdatedAt = new Date().toISOString();
+  writeSniperHistoryCurrent(current);
+  return selected;
+}
+
 async function runSniperHistoryWorkerCycle() {
   if (!SNIPER_HISTORY_ENABLED || sniperHistoryWorkerRunning) return;
   sniperHistoryWorkerRunning = true;
@@ -9326,20 +9380,12 @@ async function runSniperHistoryWorkerCycle() {
   const summary = { scans: 0, rows: 0, alerts: 0, trendAlerts: 0, breakoutAlerts: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
 
   try {
-    for (const window of SNIPER_HISTORY_WINDOWS) {
-      if (!SNIPER_WINDOW_PARAMS[window]) continue;
-      summary.windows.push(window);
-
-      for (const category of SNIPER_HISTORY_CATEGORIES) {
-        if (!SNIPER_CATEGORY_LABELS[category] || !sniperCanUseCatalogV2(category)) continue;
-        if (summary.scans > 0 && SNIPER_HISTORY_CATEGORY_DELAY_MS > 0) {
-          await wait(SNIPER_HISTORY_CATEGORY_DELAY_MS);
-        }
-
-        const collected = await collectSniperHistoryRows({ window, category });
+    for (const task of nextSniperHistoryTasks(SNIPER_HISTORY_TASKS_PER_CYCLE)) {
+      try {
+        const collected = await collectSniperHistoryRows(task);
         const { scan, alerts, trendAlerts, breakoutAlerts } = saveSniperHistoryScan({
-          window,
-          category,
+          window: task.window,
+          category: task.category,
           rows: collected.rows,
           partialReason: collected.partialReason,
         });
@@ -9348,31 +9394,27 @@ async function runSniperHistoryWorkerCycle() {
         summary.alerts += alerts.length;
         summary.trendAlerts += trendAlerts.length;
         summary.breakoutAlerts += breakoutAlerts.length;
-        summary.categories.push(category);
-        console.log(`[sniper_history] ${window}/${category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}${scan.partial ? " partial=yes" : ""}`);
+        summary.categories.push(task.category);
+        summary.windows.push(task.window);
+        console.log(`[sniper_history] ${task.kind} ${task.window}/${task.category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}${scan.partial ? " partial=yes" : ""}`);
         await sendSniperRankAlerts(alerts);
         await sendSniperTrendAlerts(trendAlerts);
         await sendSniperBreakoutAlerts(breakoutAlerts);
+      } catch (err) {
+        sniperHistoryLastError = String(err.message || err).slice(0, 500);
+        console.warn(`[sniper_history] ${task.kind} ${task.window}/${task.category} failed:`, sniperHistoryLastError);
       }
     }
 
     pruneSniperHistorySnapshots();
     sniperHistoryLastRun = new Date().toISOString();
-    sniperHistoryLastError = "";
+    if (summary.scans) sniperHistoryLastError = "";
     sniperHistoryLastSummary = {
       ...summary,
       elapsedMs: Date.now() - startedAt,
       categories: [...new Set(summary.categories)],
       windows: [...new Set(summary.windows)],
     };
-  } catch (err) {
-    sniperHistoryLastError = String(err.message || err).slice(0, 500);
-    sniperHistoryLastSummary = {
-      ...summary,
-      elapsedMs: Date.now() - startedAt,
-      error: sniperHistoryLastError,
-    };
-    console.warn("[sniper_history] cycle failed:", sniperHistoryLastError);
   } finally {
     sniperHistoryWorkerRunning = false;
   }
@@ -9383,7 +9425,7 @@ function scheduleSniperHistoryWorker(delayMs = SNIPER_HISTORY_INTERVAL_MS) {
   clearTimeout(sniperHistoryWorkerTimer);
   sniperHistoryWorkerTimer = setTimeout(async () => {
     await runSniperHistoryWorkerCycle();
-    scheduleSniperHistoryWorker(SNIPER_HISTORY_INTERVAL_MS);
+    scheduleSniperHistoryWorker(SNIPER_HISTORY_TASK_INTERVAL_MS);
   }, Math.max(5000, delayMs));
 }
 
