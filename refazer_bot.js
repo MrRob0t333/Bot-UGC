@@ -8473,8 +8473,47 @@ function getSniperTrendWatchSignalsFromHistory({ window, category }) {
     .sort((a, b) => b.score - a.score || a.bestRank - b.bestRank);
 }
 
-function formatSniperTrendRadar(signals, breakouts, watchSignals, window, category, limit) {
-  if (!signals.length && !breakouts.length && !watchSignals.length) return "# Trend Radar\nNo confirmed emerging clusters, early breakouts or fresh name families yet.";
+function getSniperFreshBaselineCandidates({ window, category }) {
+  const current = readSniperHistoryCurrent();
+  const exactScans = latestSniperHistoryScansFor(category, window);
+  const allScans = Object.values(current.scans || {}).filter(scan => scan && Array.isArray(scan.items));
+  const preferredScans = [...new Map([
+    ...exactScans.map(scan => [sniperHistoryScanKey(scan.window, scan.category), scan]),
+    ...allScans
+      .filter(scan => scan.category === category || (category === "all" && scan.window === window))
+      .map(scan => [sniperHistoryScanKey(scan.window, scan.category), scan]),
+    ...allScans.map(scan => [sniperHistoryScanKey(scan.window, scan.category), scan]),
+  ]).values()];
+  const seen = new Set();
+  const candidates = [];
+  for (const scan of preferredScans) {
+    for (const item of scan.items || []) {
+      const id = String(item?.id || "");
+      const rank = Number(item?.marketplaceRank);
+      const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+      const price = Number(item?.price);
+      if (!id || seen.has(id) || !Number.isFinite(rank) || age === null) continue;
+      if (Number.isFinite(price) && price <= 0) continue;
+      seen.add(id);
+      const favorites = Number(item.favoriteCount) || 0;
+      const exactScope = scan.category === category && scan.window === window;
+      const categoryScope = scan.category === category || category === "all";
+      const fresh = age <= SNIPER_TREND_MAX_AGE_DAYS;
+      const score = Math.round(
+        Math.max(0, 60 - rank / 20)
+        + Math.min(30, Math.log10(favorites + 1) * 10)
+        + Math.max(0, 10 - age / 3)
+        + (exactScope ? 15 : categoryScope ? 8 : 0)
+        + (fresh ? 8 : 0)
+      );
+      candidates.push({ item, rank, age, favorites, score, fresh, exactScope, categoryScope, sourceWindow: scan.window, sourceCategory: scan.category });
+    }
+  }
+  return candidates.sort((a, b) => b.score - a.score || a.rank - b.rank);
+}
+
+function formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandidates, window, category, limit) {
+  if (!signals.length && !breakouts.length && !watchSignals.length && !baselineCandidates.length) return "# Trend Radar\nNo history snapshot is available yet for this window/category. The background worker will populate it automatically.";
   const lines = ["# Trend Radar", "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window), "**Category:** " + (SNIPER_CATEGORY_LABELS[category] || category), "**Method:** recent items (up to " + SNIPER_TREND_MAX_AGE_DAYS + " days), 3+ related names and 2+ rising ranks.", ""];
   for (const signal of signals.slice(0, limit)) {
     const examples = signal.entries.slice(0, 3).map(entry => String(entry.item.name || "Item " + entry.item.id).slice(0, 48)).join(" | ");
@@ -8497,6 +8536,23 @@ function formatSniperTrendRadar(signals, breakouts, watchSignals, window, catego
       const examples = signal.entries.slice(0, 2).map(entry => String(entry.item.name || "Item " + entry.item.id).slice(0, 48)).join(" | ");
       lines.push("**" + signal.key.replaceAll(" | ", " + ") + "** - " + signal.itemCount + " items - " + signal.creatorCount + " creators - best #" + signal.bestRank + " - " + signal.score + "/100");
       lines.push(examples);
+    }
+    lines.push("");
+  }
+  if (!signals.length && !breakouts.length && !watchSignals.length && baselineCandidates.length) {
+    const freshCandidates = baselineCandidates.filter(candidate => candidate.fresh);
+    const displayCandidates = (freshCandidates.length ? freshCandidates : baselineCandidates).slice(0, limit);
+    const exactCandidates = displayCandidates.every(candidate => candidate.exactScope);
+    lines.push(freshCandidates.length ? "## Fresh Baseline Candidates" : "## Ranking Baseline Candidates");
+    lines.push(freshCandidates.length
+      ? "Recent items already ranking well. These are not confirmed trends yet; use them as a manual research queue."
+      : "No fresh candidate is stored for this exact filter yet. These are the strongest saved ranking candidates, not a confirmed trend.");
+    if (!exactCandidates) lines.push("**Source note:** Some entries come from the nearest saved category/window because this exact history snapshot has no usable candidates.");
+    for (const candidate of displayCandidates) {
+      const item = candidate.item;
+      const source = candidate.exactScope ? "" : " - saved " + (SNIPER_WINDOW_LABELS[candidate.sourceWindow] || candidate.sourceWindow) + "/" + (SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory);
+      lines.push("**" + String(item.name || "Item " + item.id).slice(0, 64) + "** - #" + candidate.rank + " - " + candidate.age + "d - " + candidate.favorites.toLocaleString("en-US") + " favorites" + source);
+      lines.push("https://www.roblox.com/catalog/" + item.id);
     }
     lines.push("");
   }
@@ -16005,7 +16061,8 @@ client.on("interactionCreate", async interaction => {
         const signals = getSniperTrendSignalsFromHistory({ window, category });
         const breakouts = getSniperBreakoutSignalsFromHistory({ window, category });
         const watchSignals = getSniperTrendWatchSignalsFromHistory({ window, category });
-        await interaction.editReply(formatSniperTrendRadar(signals, breakouts, watchSignals, window, category, limit));
+        const baselineCandidates = getSniperFreshBaselineCandidates({ window, category });
+        await interaction.editReply(formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandidates, window, category, limit));
       } catch (err) {
         const detail = String(err?.stack || err?.message || err).slice(0, 1200);
         console.error("[trend_radar] command failed:", err);
