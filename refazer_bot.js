@@ -14694,6 +14694,7 @@ client.on("interactionCreate", async interaction => {
     "steal",
     "steal2",
     "sniper",
+    "trend_radar",
     "limited_sniper",
     "limited_alert_channel",
     "limited_add",
