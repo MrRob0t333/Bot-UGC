@@ -8492,24 +8492,50 @@ function getSniperFreshBaselineCandidates({ window, category }) {
       const rank = Number(item?.marketplaceRank);
       const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
       const price = Number(item?.price);
-      if (!id || seen.has(id) || !Number.isFinite(rank) || age === null) continue;
+      if (!id || seen.has(id) || !Number.isFinite(rank) || age === null || age > SNIPER_TREND_MAX_AGE_DAYS) continue;
       if (Number.isFinite(price) && price <= 0) continue;
       seen.add(id);
       const favorites = Number(item.favoriteCount) || 0;
       const exactScope = scan.category === category && scan.window === window;
       const categoryScope = scan.category === category || category === "all";
-      const fresh = age <= SNIPER_TREND_MAX_AGE_DAYS;
       const score = Math.round(
         Math.max(0, 60 - rank / 20)
         + Math.min(30, Math.log10(favorites + 1) * 10)
         + Math.max(0, 10 - age / 3)
         + (exactScope ? 15 : categoryScope ? 8 : 0)
-        + (fresh ? 8 : 0)
+        + 8
       );
-      candidates.push({ item, rank, age, favorites, score, fresh, exactScope, categoryScope, sourceWindow: scan.window, sourceCategory: scan.category });
+      candidates.push({ item, rank, age, favorites, score, exactScope, categoryScope, sourceWindow: scan.window, sourceCategory: scan.category });
     }
   }
   return candidates.sort((a, b) => b.score - a.score || a.rank - b.rank);
+}
+
+async function ensureSniperTrendFreshBaseline({ window, category }) {
+  const cachedCandidates = getSniperFreshBaselineCandidates({ window, category });
+  if (cachedCandidates.length) return cachedCandidates;
+
+  // A single newest-first page gives the radar a useful, current fallback
+  // without turning a no-signal lookup into another deep catalog scan.
+  try {
+    const collected = await collectSniperHistoryRows({
+      window: "recent",
+      category,
+      depth: 30,
+    });
+    if (collected.rows.length) {
+      saveSniperHistoryScan({
+        window: "recent",
+        category,
+        rows: collected.rows,
+        partialReason: collected.partialReason,
+      });
+      console.log(`[trend_radar] refreshed recent baseline category=${category} rows=${collected.rows.length}`);
+    }
+  } catch (err) {
+    console.warn("[trend_radar] could not refresh recent baseline:", err.message || err);
+  }
+  return getSniperFreshBaselineCandidates({ window, category });
 }
 
 function formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandidates, window, category, limit) {
@@ -8540,13 +8566,10 @@ function formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandid
     lines.push("");
   }
   if (!signals.length && !breakouts.length && !watchSignals.length && baselineCandidates.length) {
-    const freshCandidates = baselineCandidates.filter(candidate => candidate.fresh);
-    const displayCandidates = (freshCandidates.length ? freshCandidates : baselineCandidates).slice(0, limit);
+    const displayCandidates = baselineCandidates.slice(0, limit);
     const exactCandidates = displayCandidates.every(candidate => candidate.exactScope);
-    lines.push(freshCandidates.length ? "## Fresh Baseline Candidates" : "## Ranking Baseline Candidates");
-    lines.push(freshCandidates.length
-      ? "Recent items already ranking well. These are not confirmed trends yet; use them as a manual research queue."
-      : "No fresh candidate is stored for this exact filter yet. These are the strongest saved ranking candidates, not a confirmed trend.");
+    lines.push("## Fresh Baseline Candidates");
+    lines.push("Recent items already ranking well. These are not confirmed trends yet; use them as a manual research queue.");
     if (!exactCandidates) lines.push("**Source note:** Some entries come from the nearest saved category/window because this exact history snapshot has no usable candidates.");
     for (const candidate of displayCandidates) {
       const item = candidate.item;
@@ -16061,7 +16084,7 @@ client.on("interactionCreate", async interaction => {
         const signals = getSniperTrendSignalsFromHistory({ window, category });
         const breakouts = getSniperBreakoutSignalsFromHistory({ window, category });
         const watchSignals = getSniperTrendWatchSignalsFromHistory({ window, category });
-        const baselineCandidates = getSniperFreshBaselineCandidates({ window, category });
+        const baselineCandidates = await ensureSniperTrendFreshBaseline({ window, category });
         await interaction.editReply(formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandidates, window, category, limit));
       } catch (err) {
         const detail = String(err?.stack || err?.message || err).slice(0, 1200);
