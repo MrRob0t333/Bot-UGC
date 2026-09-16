@@ -6818,7 +6818,7 @@ const SNIPER_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_ALERT_MIN_R
 const SNIPER_ALERT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_ALERT_MAX_CURRENT_RANK || 250);
 const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AGE_DAYS || 90);
 const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
-const SNIPER_GLOBAL_ALERT_USER_IDS = parseIdListEnv(process.env.REFAZER_SNIPER_GLOBAL_ALERT_USER_IDS || "1108166595374751828,433699177705504768");
+const SNIPER_GLOBAL_ALERT_CHANNEL_ID = cleanEnv(process.env.REFAZER_SNIPER_GLOBAL_ALERT_CHANNEL_ID, "1522293475801038868");
 const SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS || 16);
 const SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN || 200);
 const SNIPER_GLOBAL_ALERT_MAX_RANK = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MAX_RANK || 800);
@@ -8518,10 +8518,10 @@ function formatSniperBreakoutAlert(signal) {
   ].join("\n");
 }
 
-async function sniperPrivateAlertChannel() {
-  const channel = await client.channels.fetch(SNIPER_ALERT_CHANNEL_ID).catch(() => null);
+async function sniperPrivateAlertChannel(channelId = SNIPER_ALERT_CHANNEL_ID) {
+  const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.() || !channel.guild) {
-    console.warn(`[sniper_history] alert channel not found or not text: ${SNIPER_ALERT_CHANNEL_ID}`);
+    console.warn(`[sniper_history] alert channel not found or not text: ${channelId}`);
     return null;
   }
 
@@ -8558,13 +8558,12 @@ function formatGlobalFreshRankAlert(alert) {
 }
 
 async function sendGlobalFreshRankAlerts(alerts) {
-  if (!alerts?.length || !SNIPER_GLOBAL_ALERT_USER_IDS.length) return;
+  if (!alerts?.length || !SNIPER_GLOBAL_ALERT_CHANNEL_ID) return;
+  const channel = await sniperPrivateAlertChannel(SNIPER_GLOBAL_ALERT_CHANNEL_ID);
+  if (!channel) return;
   for (const alert of alerts) {
-    const message = formatGlobalFreshRankAlert(alert);
-    for (const userId of SNIPER_GLOBAL_ALERT_USER_IDS) {
-      const user = await client.users.fetch(userId).catch(() => null);
-      await user?.send(message).catch(err => console.warn("[sniper_global] DM failed:", err.message || err));
-    }
+    await channel.send({ content: formatGlobalFreshRankAlert(alert) }).catch(err => console.warn("[sniper_global] alert failed:", err.message || err));
+    await wait(750);
   }
 }
 
