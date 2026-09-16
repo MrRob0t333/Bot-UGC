@@ -8630,16 +8630,16 @@ function superSniperResearch({ window, minPrice = 2 }) {
 
   const entries = [...itemById.values()];
   const rankingCandidates = entries
-    .filter(entry => entry.age <= SNIPER_TREND_MAX_AGE_DAYS)
     .map(entry => {
       const favorites = Number(entry.item.favoriteCount) || 0;
+      const fresh = entry.age <= SNIPER_TREND_MAX_AGE_DAYS;
       const score = Math.round(
         Math.max(0, 90 - entry.rank / 6)
         + Math.min(28, Math.log10(favorites + 1) * 9)
         + Math.max(0, 18 - entry.age / 2)
         + (entry.sourceCategory === "all" ? 16 : 0)
       );
-      return { ...entry, favorites, score };
+      return { ...entry, favorites, fresh, score };
     })
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
   const recentSeeds = new Map();
@@ -8703,8 +8703,10 @@ function formatSuperSniperReport(research, window, limit) {
       const lines = [
         "# Super Sniper",
         "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
-        "## Ranked Paid Candidates",
-        "Sales-ranking candidates first. Keyword and cross-category boosts will appear after more snapshots are collected.",
+        research.rankingCandidates.some(candidate => candidate.fresh) ? "## Ranked Paid Candidates" : "## Ranked Market Leaders",
+        research.rankingCandidates.some(candidate => candidate.fresh)
+          ? "Sales-ranking candidates first. Keyword and cross-category boosts will appear after more snapshots are collected."
+          : "No recent item is currently stored in this sales ranking, so these are established paid ranking leaders. Keyword and cross-category boosts will appear after more snapshots are collected.",
       ];
       for (const candidate of research.rankingCandidates.slice(0, limit)) {
         const scope = candidate.sourceCategory === "all" ? "global source" : (SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory);
