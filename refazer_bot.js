@@ -8629,6 +8629,19 @@ function superSniperResearch({ window, minPrice = 2 }) {
   }
 
   const entries = [...itemById.values()];
+  const rankingCandidates = entries
+    .filter(entry => entry.age <= SNIPER_TREND_MAX_AGE_DAYS)
+    .map(entry => {
+      const favorites = Number(entry.item.favoriteCount) || 0;
+      const score = Math.round(
+        Math.max(0, 90 - entry.rank / 6)
+        + Math.min(28, Math.log10(favorites + 1) * 9)
+        + Math.max(0, 18 - entry.age / 2)
+        + (entry.sourceCategory === "all" ? 16 : 0)
+      );
+      return { ...entry, favorites, score };
+    })
+    .sort((a, b) => b.score - a.score || a.rank - b.rank);
   const recentSeeds = new Map();
   for (const scan of Object.values(current.scans || {}).filter(scan => scan?.window === "recent" && Array.isArray(scan.items))) {
     for (const item of scan.items) {
@@ -8680,12 +8693,28 @@ function superSniperResearch({ window, minPrice = 2 }) {
   }).filter(Boolean)
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
 
-  return { scans: scans.length, entries: entries.length, seeds, keywords, matches };
+  return { scans: scans.length, entries: entries.length, rankingCandidates, seeds, keywords, matches };
 }
 
 function formatSuperSniperReport(research, window, limit) {
   if (!research.scans && !research.seeds.length) return "# Super Sniper\nNo saved ranking snapshot is available yet. The background indexer will populate it automatically.";
   if (!research.keywords.length || !research.matches.length) {
+    if (research.rankingCandidates.length) {
+      const lines = [
+        "# Super Sniper",
+        "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
+        "## Ranked Paid Candidates",
+        "Sales-ranking candidates first. Keyword and cross-category boosts will appear after more snapshots are collected.",
+      ];
+      for (const candidate of research.rankingCandidates.slice(0, limit)) {
+        const scope = candidate.sourceCategory === "all" ? "global source" : (SNIPER_CATEGORY_LABELS[candidate.sourceCategory] || candidate.sourceCategory);
+        const line = "**" + String(candidate.item.name || "Item " + candidate.item.id).slice(0, 60) + "** - #" + candidate.rank + " in " + scope + " - " + candidate.price + " Robux - " + candidate.age + "d - " + candidate.favorites.toLocaleString("en-US") + " favorites - " + candidate.score + "/100";
+        if ((lines.join("\n").length + line.length + 70) > 1850) break;
+        lines.push(line, "https://www.roblox.com/catalog/" + candidate.item.id);
+      }
+      lines.push("", "Ranking research only; it does not predict sales or profit.");
+      return lines.join("\n");
+    }
     if (!research.seeds.length) return "# Super Sniper\nNo strong paid-name signal was found in the saved ranking yet. The indexer is still collecting snapshots.";
     const lines = [
       "# Super Sniper",
