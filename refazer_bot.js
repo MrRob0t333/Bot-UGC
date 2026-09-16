@@ -8629,6 +8629,23 @@ function superSniperResearch({ window, minPrice = 2 }) {
   }
 
   const entries = [...itemById.values()];
+  const recentSeeds = new Map();
+  for (const scan of Object.values(current.scans || {}).filter(scan => scan?.window === "recent" && Array.isArray(scan.items))) {
+    for (const item of scan.items) {
+      const id = String(item?.id || "");
+      const rank = Number(item?.marketplaceRank);
+      const price = Number(item?.price);
+      const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+      const text = normalizeSniperText(`${item?.name || ""} ${item?.itemType || ""} ${item?.assetType || ""}`);
+      if (!id || !Number.isFinite(rank) || !Number.isFinite(price) || price < minPrice || age === null || age > SNIPER_TREND_MAX_AGE_DAYS) continue;
+      if (SNIPER_FORBIDDEN_TYPE_HINTS.some(token => text.includes(token))) continue;
+      const entry = { item, rank, price, age, sourceCategory: scan.category, sourceWindow: scan.window, favorites: Number(item.favoriteCount) || 0 };
+      const previous = recentSeeds.get(id);
+      if (!previous || rank < previous.rank) recentSeeds.set(id, entry);
+    }
+  }
+  const seeds = [...recentSeeds.values()]
+    .sort((a, b) => b.favorites - a.favorites || a.rank - b.rank || a.age - b.age);
   const tokenStats = new Map();
   for (const entry of entries) {
     const topRank = entry.sourceCategory === "all" ? 150 : 60;
@@ -8663,12 +8680,27 @@ function superSniperResearch({ window, minPrice = 2 }) {
   }).filter(Boolean)
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
 
-  return { scans: scans.length, entries: entries.length, keywords, matches };
+  return { scans: scans.length, entries: entries.length, seeds, keywords, matches };
 }
 
 function formatSuperSniperReport(research, window, limit) {
-  if (!research.scans) return "# Super Sniper\nNo saved ranking snapshot is available for this window yet. The background indexer will populate it automatically.";
-  if (!research.keywords.length || !research.matches.length) return "# Super Sniper\nNo strong paid-name signal was found in the saved ranking yet. The indexer is still collecting snapshots.";
+  if (!research.scans && !research.seeds.length) return "# Super Sniper\nNo saved ranking snapshot is available yet. The background indexer will populate it automatically.";
+  if (!research.keywords.length || !research.matches.length) {
+    if (!research.seeds.length) return "# Super Sniper\nNo strong paid-name signal was found in the saved ranking yet. The indexer is still collecting snapshots.";
+    const lines = [
+      "# Super Sniper",
+      "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
+      "## Paid Seed Queue",
+      "Fresh paid UGCs being watched while the ranking and keyword evidence is collected.",
+    ];
+    for (const seed of research.seeds.slice(0, limit)) {
+      const line = "**" + String(seed.item.name || "Item " + seed.item.id).slice(0, 60) + "** - " + seed.price + " Robux - " + seed.age + "d - " + seed.favorites.toLocaleString("en-US") + " favorites";
+      if ((lines.join("\n").length + line.length + 70) > 1850) break;
+      lines.push(line, "https://www.roblox.com/catalog/" + seed.item.id);
+    }
+    lines.push("", "Seed queue only; it is not a sales or profit prediction.");
+    return lines.join("\n");
+  }
   const lines = [
     "# Super Sniper",
     "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
