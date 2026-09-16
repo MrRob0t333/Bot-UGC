@@ -6773,6 +6773,7 @@ const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTO
 const SNIPER_HISTORY_TASK_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_TASK_INTERVAL_MS || 45 * 1000);
 const SNIPER_HISTORY_TASKS_PER_CYCLE = Math.max(1, Number(process.env.REFAZER_SNIPER_HISTORY_TASKS_PER_CYCLE || 1));
 const SNIPER_HISTORY_RECENT_DEPTH = Math.max(30, Number(process.env.REFAZER_SNIPER_HISTORY_RECENT_DEPTH || 60));
+const SNIPER_HISTORY_QUEUE_VERSION = 2;
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
 const SNIPER_HISTORY_MIN_ROWS_NORMAL = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_NORMAL || 180);
 const SNIPER_HISTORY_MIN_ROWS_DEEP = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_DEEP || 600);
@@ -8632,7 +8633,11 @@ function superSniperResearch({ window, minPrice = 2, maxAgeDays = 60 }) {
   }
 
   const entries = [...itemById.values()];
-  const rankingCandidates = entries
+  const globalEntries = entries.filter(entry => entry.sourceCategory === "all");
+  // Category positions are useful while warming up, but cannot be compared
+  // directly with each other. Prefer the dedicated global ranking once saved.
+  const comparableRankingEntries = globalEntries.length ? globalEntries : entries;
+  const rankingCandidates = comparableRankingEntries
     .filter(entry => entry.age <= maxAgeDays)
     .map(entry => {
       const favorites = Number(entry.item.favoriteCount) || 0;
@@ -8697,7 +8702,7 @@ function superSniperResearch({ window, minPrice = 2, maxAgeDays = 60 }) {
   }).filter(Boolean)
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
 
-  return { scans: scans.length, entries: entries.length, rankingCandidates, seeds, keywords, matches, maxAgeDays };
+  return { scans: scans.length, entries: entries.length, globalRanking: globalEntries.length > 0, rankingCandidates, seeds, keywords, matches, maxAgeDays };
 }
 
 function formatSuperSniperReport(research, window, limit) {
@@ -8708,6 +8713,7 @@ function formatSuperSniperReport(research, window, limit) {
         "# Super Sniper",
         "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
         "**Max age:** " + research.maxAgeDays + " days",
+        "**Ranking scope:** " + (research.globalRanking ? "global catalog" : "category snapshots while global ranking warms up"),
         research.rankingCandidates.some(candidate => candidate.fresh) ? "## Ranked Paid Candidates" : "## Ranked Market Leaders",
         research.rankingCandidates.some(candidate => candidate.fresh)
           ? "Sales-ranking candidates first. Keyword and cross-category boosts will appear after more snapshots are collected."
@@ -9539,14 +9545,13 @@ function pruneSniperHistorySnapshots() {
 
 function sniperHistoryTasks() {
   const typedCategories = SNIPER_HISTORY_CATEGORIES.filter(category => SNIPER_CATEGORY_LABELS[category] && sniperCanUseCatalogV2(category));
-  // The all-category feed is the cross-category source for Super Sniper.
-  const categories = ["all", ...typedCategories];
   const rankedWindows = SNIPER_HISTORY_WINDOWS.filter(window => window !== "recent" && SNIPER_WINDOW_PARAMS[window]);
   return [
-    // Fresh releases are inexpensive one/two-page scans and give the radar a
-    // continuously refreshed pool before the deeper sales rankings finish.
-    ...categories.map(category => ({ window: "recent", category, depth: SNIPER_HISTORY_RECENT_DEPTH, kind: "recent" })),
-    ...rankedWindows.flatMap(window => categories.map(category => ({ window, category, depth: SNIPER_HISTORY_DEPTH, kind: "ranking" }))),
+    // Super Sniper needs comparable cross-category ranks first. These global
+    // rankings are deliberately ahead of discovery and typed-category work.
+    ...rankedWindows.map(window => ({ window, category: "all", depth: SNIPER_HISTORY_DEPTH, kind: "global-ranking" })),
+    ...["all", ...typedCategories].map(category => ({ window: "recent", category, depth: SNIPER_HISTORY_RECENT_DEPTH, kind: "recent" })),
+    ...rankedWindows.flatMap(window => typedCategories.map(category => ({ window, category, depth: SNIPER_HISTORY_DEPTH, kind: "ranking" }))),
   ];
 }
 
@@ -9554,9 +9559,12 @@ function nextSniperHistoryTasks(count) {
   const tasks = sniperHistoryTasks();
   if (!tasks.length) return [];
   const current = readSniperHistoryCurrent();
-  const cursor = Math.max(0, Number(current.indexerCursor) || 0) % tasks.length;
+  const cursor = current.indexerQueueVersion === SNIPER_HISTORY_QUEUE_VERSION
+    ? Math.max(0, Number(current.indexerCursor) || 0) % tasks.length
+    : 0;
   const selected = Array.from({ length: Math.min(count, tasks.length) }, (_, index) => tasks[(cursor + index) % tasks.length]);
   current.indexerCursor = (cursor + selected.length) % tasks.length;
+  current.indexerQueueVersion = SNIPER_HISTORY_QUEUE_VERSION;
   current.indexerUpdatedAt = new Date().toISOString();
   writeSniperHistoryCurrent(current);
   return selected;
