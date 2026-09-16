@@ -1093,6 +1093,9 @@ const commands = [
     .addIntegerOption(o =>
       o.setName("results").setDescription("How many matching paid UGCs to return").setRequired(false).setMinValue(1).setMaxValue(20)
     )
+    .addIntegerOption(o =>
+      o.setName("max_age_days").setDescription("Maximum item age; defaults to 60 days").setRequired(false).setMinValue(1).setMaxValue(365)
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -8604,7 +8607,7 @@ async function ensureSniperTrendFreshBaseline({ window, category }) {
   return getSniperFreshBaselineCandidates({ window, category });
 }
 
-function superSniperResearch({ window, minPrice = 2 }) {
+function superSniperResearch({ window, minPrice = 2, maxAgeDays = 60 }) {
   const current = readSniperHistoryCurrent();
   const scans = Object.values(current.scans || {})
     .filter(scan => scan?.window === window && Array.isArray(scan.items));
@@ -8630,15 +8633,16 @@ function superSniperResearch({ window, minPrice = 2 }) {
 
   const entries = [...itemById.values()];
   const rankingCandidates = entries
+    .filter(entry => entry.age <= maxAgeDays)
     .map(entry => {
       const favorites = Number(entry.item.favoriteCount) || 0;
       const fresh = entry.age <= SNIPER_TREND_MAX_AGE_DAYS;
-      const score = Math.round(
+      const score = Math.min(100, Math.round(
         Math.max(0, 90 - entry.rank / 6)
         + Math.min(28, Math.log10(favorites + 1) * 9)
         + Math.max(0, 18 - entry.age / 2)
         + (entry.sourceCategory === "all" ? 16 : 0)
-      );
+      ));
       return { ...entry, favorites, fresh, score };
     })
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
@@ -8679,7 +8683,7 @@ function superSniperResearch({ window, minPrice = 2 }) {
     .sort((a, b) => b.score - a.score || a.bestRank - b.bestRank)
     .slice(0, 8);
   const keywordSet = new Set(keywords.map(keyword => keyword.token));
-  const matches = entries.map(entry => {
+  const matches = entries.filter(entry => entry.age <= maxAgeDays).map(entry => {
     const matchedTokens = sniperTrendTokens(entry.item.name).filter(token => keywordSet.has(token));
     if (!matchedTokens.length) return null;
     const favorites = Number(entry.item.favoriteCount) || 0;
@@ -8693,7 +8697,7 @@ function superSniperResearch({ window, minPrice = 2 }) {
   }).filter(Boolean)
     .sort((a, b) => b.score - a.score || a.rank - b.rank);
 
-  return { scans: scans.length, entries: entries.length, rankingCandidates, seeds, keywords, matches };
+  return { scans: scans.length, entries: entries.length, rankingCandidates, seeds, keywords, matches, maxAgeDays };
 }
 
 function formatSuperSniperReport(research, window, limit) {
@@ -8703,6 +8707,7 @@ function formatSuperSniperReport(research, window, limit) {
       const lines = [
         "# Super Sniper",
         "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
+        "**Max age:** " + research.maxAgeDays + " days",
         research.rankingCandidates.some(candidate => candidate.fresh) ? "## Ranked Paid Candidates" : "## Ranked Market Leaders",
         research.rankingCandidates.some(candidate => candidate.fresh)
           ? "Sales-ranking candidates first. Keyword and cross-category boosts will appear after more snapshots are collected."
@@ -8721,6 +8726,7 @@ function formatSuperSniperReport(research, window, limit) {
     const lines = [
       "# Super Sniper",
       "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
+      "**Max age:** " + research.maxAgeDays + " days",
       "## Paid Seed Queue",
       "Fresh paid UGCs being watched while the ranking and keyword evidence is collected.",
     ];
@@ -8735,6 +8741,7 @@ function formatSuperSniperReport(research, window, limit) {
   const lines = [
     "# Super Sniper",
     "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window),
+    "**Max age:** " + research.maxAgeDays + " days",
     "**Source:** " + research.scans + " saved category rankings | " + research.entries + " paid items indexed",
     "**Rule:** recent seed names, then paid matches across tracked categories (minimum 2 Robux).",
     "",
@@ -16305,7 +16312,8 @@ client.on("interactionCreate", async interaction => {
         }
         const window = interaction.options.getString("window") || "yesterday";
         const limit = Math.max(1, Math.min(20, interaction.options.getInteger("results") || 10));
-        await interaction.editReply(formatSuperSniperReport(superSniperResearch({ window, minPrice: 2 }), window, limit));
+        const maxAgeDays = Math.max(1, Math.min(365, interaction.options.getInteger("max_age_days") || 60));
+        await interaction.editReply(formatSuperSniperReport(superSniperResearch({ window, minPrice: 2, maxAgeDays }), window, limit));
       } catch (err) {
         console.error("[super_sniper] command failed:", err);
         await interaction.editReply("## Super Sniper unavailable\nThe saved research index could not be read safely.").catch(() => {});
