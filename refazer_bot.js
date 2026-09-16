@@ -1114,6 +1114,17 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
+    .setName("auto_sniper_config")
+    .setDescription("Admin: configure automatic global UGC ranking alerts")
+    .addChannelOption(o => o.setName("channel").setDescription("Private alert channel").setRequired(false))
+    .addStringOption(o => o.setName("window").setDescription("Ranking windows to monitor").setRequired(false).addChoices({ name: "Yesterday and week", value: "yesterday,week" }, { name: "Yesterday only", value: "yesterday" }, { name: "Week only", value: "week" }))
+    .addIntegerOption(o => o.setName("max_age_days").setDescription("Maximum UGC age").setRequired(false).setMinValue(1).setMaxValue(90))
+    .addIntegerOption(o => o.setName("min_rank_gain").setDescription("Minimum rank jump").setRequired(false).setMinValue(1).setMaxValue(1000))
+    .addIntegerOption(o => o.setName("max_rank").setDescription("Alert only at or above this rank").setRequired(false).setMinValue(1).setMaxValue(1000))
+    .addBooleanOption(o => o.setName("enabled").setDescription("Enable or disable alerts").setRequired(false))
+    .toJSON(),
+
+  new SlashCommandBuilder()
     .setName("limited_sniper")
     .setDescription("Admin radar for best-selling Roblox limited / collectible UGC items")
     .addStringOption(o =>
@@ -6852,6 +6863,26 @@ let sniperHistoryLastSummary = null;
 let robloxPublicRateLimitStrikes = 0;
 const SNIPER_HISTORY_CURRENT_PATH = path.join(__dirname, "data", "sniper_history_current.json");
 const SNIPER_HISTORY_SNAPSHOTS_PATH = path.join(__dirname, "data", "sniper_history_snapshots.jsonl");
+const AUTO_SNIPER_CONFIG_PATH = path.join(__dirname, "data", "auto_sniper_config.json");
+
+function autoSniperConfig() {
+  const defaults = { enabled: true, channelId: SNIPER_GLOBAL_ALERT_CHANNEL_ID, windows: ["yesterday", "week"], maxAgeDays: SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS, minRankGain: SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN, maxRank: SNIPER_GLOBAL_ALERT_MAX_RANK };
+  try {
+    if (!fs.existsSync(AUTO_SNIPER_CONFIG_PATH)) return defaults;
+    const saved = JSON.parse(fs.readFileSync(AUTO_SNIPER_CONFIG_PATH, "utf8"));
+    const savedWindows = Array.isArray(saved?.windows)
+      ? saved.windows.filter(window => ["yesterday", "week"].includes(window))
+      : [];
+    return { ...defaults, ...(saved || {}), windows: savedWindows.length ? savedWindows : defaults.windows };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveAutoSniperConfig(config) {
+  fs.mkdirSync(path.dirname(AUTO_SNIPER_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(AUTO_SNIPER_CONFIG_PATH, JSON.stringify(config, null, 2));
+}
 
 const SNIPER_ACCESSORY_SUBCATEGORIES = [
   "hats",
@@ -8277,18 +8308,19 @@ function sniperTrendTokens(name) {
 }
 
 function buildGlobalFreshRankAlerts({ previousScan, scan, alertState = {} }) {
-  if (scan?.category !== "all" || !["yesterday", "week"].includes(scan.window) || !previousScan?.items?.length) return [];
+  const config = autoSniperConfig();
+  if (!config.enabled || scan?.category !== "all" || !config.windows.includes(scan.window) || !previousScan?.items?.length) return [];
   const previousRanks = new Map(previousScan.items.map(item => [String(item?.id || ""), Number(item?.marketplaceRank)]));
   const alerts = [];
   for (const item of scan.items || []) {
     const id = String(item?.id || "");
     const currentRank = Number(item?.marketplaceRank);
     const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
-    if (!id || !Number.isFinite(currentRank) || age === null || age > SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS) continue;
+    if (!id || !Number.isFinite(currentRank) || age === null || age > config.maxAgeDays) continue;
     const previousRank = previousRanks.get(id);
-    const isNewEntry = !Number.isFinite(previousRank) && currentRank <= SNIPER_GLOBAL_ALERT_MAX_RANK;
+    const isNewEntry = !Number.isFinite(previousRank) && currentRank <= config.maxRank;
     const rankGain = Number.isFinite(previousRank) ? previousRank - currentRank : 0;
-    const isClimber = rankGain >= SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN && currentRank <= SNIPER_GLOBAL_ALERT_MAX_RANK;
+    const isClimber = rankGain >= config.minRankGain && currentRank <= config.maxRank;
     if (!isNewEntry && !isClimber) continue;
     const kind = isNewEntry ? "new" : "climber";
     const key = `${scan.window}:${id}:${kind}:${currentRank}`;
@@ -8558,8 +8590,9 @@ function formatGlobalFreshRankAlert(alert) {
 }
 
 async function sendGlobalFreshRankAlerts(alerts) {
-  if (!alerts?.length || !SNIPER_GLOBAL_ALERT_CHANNEL_ID) return;
-  const channel = await sniperPrivateAlertChannel(SNIPER_GLOBAL_ALERT_CHANNEL_ID);
+  const config = autoSniperConfig();
+  if (!alerts?.length || !config.enabled || !config.channelId) return;
+  const channel = await sniperPrivateAlertChannel(config.channelId);
   if (!channel) return;
   for (const alert of alerts) {
     await channel.send({ content: formatGlobalFreshRankAlert(alert) }).catch(err => console.warn("[sniper_global] alert failed:", err.message || err));
@@ -15169,6 +15202,7 @@ client.on("interactionCreate", async interaction => {
     "sniper",
     "trend_radar",
     "super_sniper",
+    "auto_sniper_config",
     "limited_sniper",
     "limited_alert_channel",
     "limited_add",
@@ -16417,6 +16451,44 @@ client.on("interactionCreate", async interaction => {
       });
       await interaction.reply({
         content: `## 🔔 Limited Watch List\n**Alert channel:** ${watch.channelId ? `<#${watch.channelId}>` : "not configured"}\n**Check interval:** ${Math.round(LIMITED_CHECK_INTERVAL_MS / 1000)}s\n\n${lines.join("\n")}`,
+        flags: 64,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "auto_sniper_config") {
+      if (!userIsAdmin(interaction)) {
+        await interaction.reply({ content: "## Admin Only\nThis configuration is restricted to the team.", flags: 64 });
+        return;
+      }
+      const config = autoSniperConfig();
+      const channel = interaction.options.getChannel("channel");
+      const windows = interaction.options.getString("window");
+      const maxAgeDays = interaction.options.getInteger("max_age_days");
+      const minRankGain = interaction.options.getInteger("min_rank_gain");
+      const maxRank = interaction.options.getInteger("max_rank");
+      const enabled = interaction.options.getBoolean("enabled");
+      if (channel) {
+        if (!channel.isTextBased?.()) {
+          await interaction.reply({ content: "## Invalid Channel\nChoose a text channel where the bot can send alerts.", flags: 64 });
+          return;
+        }
+        config.channelId = channel.id;
+      }
+      if (windows) config.windows = windows.split(",");
+      if (Number.isFinite(maxAgeDays)) config.maxAgeDays = maxAgeDays;
+      if (Number.isFinite(minRankGain)) config.minRankGain = minRankGain;
+      if (Number.isFinite(maxRank)) config.maxRank = maxRank;
+      if (typeof enabled === "boolean") config.enabled = enabled;
+      saveAutoSniperConfig(config);
+      await interaction.reply({
+        content: "# Auto Sniper Config\n"
+          + "**Status:** " + (config.enabled ? "enabled" : "disabled")
+          + "\n**Channel:** <#" + config.channelId + ">"
+          + "\n**Windows:** " + config.windows.map(window => SNIPER_WINDOW_LABELS[window] || window).join(", ")
+          + "\n**Max age:** " + config.maxAgeDays + " days"
+          + "\n**Minimum rank gain:** +" + config.minRankGain
+          + "\n**Alert rank:** top " + config.maxRank,
         flags: 64,
       });
       return;
