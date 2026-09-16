@@ -6818,6 +6818,11 @@ const SNIPER_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_ALERT_MIN_R
 const SNIPER_ALERT_MAX_CURRENT_RANK = Number(process.env.REFAZER_SNIPER_ALERT_MAX_CURRENT_RANK || 250);
 const SNIPER_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_ALERT_MAX_AGE_DAYS || 90);
 const SNIPER_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_ALERT_MAX_PER_SCAN || 5);
+const SNIPER_GLOBAL_ALERT_USER_IDS = parseIdListEnv(process.env.REFAZER_SNIPER_GLOBAL_ALERT_USER_IDS || "1108166595374751828,433699177705504768");
+const SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS || 16);
+const SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN || 200);
+const SNIPER_GLOBAL_ALERT_MAX_RANK = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MAX_RANK || 800);
+const SNIPER_GLOBAL_ALERT_MAX_PER_SCAN = Number(process.env.REFAZER_SNIPER_GLOBAL_ALERT_MAX_PER_SCAN || 8);
 const SNIPER_TREND_ENABLED = cleanEnv(process.env.REFAZER_SNIPER_TREND_ENABLED, "true") !== "false";
 const SNIPER_TREND_MAX_AGE_DAYS = Number(process.env.REFAZER_SNIPER_TREND_MAX_AGE_DAYS || 28);
 const SNIPER_TREND_MIN_CLUSTER_ITEMS = Number(process.env.REFAZER_SNIPER_TREND_MIN_CLUSTER_ITEMS || 3);
@@ -8271,6 +8276,29 @@ function sniperTrendTokens(name) {
   )].slice(0, 8);
 }
 
+function buildGlobalFreshRankAlerts({ previousScan, scan, alertState = {} }) {
+  if (scan?.category !== "all" || !["yesterday", "week"].includes(scan.window) || !previousScan?.items?.length) return [];
+  const previousRanks = new Map(previousScan.items.map(item => [String(item?.id || ""), Number(item?.marketplaceRank)]));
+  const alerts = [];
+  for (const item of scan.items || []) {
+    const id = String(item?.id || "");
+    const currentRank = Number(item?.marketplaceRank);
+    const age = daysSince(parseRobloxDate(catalogItemCreatedAt(item, {})));
+    if (!id || !Number.isFinite(currentRank) || age === null || age > SNIPER_GLOBAL_ALERT_MAX_AGE_DAYS) continue;
+    const previousRank = previousRanks.get(id);
+    const isNewEntry = !Number.isFinite(previousRank) && currentRank <= SNIPER_GLOBAL_ALERT_MAX_RANK;
+    const rankGain = Number.isFinite(previousRank) ? previousRank - currentRank : 0;
+    const isClimber = rankGain >= SNIPER_GLOBAL_ALERT_MIN_RANK_GAIN && currentRank <= SNIPER_GLOBAL_ALERT_MAX_RANK;
+    if (!isNewEntry && !isClimber) continue;
+    const kind = isNewEntry ? "new" : "climber";
+    const key = `${scan.window}:${id}:${kind}:${currentRank}`;
+    if (alertState[key]) continue;
+    alertState[key] = new Date().toISOString();
+    alerts.push({ item, window: scan.window, currentRank, previousRank: Number.isFinite(previousRank) ? previousRank : null, rankGain, age, kind });
+  }
+  return alerts.sort((a, b) => a.currentRank - b.currentRank).slice(0, SNIPER_GLOBAL_ALERT_MAX_PER_SCAN);
+}
+
 function sniperTrendKeys(item) {
   const tokens = sniperTrendTokens(item?.name || item?.item?.name || "");
   const keys = [];
@@ -8512,6 +8540,32 @@ async function sniperPrivateAlertChannel() {
     return null;
   }
   return channel;
+}
+
+function formatGlobalFreshRankAlert(alert) {
+  const item = alert.item;
+  const movement = alert.kind === "new"
+    ? "New entry in the global top-sales ranking"
+    : "Rank jump: #" + alert.previousRank + " → #" + alert.currentRank + " ( +" + alert.rankGain + " )";
+  return [
+    "# Global UGC Ranking Alert",
+    "**" + String(item.name || "Item " + item.id).slice(0, 80) + "**",
+    "**Window:** " + (SNIPER_WINDOW_LABELS[alert.window] || alert.window) + " | **Current rank:** #" + alert.currentRank,
+    "**Age:** " + alert.age + "d | **Price:** " + (Number(item.price) || "unknown") + " Robux | **Favorites:** " + (Number(item.favoriteCount) || 0).toLocaleString("en-US"),
+    "**Signal:** " + movement,
+    "https://www.roblox.com/catalog/" + item.id,
+  ].join("\n");
+}
+
+async function sendGlobalFreshRankAlerts(alerts) {
+  if (!alerts?.length || !SNIPER_GLOBAL_ALERT_USER_IDS.length) return;
+  for (const alert of alerts) {
+    const message = formatGlobalFreshRankAlert(alert);
+    for (const userId of SNIPER_GLOBAL_ALERT_USER_IDS) {
+      const user = await client.users.fetch(userId).catch(() => null);
+      await user?.send(message).catch(err => console.warn("[sniper_global] DM failed:", err.message || err));
+    }
+  }
 }
 
 async function sendSniperTrendAlerts(alerts) {
@@ -9545,10 +9599,12 @@ function saveSniperHistoryScan({ window, category, rows, partialReason = "" }) {
   current.recentScans ||= {};
   current.trendAlerts ||= {};
   current.breakoutAlerts ||= {};
+  current.globalRankAlerts ||= {};
   current.previousScans ||= {};
   const scanKey = sniperHistoryScanKey(window, category);
   const previousScan = current.scans[scanKey] || null;
   const alerts = buildSniperRankAlerts({ previousScan, scan });
+  const globalRankAlerts = buildGlobalFreshRankAlerts({ previousScan, scan, alertState: current.globalRankAlerts });
   const historyScans = Array.isArray(current.recentScans[scanKey]) ? current.recentScans[scanKey] : [];
   const trend = buildSniperTrendAlerts({ previousScan, scan, historyScans, alertState: current.trendAlerts });
   const breakout = buildSniperBreakoutAlerts({ previousScan, scan, historyScans, alertState: current.breakoutAlerts });
@@ -9568,6 +9624,7 @@ function saveSniperHistoryScan({ window, category, rows, partialReason = "" }) {
   return {
     scan,
     alerts,
+    globalRankAlerts,
     trendAlerts: trend.alerts,
     trendSignals: trend.signals,
     breakoutAlerts: breakout.alerts,
@@ -9634,7 +9691,7 @@ async function runSniperHistoryWorkerCycle() {
     for (const task of nextSniperHistoryTasks(SNIPER_HISTORY_TASKS_PER_CYCLE)) {
       try {
         const collected = await collectSniperHistoryRows(task);
-        const { scan, alerts, trendAlerts, breakoutAlerts } = saveSniperHistoryScan({
+        const { scan, alerts, globalRankAlerts, trendAlerts, breakoutAlerts } = saveSniperHistoryScan({
           window: task.window,
           category: task.category,
           rows: collected.rows,
@@ -9649,6 +9706,7 @@ async function runSniperHistoryWorkerCycle() {
         summary.windows.push(task.window);
         console.log(`[sniper_history] ${task.kind} ${task.window}/${task.category} rows=${scan.rows} unique=${scan.uniqueRows} alerts=${alerts.length}${scan.partial ? " partial=yes" : ""}`);
         await sendSniperRankAlerts(alerts);
+        await sendGlobalFreshRankAlerts(globalRankAlerts);
         await sendSniperTrendAlerts(trendAlerts);
         await sendSniperBreakoutAlerts(breakoutAlerts);
       } catch (err) {
