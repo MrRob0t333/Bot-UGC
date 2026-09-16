@@ -1082,20 +1082,35 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("super_sniper")
-    .setDescription("Admin: cross-category paid UGC trend discovery from ranking history")
+    .setDescription("Admin: ranked recent UGC radar with cross-name trend signals")
     .addStringOption(o =>
-      o.setName("window").setDescription("Sales ranking window to mine").setRequired(false)
+      o.setName("window").setDescription("Sales ranking window to scan").setRequired(true)
         .addChoices(
           { name: "Best yesterday", value: "yesterday" },
           { name: "Best this week", value: "week" }
         )
     )
+    .addStringOption(o =>
+      o.setName("category").setDescription("Catalog category").setRequired(false)
+        .addChoices(
+          { name: "All", value: "all" }, { name: "Hats", value: "hats" }, { name: "Hair", value: "hair" },
+          { name: "Face accessories", value: "face_accessories" }, { name: "Neck accessories", value: "neck_accessories" },
+          { name: "Shoulder accessories", value: "shoulder_accessories" }, { name: "Front accessories", value: "front_accessories" },
+          { name: "Back accessories", value: "back_accessories" }, { name: "Waist accessories", value: "waist_accessories" },
+          { name: "Faces", value: "faces" }, { name: "Classic shirts", value: "classic_shirts" },
+          { name: "Classic pants", value: "classic_pants" }, { name: "Layered clothing", value: "layered_clothing" }
+        )
+    )
+    .addStringOption(o => o.setName("keyword").setDescription("Optional keyword to focus the radar").setRequired(false))
+    .addIntegerOption(o => o.setName("min_price").setDescription("Minimum Robux price; defaults to 2").setRequired(false).setMinValue(2))
+    .addIntegerOption(o => o.setName("max_price").setDescription("Maximum Robux price").setRequired(false).setMinValue(2))
     .addIntegerOption(o =>
       o.setName("results").setDescription("How many matching paid UGCs to return").setRequired(false).setMinValue(1).setMaxValue(20)
     )
     .addIntegerOption(o =>
       o.setName("max_age_days").setDescription("Maximum item age; defaults to 60 days").setRequired(false).setMinValue(1).setMaxValue(365)
     )
+    .addStringOption(o => o.setName("depth").setDescription("Scan depth").setRequired(false).addChoices({ name: "Normal", value: "normal" }, { name: "Deep", value: "deep" }))
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -8765,6 +8780,45 @@ function formatSuperSniperReport(research, window, limit) {
   return lines.join("\n");
 }
 
+function formatSuperSniperLiveReport({ candidates, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limit }) {
+  const tokenStats = new Map();
+  for (const candidate of candidates) {
+    const age = daysSince(parseRobloxDate(candidate.createdAt));
+    if (age === null || age > maxAgeDays) continue;
+    for (const token of sniperTrendTokens(candidate.name)) {
+      const stat = tokenStats.get(token) || { ids: new Set(), creators: new Set(), bestRank: Infinity };
+      stat.ids.add(String(candidate.id));
+      stat.creators.add(normalizeSniperText(candidate.creator || "unknown"));
+      stat.bestRank = Math.min(stat.bestRank, Number(candidate.marketplaceRank) || Infinity);
+      tokenStats.set(token, stat);
+    }
+  }
+  const strongTokens = [...tokenStats.entries()]
+    .filter(([, stat]) => stat.ids.size >= 2 || stat.bestRank <= 20)
+    .sort(([, a], [, b]) => b.ids.size - a.ids.size || a.bestRank - b.bestRank)
+    .slice(0, 6);
+  const lines = [
+    "# Super Sniper",
+    "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window) + " | **Category:** " + (SNIPER_CATEGORY_LABELS[category] || category),
+    "**Price:** " + minPrice + (Number.isFinite(maxPrice) ? "–" + maxPrice : "+") + " Robux | **Max age:** " + maxAgeDays + "d | **Depth:** " + depth,
+    keyword ? "**Keyword:** " + keyword : null,
+    "",
+    strongTokens.length ? "## Cross-Name Signals\n" + strongTokens.map(([token, stat]) => "`" + token + "` - " + stat.ids.size + " ranked items - " + stat.creators.size + " creators - best #" + stat.bestRank).join(" | ") : null,
+    strongTokens.length ? "" : null,
+    "## Recent Ranked UGCs",
+  ].filter(value => value !== null);
+  for (const candidate of candidates.slice(0, limit)) {
+    const age = daysSince(parseRobloxDate(candidate.createdAt));
+    const rank = Number.isFinite(candidate.marketplaceRank) ? "#" + candidate.marketplaceRank : "rank unavailable";
+    const related = sniperTrendTokens(candidate.name).filter(token => strongTokens.some(([strong]) => strong === token));
+    const line = "**" + String(candidate.name || "Item " + candidate.id).slice(0, 58) + "** - " + rank + " - " + candidate.price + " Robux - " + (age === null ? "age unknown" : age + "d") + " - " + (candidate.favorites || 0).toLocaleString("en-US") + " favorites - " + candidate.score + "/100" + (related.length ? " - `" + related.join(", ") + "`" : "");
+    if ((lines.join("\n").length + line.length + 75) > 1850) break;
+    lines.push(line, "https://www.roblox.com/catalog/" + candidate.id);
+  }
+  lines.push("", "Recent ranking and public-signal research only; it does not predict sales or profit.");
+  return lines.join("\n");
+}
+
 function formatSniperTrendRadar(signals, breakouts, watchSignals, baselineCandidates, window, category, limit) {
   if (!signals.length && !breakouts.length && !watchSignals.length && !baselineCandidates.length) return "# Trend Radar\nNo history snapshot is available yet for this window/category. The background worker will populate it automatically.";
   const lines = ["# Trend Radar", "**Window:** " + (SNIPER_WINDOW_LABELS[window] || window), "**Category:** " + (SNIPER_CATEGORY_LABELS[category] || category), "**Method:** recent items (up to " + SNIPER_TREND_MAX_AGE_DAYS + " days), 3+ related names and 2+ rising ranks.", ""];
@@ -16318,13 +16372,41 @@ client.on("interactionCreate", async interaction => {
           await interaction.editReply("## Admin Only\nThis market research command is restricted to the team.");
           return;
         }
-        const window = interaction.options.getString("window") || "yesterday";
+        const window = interaction.options.getString("window");
+        const category = interaction.options.getString("category") || "all";
+        const keyword = (interaction.options.getString("keyword") || "").trim();
         const limit = Math.max(1, Math.min(20, interaction.options.getInteger("results") || 10));
+        const minPrice = Math.max(2, interaction.options.getInteger("min_price") || 2);
+        const maxPriceRaw = interaction.options.getInteger("max_price");
+        const maxPrice = Number.isFinite(maxPriceRaw) ? maxPriceRaw : null;
         const maxAgeDays = Math.max(1, Math.min(365, interaction.options.getInteger("max_age_days") || 60));
-        await interaction.editReply(formatSuperSniperReport(superSniperResearch({ window, minPrice: 2, maxAgeDays }), window, limit));
+        const depth = interaction.options.getString("depth") || "normal";
+        if (maxPrice !== null && minPrice > maxPrice) {
+          await interaction.editReply("## Invalid price range\n`min_price` cannot be higher than `max_price`.");
+          return;
+        }
+        const timeoutMs = depth === "deep" ? 180000 : 95000;
+        const queueWaitMs = Math.max(0, sniperBusyUntil - Date.now());
+        if (queueWaitMs > SNIPER_QUEUE_WAIT_LIMIT_MS) {
+          await interaction.editReply("## Super Sniper cooling down\nTry again shortly so the catalog scan can stay healthy.");
+          return;
+        }
+        if (queueWaitMs) await wait(queueWaitMs);
+        sniperBusyUntil = Date.now() + Math.max(5000, Math.min(60000, timeoutMs));
+        await interaction.editReply("## Super Sniper\nScanning the selected ranking and analyzing recent UGC signals...");
+        const scanKey = "super:" + sniperScanKey({ window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limitedOnly: false });
+        const candidates = await runSniperScanOnce(scanKey, () => fetchSniperCandidates({
+          window, category, keyword, minPrice, maxPrice, maxAgeDays, limit: Math.max(limit, 20), depth,
+          deadlineAt: Date.now() + timeoutMs,
+        }));
+        if (!candidates.length) {
+          await interaction.editReply("## No Super Sniper candidates found\nNo item in the selected sales ranking matched your price, category and age filters.");
+          return;
+        }
+        await interaction.editReply(formatSuperSniperLiveReport({ candidates, window, category, keyword, minPrice, maxPrice, maxAgeDays, depth, limit }));
       } catch (err) {
         console.error("[super_sniper] command failed:", err);
-        await interaction.editReply("## Super Sniper unavailable\nThe saved research index could not be read safely.").catch(() => {});
+        await interaction.editReply("## Super Sniper unavailable\nThe selected Roblox ranking could not be scanned safely right now. No charge was deducted.").catch(() => {});
       }
       return;
     }
