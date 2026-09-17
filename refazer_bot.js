@@ -6798,8 +6798,9 @@ const SNIPER_HISTORY_PAGE_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_P
 const SNIPER_HISTORY_CATEGORY_DELAY_MS = Number(process.env.REFAZER_SNIPER_HISTORY_CATEGORY_DELAY_MS || 30000);
 const SNIPER_HISTORY_TASK_INTERVAL_MS = Number(process.env.REFAZER_SNIPER_HISTORY_TASK_INTERVAL_MS || 45 * 1000);
 const SNIPER_HISTORY_TASKS_PER_CYCLE = Math.max(1, Number(process.env.REFAZER_SNIPER_HISTORY_TASKS_PER_CYCLE || 1));
+const SNIPER_HISTORY_GLOBAL_PRIORITY_EVERY = Math.max(1, Number(process.env.REFAZER_SNIPER_HISTORY_GLOBAL_PRIORITY_EVERY || 2));
 const SNIPER_HISTORY_RECENT_DEPTH = Math.max(30, Number(process.env.REFAZER_SNIPER_HISTORY_RECENT_DEPTH || 60));
-const SNIPER_HISTORY_QUEUE_VERSION = 2;
+const SNIPER_HISTORY_QUEUE_VERSION = 3;
 const SNIPER_HISTORY_STALE_MS = Number(process.env.REFAZER_SNIPER_HISTORY_STALE_MS || 2 * 60 * 60 * 1000);
 const SNIPER_HISTORY_MIN_ROWS_NORMAL = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_NORMAL || 180);
 const SNIPER_HISTORY_MIN_ROWS_DEEP = Number(process.env.REFAZER_SNIPER_HISTORY_MIN_ROWS_DEEP || 600);
@@ -7001,9 +7002,7 @@ function formatAdminSystemStatusMessage() {
   const pendingWithdrawals = (db.withdrawalRequests || []).filter(item => item.status === "pending").length;
   const sniperCooldownMs = Math.max(0, sniperBusyUntil - Date.now());
   const historyState = readSniperHistoryCurrent();
-  const historyTasks = sniperHistoryTasks();
-  const historyCursor = historyTasks.length ? (Math.max(0, Number(historyState.indexerCursor) || 0) % historyTasks.length) : 0;
-  const nextHistoryTask = historyTasks[historyCursor];
+  const nextHistoryTask = sniperHistoryNextTask(historyState);
 
   return [
     "# 🛡️ Velvet Admin Status",
@@ -7033,6 +7032,7 @@ function formatAdminSystemStatusMessage() {
     uiLine("Cache entries", sniperCatalogCache.size),
     uiLine("History worker", SNIPER_HISTORY_ENABLED ? (sniperHistoryWorkerRunning ? "running" : "enabled") : "disabled"),
     uiLine("Indexer cadence", `${SNIPER_HISTORY_TASKS_PER_CYCLE} task / ${Math.round(SNIPER_HISTORY_TASK_INTERVAL_MS / 1000)}s`),
+    uiLine("Global ranking priority", `every ${SNIPER_HISTORY_GLOBAL_PRIORITY_EVERY} task${SNIPER_HISTORY_GLOBAL_PRIORITY_EVERY === 1 ? "" : "s"}`),
     uiLine("Next index task", nextHistoryTask ? `${nextHistoryTask.kind}: ${nextHistoryTask.window}/${nextHistoryTask.category}` : "none"),
     uiLine("History depth", SNIPER_HISTORY_DEPTH),
     uiLine("History categories", SNIPER_HISTORY_CATEGORIES.join(", ") || "none"),
@@ -9687,26 +9687,54 @@ function pruneSniperHistorySnapshots() {
 }
 
 function sniperHistoryTasks() {
+  return [...sniperHistoryGlobalTasks(), ...sniperHistoryBackgroundTasks()];
+}
+
+function sniperHistoryGlobalTasks() {
+  const rankedWindows = SNIPER_HISTORY_WINDOWS.filter(window => window !== "recent" && SNIPER_WINDOW_PARAMS[window]);
+  return rankedWindows.map(window => ({ window, category: "all", depth: SNIPER_HISTORY_DEPTH, kind: "global-ranking" }));
+}
+
+function sniperHistoryBackgroundTasks() {
   const typedCategories = SNIPER_HISTORY_CATEGORIES.filter(category => SNIPER_CATEGORY_LABELS[category] && sniperCanUseCatalogV2(category));
   const rankedWindows = SNIPER_HISTORY_WINDOWS.filter(window => window !== "recent" && SNIPER_WINDOW_PARAMS[window]);
   return [
-    // Super Sniper needs comparable cross-category ranks first. These global
-    // rankings are deliberately ahead of discovery and typed-category work.
-    ...rankedWindows.map(window => ({ window, category: "all", depth: SNIPER_HISTORY_DEPTH, kind: "global-ranking" })),
     ...["all", ...typedCategories].map(category => ({ window: "recent", category, depth: SNIPER_HISTORY_RECENT_DEPTH, kind: "recent" })),
     ...rankedWindows.flatMap(window => typedCategories.map(category => ({ window, category, depth: SNIPER_HISTORY_DEPTH, kind: "ranking" }))),
   ];
 }
 
+function sniperHistoryNextTask(current) {
+  const globalTasks = sniperHistoryGlobalTasks();
+  const backgroundTasks = sniperHistoryBackgroundTasks();
+  const isCurrentVersion = current?.indexerQueueVersion === SNIPER_HISTORY_QUEUE_VERSION;
+  const taskCount = isCurrentVersion ? Math.max(0, Number(current?.indexerTaskCount) || 0) : 0;
+  const useGlobal = globalTasks.length && taskCount % SNIPER_HISTORY_GLOBAL_PRIORITY_EVERY === 0;
+  if (useGlobal) {
+    const cursor = isCurrentVersion ? Math.max(0, Number(current?.globalIndexerCursor) || 0) % globalTasks.length : 0;
+    return globalTasks[cursor];
+  }
+  if (!backgroundTasks.length) return globalTasks[0] || null;
+  const cursor = isCurrentVersion ? Math.max(0, Number(current?.indexerCursor) || 0) % backgroundTasks.length : 0;
+  return backgroundTasks[cursor];
+}
+
 function nextSniperHistoryTasks(count) {
-  const tasks = sniperHistoryTasks();
-  if (!tasks.length) return [];
   const current = readSniperHistoryCurrent();
-  const cursor = current.indexerQueueVersion === SNIPER_HISTORY_QUEUE_VERSION
-    ? Math.max(0, Number(current.indexerCursor) || 0) % tasks.length
-    : 0;
-  const selected = Array.from({ length: Math.min(count, tasks.length) }, (_, index) => tasks[(cursor + index) % tasks.length]);
-  current.indexerCursor = (cursor + selected.length) % tasks.length;
+  const selected = [];
+  for (let index = 0; index < count; index += 1) {
+    const task = sniperHistoryNextTask(current);
+    if (!task) break;
+    selected.push(task);
+    if (task.kind === "global-ranking") {
+      const globalTasks = sniperHistoryGlobalTasks();
+      current.globalIndexerCursor = (Math.max(0, Number(current.globalIndexerCursor) || 0) + 1) % Math.max(1, globalTasks.length);
+    } else {
+      const backgroundTasks = sniperHistoryBackgroundTasks();
+      current.indexerCursor = (Math.max(0, Number(current.indexerCursor) || 0) + 1) % Math.max(1, backgroundTasks.length);
+    }
+    current.indexerTaskCount = Math.max(0, Number(current.indexerTaskCount) || 0) + 1;
+  }
   current.indexerQueueVersion = SNIPER_HISTORY_QUEUE_VERSION;
   current.indexerUpdatedAt = new Date().toISOString();
   writeSniperHistoryCurrent(current);
