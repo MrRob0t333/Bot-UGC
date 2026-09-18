@@ -13856,7 +13856,7 @@ function publicViewFileLabel(view, file) {
   return `${publicViewName(view).toLowerCase()}${cleanSuffix}${ext}`;
 }
 
-function ugcViewAttachments(renderDir) {
+function ugcViewAttachments(renderDir, ugcId = "") {
   const views = [
     ["frente", "front"],
     ["direita", "right"],
@@ -13869,12 +13869,13 @@ function ugcViewAttachments(renderDir) {
       const file = path.join(renderDir, `${fileName}.png`);
       if (!fs.existsSync(file)) return null;
       const label = String(index + 1).padStart(2, "0");
-      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+      const prefix = ugcId ? `${String(ugcId)}-` : "";
+      return new AttachmentBuilder(file, { name: `${prefix}${label}-${publicName}.png` });
     })
     .filter(Boolean);
 }
 
-function aiFiveViewAttachments(renderDir) {
+function aiFiveViewAttachments(renderDir, ugcId = "") {
   const views = [
     ["frente", "front"],
     ["direita", "right"],
@@ -13888,12 +13889,13 @@ function aiFiveViewAttachments(renderDir) {
       const file = path.join(renderDir, `${fileName}.png`);
       if (!fs.existsSync(file)) return null;
       const label = String(index + 1).padStart(2, "0");
-      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+      const prefix = ugcId ? `${String(ugcId)}-` : "";
+      return new AttachmentBuilder(file, { name: `${prefix}${label}-${publicName}.png` });
     })
     .filter(Boolean);
 }
 
-function fullUgcViewAttachments(renderDir) {
+function fullUgcViewAttachments(renderDir, ugcId = "") {
   const views = [
     ["front_left", "front-left"],
     ["frente", "front"],
@@ -13912,7 +13914,8 @@ function fullUgcViewAttachments(renderDir) {
       const file = path.join(renderDir, `${fileName}.png`);
       if (!fs.existsSync(file)) return null;
       const label = String(index + 1).padStart(2, "0");
-      return new AttachmentBuilder(file, { name: `${label}-${publicName}.png` });
+      const prefix = ugcId ? `${String(ugcId)}-` : "";
+      return new AttachmentBuilder(file, { name: `${prefix}${label}-${publicName}.png` });
     })
     .filter(Boolean);
 }
@@ -13975,8 +13978,8 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
         renderSettings,
       });
       const files = useAiFiveViews
-        ? aiFiveViewAttachments(result.renderDir)
-        : ugcViewAttachments(result.renderDir);
+        ? aiFiveViewAttachments(result.renderDir, id)
+        : ugcViewAttachments(result.renderDir, id);
       await interaction.followUp({
         content:
           "## UGC Views Ready\n" +
@@ -17373,7 +17376,7 @@ client.on("interactionCreate", async interaction => {
           cacheViews: false,
           renderSettings,
         });
-        const files = fullUgcViewAttachments(result.renderDir);
+        const files = fullUgcViewAttachments(result.renderDir, id);
 
         await interaction.editReply({
           content:
@@ -17460,10 +17463,10 @@ client.on("interactionCreate", async interaction => {
 
         const renderDir = await renderImages(modelPath, "", tempDir, renderSettings);
         const files = angleSet === "full10"
-          ? fullUgcViewAttachments(renderDir)
+          ? fullUgcViewAttachments(renderDir, path.parse(safeBase).name)
           : angleSet === "blender5"
-            ? aiFiveViewAttachments(renderDir)
-            : ugcViewAttachments(renderDir);
+            ? aiFiveViewAttachments(renderDir, path.parse(safeBase).name)
+            : ugcViewAttachments(renderDir, path.parse(safeBase).name);
 
         await interaction.editReply({
           content:
@@ -17577,8 +17580,8 @@ client.on("interactionCreate", async interaction => {
           renderSettings,
         });
         const files = useAiFiveViews
-          ? aiFiveViewAttachments(result.renderDir)
-          : ugcViewAttachments(result.renderDir);
+          ? aiFiveViewAttachments(result.renderDir, id)
+          : ugcViewAttachments(result.renderDir, id);
 
         await interaction.editReply({
           content:
