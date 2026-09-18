@@ -1411,7 +1411,7 @@ const commands = [
     .setName("views_bulk")
     .setDescription("Admin: render reference views for up to 10 UGC IDs")
     .addStringOption(o =>
-      o.setName("ids").setDescription("Up to 10 UGC IDs, separated by space or comma").setRequired(true)
+      o.setName("ids").setDescription("Optional: the form opens after you run the command").setRequired(false)
     )
     .addStringOption(o =>
       o
@@ -13931,6 +13931,77 @@ function parseBulkIds(raw) {
     .slice(0, BULK_ASSET_LIMIT);
 }
 
+function bulkViewsSettingsFromModal(interaction) {
+  const base = normalizeRenderSettings(walletPreferences(interaction.user.id).renderSettings);
+  const text = field => interaction.fields.getTextInputValue(field).trim().toLowerCase();
+  const lighting = text("lighting").replace(/[\s-]+/g, "_");
+  const pov = text("pov").replace(/[\s-]+/g, "_");
+  const rawMaterial = text("material").replace(/,/g, ".");
+  const values = rawMaterial.split(/[\s;/|]+/).filter(Boolean).map(Number);
+  const [ior, roughness, exposure, lightPower] = values;
+  const valid = (value, min, max, fallback) => Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+
+  return {
+    renderSettings: normalizeRenderSettings({
+      ...base,
+      lighting: ["studio", "soft", "dramatic", "flat"].includes(lighting) ? lighting : base.lighting,
+      pov: ["normal", "close", "wide", "top_down"].includes(pov) ? pov : base.pov,
+      ior: valid(ior, 1, 2.5, base.ior),
+      roughness: valid(roughness, 0, 1, base.roughness),
+      exposure: valid(exposure, -1, 1, base.exposure),
+      lightPower: valid(lightPower, 0.2, 3, base.lightPower),
+    }),
+    useAiFiveViews: ["5", "ai5", "five", "5_views", "5views"].includes(text("angles")),
+  };
+}
+
+async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews }) {
+  await interaction.reply(
+    "## Admin Bulk Views Started\n" +
+    `**UGCs:** ${ids.length}/10\n\n` +
+    `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
+    `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
+    "I will send each rendered view set as soon as it is ready."
+  );
+
+  const results = [];
+  for (const id of ids) {
+    try {
+      await interaction.followUp(`Rendering views for \`${id}\`...`).catch(() => {});
+      const result = await processUGC(id, {
+        exportGlb: false,
+        render: true,
+        cacheViews: !useAiFiveViews,
+        renderSettings,
+      });
+      const files = useAiFiveViews
+        ? aiFiveViewAttachments(result.renderDir)
+        : ugcViewAttachments(result.renderDir);
+      await interaction.followUp({
+        content:
+          "## UGC Views Ready\n" +
+          `**UGC:** \`${id}\`\n` +
+          `**MeshId:** \`${result.meshId}\`\n` +
+          `**TextureId:** \`${result.textureId || "not found"}\`\n` +
+          `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
+          (result.cached ? "\n**Source:** cached render" : ""),
+        files,
+      });
+      results.push({ id, ok: true });
+    } catch (err) {
+      console.error(err);
+      await interaction.followUp(`I could not render views for \`${id}\`.`).catch(() => {});
+      results.push({ id, ok: false });
+    }
+  }
+
+  await interaction.followUp(
+    "## Admin Bulk Views Finished\n" +
+    `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+    `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
+  ).catch(() => {});
+}
+
 function parseBulkClothingIds(raw) {
   return [...new Set(String(raw || "")
     .match(/\d{3,}/g) || [])]
@@ -14549,6 +14620,21 @@ async function processSteal2Batch(interaction, action) {
 }
 
 client.on("interactionCreate", async interaction => {
+  if (interaction.isModalSubmit() && interaction.customId === "views_bulk_config") {
+    if (!userIsAdmin(interaction)) {
+      await interaction.reply({ content: "## Admin only\nThis command is available only to bot admins.", flags: 64 });
+      return;
+    }
+    const ids = parseBulkIds(interaction.fields.getTextInputValue("ids")).slice(0, 10);
+    if (!ids.length) {
+      await interaction.reply({ content: "## No valid IDs found\nEnter one to ten numeric UGC IDs.", flags: 64 });
+      return;
+    }
+    const settings = bulkViewsSettingsFromModal(interaction);
+    await processBulkUgcViews(interaction, { ids, ...settings });
+    return;
+  }
+
   if (interaction.isModalSubmit() && interaction.customId === "steal2_config") {
     if (!userIsAdmin(interaction)) {
       await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
@@ -17310,63 +17396,24 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "views_bulk") {
-      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
-      const renderSettings = renderSettingsForInteraction(interaction);
-      const useAiFiveViews = (interaction.options.getString("angles") || "multiview4") === "ai5";
-
-      if (!ids.length) {
-        await interaction.reply({ content: "## No valid IDs found", flags: 64 });
-        return;
-      }
-
-      await interaction.reply(
-        "## Admin Bulk Views Started\n" +
-        `**UGCs:** ${ids.length}/10\n\n` +
-        `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
-        `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-        "I will send each rendered view set as soon as it is ready."
+      const modal = new ModalBuilder()
+        .setCustomId("views_bulk_config")
+        .setTitle("Bulk UGC Views");
+      const input = (id, label, options = {}) => new TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(options.paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
+        .setRequired(options.required !== false)
+        .setPlaceholder(options.placeholder || "")
+        .setMaxLength(options.maxLength || 400);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(input("ids", "UGC IDs, spaces or commas (up to 10)", { paragraph: true, placeholder: "123456 789012 345678", maxLength: 400 })),
+        new ActionRowBuilder().addComponents(input("lighting", "Lighting: studio, soft, dramatic or flat", { required: false, placeholder: "flat" })),
+        new ActionRowBuilder().addComponents(input("pov", "POV: normal, close, wide or top_down", { required: false, placeholder: "normal" })),
+        new ActionRowBuilder().addComponents(input("angles", "Views: 4 or 5 (5 includes top)", { required: false, placeholder: "5" })),
+        new ActionRowBuilder().addComponents(input("material", "IOR roughness exposure light power", { required: false, placeholder: "1 1 1 0.20", maxLength: 40 }))
       );
-
-      const results = [];
-
-      for (const id of ids) {
-        try {
-          await interaction.followUp(`Rendering views for \`${id}\`...`).catch(() => {});
-
-          const result = await processUGC(id, {
-            exportGlb: false,
-            render: true,
-            cacheViews: !useAiFiveViews,
-            renderSettings,
-          });
-          const files = useAiFiveViews
-            ? aiFiveViewAttachments(result.renderDir)
-            : ugcViewAttachments(result.renderDir);
-
-          await interaction.followUp({
-            content:
-              "## UGC Views Ready\n" +
-              `**UGC:** \`${id}\`\n` +
-              `**MeshId:** \`${result.meshId}\`\n` +
-              `**TextureId:** \`${result.textureId || "not found"}\`\n` +
-              `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
-              (result.cached ? "\n**Source:** cached render" : ""),
-            files,
-          });
-
-          results.push({ id, ok: true });
-        } catch (err) {
-          console.error(err);
-          await interaction.followUp(`I could not render views for \`${id}\`.`).catch(() => {});
-          results.push({ id, ok: false });
-        }
-      }
-
-      await interaction.followUp(
-        "## Admin Bulk Views Finished\n" +
-        `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
-        `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
-      ).catch(() => {});
+      await interaction.showModal(modal);
       return;
     }
 
