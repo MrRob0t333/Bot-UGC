@@ -1408,8 +1408,8 @@ const commands = [
     .toJSON(),
 
   new SlashCommandBuilder()
-    .setName("admin_bulk_views")
-    .setDescription("Admin: renders reference views for up to 10 UGC IDs")
+    .setName("views_bulk")
+    .setDescription("Admin: render reference views for up to 10 UGC IDs")
     .addStringOption(o =>
       o.setName("ids").setDescription("Up to 10 UGC IDs, separated by space or comma").setRequired(true)
     )
@@ -1437,6 +1437,16 @@ const commands = [
           { name: "Close inspection", value: "close" },
           { name: "Wide full item", value: "wide" },
           { name: "Top-down tilt", value: "top_down" }
+        )
+    )
+    .addStringOption(o =>
+      o
+        .setName("angles")
+        .setDescription("Reference angle set for every UGC")
+        .setRequired(false)
+        .addChoices(
+          { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
+          { name: "5 Blender views - front/right/back/left/top", value: "ai5" }
         )
     )
     .addNumberOption(o =>
@@ -15219,7 +15229,7 @@ client.on("interactionCreate", async interaction => {
     "admin_post_terms",
     "admin_post_info",
     "admin_post_model_starter",
-    "admin_bulk_views",
+    "views_bulk",
     "admin_views_full",
     "model_views",
     "admin_roblox_status",
@@ -15393,7 +15403,7 @@ client.on("interactionCreate", async interaction => {
       "admin_post_terms",
       "admin_post_info",
       "admin_post_model_starter",
-      "admin_bulk_views",
+      "views_bulk",
       "admin_views_full",
       "model_views",
       "admin_roblox_status",
@@ -17299,9 +17309,10 @@ client.on("interactionCreate", async interaction => {
       return;
     }
 
-    if (interaction.commandName === "admin_bulk_views") {
+    if (interaction.commandName === "views_bulk") {
       const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
       const renderSettings = renderSettingsForInteraction(interaction);
+      const useAiFiveViews = (interaction.options.getString("angles") || "multiview4") === "ai5";
 
       if (!ids.length) {
         await interaction.reply({ content: "## No valid IDs found", flags: 64 });
@@ -17311,6 +17322,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply(
         "## Admin Bulk Views Started\n" +
         `**UGCs:** ${ids.length}/10\n\n` +
+        `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
         `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
         "I will send each rendered view set as soon as it is ready."
       );
@@ -17324,10 +17336,12 @@ client.on("interactionCreate", async interaction => {
           const result = await processUGC(id, {
             exportGlb: false,
             render: true,
-            cacheViews: true,
+            cacheViews: !useAiFiveViews,
             renderSettings,
           });
-          const files = ugcViewAttachments(result.renderDir);
+          const files = useAiFiveViews
+            ? aiFiveViewAttachments(result.renderDir)
+            : ugcViewAttachments(result.renderDir);
 
           await interaction.followUp({
             content:
@@ -17335,6 +17349,7 @@ client.on("interactionCreate", async interaction => {
               `**UGC:** \`${id}\`\n` +
               `**MeshId:** \`${result.meshId}\`\n` +
               `**TextureId:** \`${result.textureId || "not found"}\`\n` +
+              `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
               (result.cached ? "\n**Source:** cached render" : ""),
             files,
           });
