@@ -6,7 +6,6 @@ const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
-  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -16,48 +15,22 @@ const TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const CLIENT_ID = String(process.env.CLIENT_ID || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const ROBLOX_OPEN_CLOUD_API_KEY = String(process.env.ROBLOX_OPEN_CLOUD_API_KEY || "").trim();
-const ADMIN_USER_IDS = new Set(
-  String(process.env.ADMIN_USER_IDS || "")
-    .split(/[\s,;]+/)
-    .map(value => value.trim())
-    .filter(Boolean)
-);
 const COMMAND_CHANNEL_ID = String(process.env.COMMAND_CHANNEL_ID || "").trim();
 const DATA_PATH = path.join(__dirname, "data", "group-tenure.json");
+const GROUP_PROFILE_CACHE_MS = 10 * 60 * 1000;
+const groupProfileCache = new Map();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_OPEN_CLOUD_API_KEY) {
-  console.error("Missing DISCORD_TOKEN, CLIENT_ID, GUILD_ID or ROBLOX_OPEN_CLOUD_API_KEY in .env.");
+  console.error("Faltam DISCORD_TOKEN, CLIENT_ID, GUILD_ID ou ROBLOX_OPEN_CLOUD_API_KEY no .env.");
   process.exit(1);
 }
 
 const commands = [
   new SlashCommandBuilder()
-    .setName("group_add")
-    .setDescription("Admin: adicionar um grupo Roblox ao monitoramento")
-    .addStringOption(option => option.setName("group_id").setDescription("ID do grupo Roblox").setRequired(true))
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName("group_remove")
-    .setDescription("Admin: remover um grupo Roblox monitorado")
-    .addStringOption(option => option.setName("group_id").setDescription("ID do grupo Roblox").setRequired(true))
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName("group_list")
-    .setDescription("Listar os grupos Roblox monitorados neste servidor")
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName("group_time")
-    .setDescription("Consultar o tempo atual de um usuário nos grupos")
-    .addStringOption(option => option.setName("username").setDescription("Nome de usuário Roblox").setRequired(true))
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName("link_roblox")
-    .setDescription("Vincular sua conta Discord a um usuário Roblox")
-    .addStringOption(option => option.setName("username").setDescription("Seu nome de usuário Roblox").setRequired(true))
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName("my_group_time")
-    .setDescription("Consultar sua conta Roblox vinculada nos grupos")
+    .setName("consultar")
+    .setDescription("Consultar há quanto tempo uma pessoa está em um grupo")
+    .addStringOption(option => option.setName("usuario").setDescription("Nome de usuário Roblox").setRequired(true))
+    .addStringOption(option => option.setName("grupo").setDescription("Grupo monitorado").setAutocomplete(true).setRequired(true))
     .setDMPermission(false),
 ].map(command => command.toJSON());
 
@@ -68,33 +41,15 @@ function readData() {
     const data = JSON.parse(fs.readFileSync(DATA_PATH, "utf8"));
     return { ...defaults, ...(data || {}), guilds: data?.guilds || {} };
   } catch (error) {
-    console.warn("Could not read group tenure data:", error.message);
+    console.warn("Não foi possível ler os dados de tempo em grupo:", error.message);
     return defaults;
   }
 }
 
-function writeData(data) {
-  fs.mkdirSync(path.dirname(DATA_PATH), { recursive: true });
-  const temporaryPath = `${DATA_PATH}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2));
-  fs.renameSync(temporaryPath, DATA_PATH);
-}
-
 function guildState(data, guildId) {
-  data.guilds[guildId] ||= { groups: [], links: {} };
+  data.guilds[guildId] ||= { groups: [] };
   data.guilds[guildId].groups ||= [];
-  data.guilds[guildId].links ||= {};
   return data.guilds[guildId];
-}
-
-function isAdmin(interaction) {
-  return ADMIN_USER_IDS.has(interaction.user.id)
-    || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
-}
-
-function validGroupId(value) {
-  const id = String(value || "").trim();
-  return /^\d{1,20}$/.test(id) ? id : null;
 }
 
 async function robloxFetch(url, options = {}) {
@@ -122,7 +77,7 @@ async function robloxFetch(url, options = {}) {
 async function resolveRobloxUser(username) {
   const cleanUsername = String(username || "").trim();
   if (!/^[A-Za-z0-9_]{3,20}$/.test(cleanUsername)) {
-    throw new Error("Use a valid Roblox username.");
+    throw new Error("Use um nome de usuário Roblox válido.");
   }
   const response = await fetch("https://users.roblox.com/v1/usernames/users", {
     method: "POST",
@@ -131,7 +86,7 @@ async function resolveRobloxUser(username) {
   });
   const json = await response.json().catch(() => null);
   if (!response.ok || !json?.data?.length) {
-    throw new Error("Roblox username not found.");
+    throw new Error("Usuário Roblox não encontrado.");
   }
   return json.data[0];
 }
@@ -154,17 +109,21 @@ async function publicRobloxFetch(url) {
 }
 
 async function groupProfile(groupId) {
+  const cached = groupProfileCache.get(String(groupId));
+  if (cached && Date.now() - cached.savedAt < GROUP_PROFILE_CACHE_MS) return cached.profile;
   const [group, thumbnails, roles] = await Promise.all([
     publicRobloxFetch(`https://groups.roblox.com/v1/groups/${groupId}`),
     publicRobloxFetch(`https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=150x150&format=Png&isCircular=false`),
     publicRobloxFetch(`https://groups.roblox.com/v1/groups/${groupId}/roles`).catch(() => ({ roles: [] })),
   ]);
-  return {
+  const profile = {
     id: String(groupId),
     name: group?.name || `Grupo ${groupId}`,
     iconUrl: thumbnails?.data?.[0]?.imageUrl || null,
     roles: roles?.roles || [],
   };
+  groupProfileCache.set(String(groupId), { profile, savedAt: Date.now() });
+  return profile;
 }
 
 async function userAvatar(userId) {
@@ -200,12 +159,19 @@ function formatDuration(start) {
   return parts.slice(0, 3).join(", ");
 }
 
-function formatDate(iso) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "America/Sao_Paulo",
-  }).format(new Date(iso));
+async function groupChoices(groups, query = "") {
+  const needle = String(query).trim().toLocaleLowerCase("pt-BR");
+  const profiles = await Promise.all(groups.map(async id => {
+    try {
+      return await groupProfile(id);
+    } catch {
+      return { id, name: `Grupo ${id}` };
+    }
+  }));
+  return profiles
+    .filter(profile => !needle || profile.name.toLocaleLowerCase("pt-BR").includes(needle) || profile.id.includes(needle))
+    .slice(0, 25)
+    .map(profile => ({ name: `${profile.name} (${profile.id})`.slice(0, 100), value: profile.id }));
 }
 
 async function buildGroupTenureEmbeds(username, userId, groups) {
@@ -229,9 +195,9 @@ async function buildGroupTenureEmbeds(username, userId, groups) {
     const isMember = Boolean(joinedAt);
     const embed = new EmbedBuilder()
       .setColor(isMember ? 0x57F287 : 0xED4245)
-      .setAuthor(avatarUrl ? { name: "Velvet Group Check", iconURL: avatarUrl } : { name: "Velvet Group Check" })
+      .setAuthor(avatarUrl ? { name: "Velvet | Consulta de Grupo", iconURL: avatarUrl } : { name: "Velvet | Consulta de Grupo" })
       .setTitle(isMember ? "Membro do grupo" : "Membro não encontrado")
-      .setDescription(`**${username}** · Roblox ID: \`${userId}\``)
+      .setDescription(`**${username}** · ID Roblox: \`${userId}\``)
       .addFields(
         { name: "Grupo", value: `[${profile.name}](https://www.roblox.com/communities/${profile.id})`, inline: true },
         { name: "Cargo", value: isMember ? membershipRole(membership, profile) : "Não é membro atualmente", inline: true },
@@ -253,89 +219,53 @@ async function buildGroupTenureEmbeds(username, userId, groups) {
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-  console.log(`Registered ${commands.length} group tenure commands.`);
+  console.log(`${commands.length} comandos de grupos registrados.`);
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once("ready", () => {
-  console.log(`Group tenure bot ready as ${client.user.tag}.`);
+  console.log(`Bot de grupos pronto como ${client.user.tag}.`);
 });
 
 client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand() || !interaction.guildId) return;
+  if (!interaction.guildId) return;
   const data = readData();
   const state = guildState(data, interaction.guildId);
 
-  if (COMMAND_CHANNEL_ID && interaction.channelId !== COMMAND_CHANNEL_ID) {
-    await interaction.reply({ content: `## Use the commands channel\nUse this bot in <#${COMMAND_CHANNEL_ID}>.`, ephemeral: true });
-    return;
-  }
-
-  if (["group_add", "group_remove"].includes(interaction.commandName) && !isAdmin(interaction)) {
-    await interaction.reply({ content: "## Admin only\nThis command is restricted to bot administrators.", ephemeral: true });
-    return;
-  }
-
-  if (interaction.commandName === "group_add") {
-    const groupId = validGroupId(interaction.options.getString("group_id"));
-    if (!groupId) {
-      await interaction.reply({ content: "## Invalid group ID\nUse a numeric Roblox group ID.", ephemeral: true });
-      return;
-    }
-    if (!state.groups.includes(groupId)) state.groups.push(groupId);
-    writeData(data);
-    await interaction.reply({ content: `## Group added\nRoblox group \`${groupId}\` is now monitored.`, ephemeral: true });
-    return;
-  }
-
-  if (interaction.commandName === "group_remove") {
-    const groupId = validGroupId(interaction.options.getString("group_id"));
-    state.groups = state.groups.filter(id => id !== groupId);
-    writeData(data);
-    await interaction.reply({ content: `## Group removed\nRoblox group \`${groupId || "unknown"}\` is no longer monitored.`, ephemeral: true });
-    return;
-  }
-
-  if (interaction.commandName === "group_list") {
-    await interaction.reply({ content: state.groups.length
-      ? `## Grupos monitorados\n${state.groups.map(id => `- [Grupo ${id}](https://www.roblox.com/communities/${id})`).join("\n")}`
-      : "## Grupos monitorados\nNenhum grupo foi configurado ainda. Um admin pode usar `/group_add`.", ephemeral: true });
-    return;
-  }
-
-  if (interaction.commandName === "link_roblox") {
-    await interaction.deferReply({ ephemeral: true });
+  if (interaction.isAutocomplete()) {
+    if (interaction.commandName !== "consultar") return;
     try {
-      const user = await resolveRobloxUser(interaction.options.getString("username"));
-      state.links[interaction.user.id] = { id: String(user.id), username: user.name, linkedAt: new Date().toISOString() };
-      writeData(data);
-      await interaction.editReply(`## Roblox account linked\n**Account:** ${user.name} (\`${user.id}\`)\nUse \/my_group_time to check your configured groups.`);
+      await interaction.respond(await groupChoices(state.groups, interaction.options.getFocused()));
     } catch (error) {
-      await interaction.editReply(`## Could not link account\n${error.message}`);
+      console.warn("Não foi possível completar grupos:", error.message);
+      await interaction.respond([]);
     }
     return;
   }
 
-  if (interaction.commandName === "group_time" || interaction.commandName === "my_group_time") {
+  if (!interaction.isChatInputCommand()) return;
+
+  if (COMMAND_CHANNEL_ID && interaction.channelId !== COMMAND_CHANNEL_ID) {
+    await interaction.reply({ content: `## Use o canal de comandos\nUse este bot em <#${COMMAND_CHANNEL_ID}>.`, ephemeral: true });
+    return;
+  }
+
+  if (interaction.commandName === "consultar") {
     if (!state.groups.length) {
-      await interaction.reply({ content: "## No monitored groups\nAn admin must add a group first with `/group_add`.", ephemeral: true });
+      await interaction.reply({ content: "## Nenhum grupo configurado\nNenhum grupo está disponível para consulta.", ephemeral: true });
       return;
     }
     await interaction.deferReply();
     try {
-      const linked = state.links[interaction.user.id];
-      const user = interaction.commandName === "my_group_time"
-        ? linked
-        : await resolveRobloxUser(interaction.options.getString("username"));
-      if (!user) throw new Error("No Roblox account linked. Use /link_roblox first.");
-      const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, state.groups);
-      await interaction.editReply({ embeds: embeds.slice(0, 10) });
-      for (let offset = 10; offset < embeds.length; offset += 10) {
-        await interaction.followUp({ embeds: embeds.slice(offset, offset + 10) });
-      }
+      const user = await resolveRobloxUser(interaction.options.getString("usuario"));
+      const groupId = String(interaction.options.getString("grupo") || "").trim();
+      if (!groupId || !state.groups.includes(groupId)) throw new Error("Selecione um grupo monitorado na lista.");
+      const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, [groupId]);
+      await interaction.editReply({ embeds });
     } catch (error) {
-      await interaction.editReply(`## Could not check group time\n${error.message}`);
+      console.warn("Não foi possível consultar tempo no grupo:", error.message);
+      await interaction.editReply(`## Não foi possível consultar o tempo no grupo\n${error.message}`);
     }
   }
 });
