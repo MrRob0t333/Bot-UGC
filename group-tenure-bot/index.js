@@ -21,6 +21,7 @@ const ADMIN_USER_IDS = new Set(
     .map(value => value.trim())
     .filter(Boolean)
 );
+const COMMAND_CHANNEL_ID = String(process.env.COMMAND_CHANNEL_ID || "").trim();
 const DATA_PATH = path.join(__dirname, "data", "group-tenure.json");
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_OPEN_CLOUD_API_KEY) {
@@ -206,8 +207,13 @@ client.on("interactionCreate", async interaction => {
   const data = readData();
   const state = guildState(data, interaction.guildId);
 
+  if (COMMAND_CHANNEL_ID && interaction.channelId !== COMMAND_CHANNEL_ID) {
+    await interaction.reply({ content: `## Use the commands channel\nUse this bot in <#${COMMAND_CHANNEL_ID}>.`, ephemeral: true });
+    return;
+  }
+
   if (["group_add", "group_remove"].includes(interaction.commandName) && !isAdmin(interaction)) {
-    await interaction.reply({ content: "## Admin only\nThis command is restricted to server administrators.", ephemeral: true });
+    await interaction.reply({ content: "## Admin only\nThis command is restricted to bot administrators.", ephemeral: true });
     return;
   }
 
@@ -256,7 +262,7 @@ client.on("interactionCreate", async interaction => {
 
   if (interaction.commandName === "group_time" || interaction.commandName === "my_group_time") {
     if (!state.groups.length) {
-      await interaction.reply({ content: "## No monitored groups\nAn admin must add groups first with `/group_add`.", ephemeral: true });
+      await interaction.reply({ content: "## No monitored groups\nAn admin must add a group first with `/group_add`.", ephemeral: true });
       return;
     }
     await interaction.deferReply({ ephemeral: true });

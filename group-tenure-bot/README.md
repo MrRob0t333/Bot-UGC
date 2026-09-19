@@ -11,12 +11,14 @@ Separate Discord bot for checking how long a Roblox user has been in configured 
 
 ## Commands
 
-- `/group_add group_id` - admin only; adds a group to this Discord server.
-- `/group_remove group_id` - admin only; stops checking a group.
+- `/group_add group_id` - admin only; adds a group for this Discord server to monitor.
+- `/group_remove group_id` - admin only; removes a monitored group from this Discord server.
 - `/group_list` - lists configured groups.
 - `/group_time username` - checks the current membership date in every configured group.
 - `/link_roblox username` - links your Discord account to a Roblox account.
 - `/my_group_time` - checks the linked Roblox account.
+
+Set `ADMIN_USER_IDS` in `.env` with comma-separated Discord user IDs to control who can add or remove monitored groups. Everyone can use the read-only time lookup commands. Set `COMMAND_CHANNEL_ID` to keep commands in one channel.
 
 The Roblox membership `createTime` is the current membership's join timestamp. If somebody leaves a group and joins it again, Roblox reports the new membership timestamp.
 
