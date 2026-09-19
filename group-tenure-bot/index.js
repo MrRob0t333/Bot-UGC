@@ -6,6 +6,7 @@ const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
+  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -15,6 +16,12 @@ const TOKEN = String(process.env.DISCORD_TOKEN || "").trim();
 const CLIENT_ID = String(process.env.CLIENT_ID || "").trim();
 const GUILD_ID = String(process.env.GUILD_ID || "").trim();
 const ROBLOX_OPEN_CLOUD_API_KEY = String(process.env.ROBLOX_OPEN_CLOUD_API_KEY || "").trim();
+const ADMIN_USER_IDS = new Set(
+  String(process.env.ADMIN_USER_IDS || "")
+    .split(/[\s,;]+/)
+    .map(value => value.trim())
+    .filter(Boolean)
+);
 const COMMAND_CHANNEL_ID = String(process.env.COMMAND_CHANNEL_ID || "").trim();
 const DATA_PATH = path.join(__dirname, "data", "group-tenure.json");
 const GROUP_PROFILE_CACHE_MS = 10 * 60 * 1000;
@@ -26,6 +33,12 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_OPEN_CLOUD_API_KEY) {
 }
 
 const commands = [
+  new SlashCommandBuilder()
+    .setName("adicionar_grupo")
+    .setDescription("Admin: adicionar um grupo à lista de consulta")
+    .addStringOption(option => option.setName("id").setDescription("ID numérico do grupo Roblox").setRequired(true))
+    .addStringOption(option => option.setName("nome").setDescription("Nome que aparecerá para escolha").setRequired(true).setMaxLength(100))
+    .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("consultar")
     .setDescription("Consultar há quanto tempo uma pessoa está em um grupo")
@@ -50,6 +63,32 @@ function guildState(data, guildId) {
   data.guilds[guildId] ||= { groups: [] };
   data.guilds[guildId].groups ||= [];
   return data.guilds[guildId];
+}
+
+function isAdmin(interaction) {
+  return ADMIN_USER_IDS.has(interaction.user.id)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+}
+
+function validGroupId(value) {
+  const id = String(value || "").trim();
+  return /^\d{1,20}$/.test(id) ? id : null;
+}
+
+function groupRecord(entry) {
+  if (typeof entry === "string") return { id: entry, name: "" };
+  return { id: String(entry?.id || ""), name: String(entry?.name || "").trim() };
+}
+
+function groupIdExists(groups, groupId) {
+  return groups.some(entry => groupRecord(entry).id === groupId);
+}
+
+function writeData(data) {
+  fs.mkdirSync(path.dirname(DATA_PATH), { recursive: true });
+  const temporaryPath = `${DATA_PATH}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2));
+  fs.renameSync(temporaryPath, DATA_PATH);
 }
 
 async function robloxFetch(url, options = {}) {
@@ -161,11 +200,13 @@ function formatDuration(start) {
 
 async function groupChoices(groups, query = "") {
   const needle = String(query).trim().toLocaleLowerCase("pt-BR");
-  const profiles = await Promise.all(groups.map(async id => {
+  const profiles = await Promise.all(groups.map(async entry => {
+    const record = groupRecord(entry);
     try {
-      return await groupProfile(id);
+      const profile = await groupProfile(record.id);
+      return { ...profile, name: record.name || profile.name };
     } catch {
-      return { id, name: `Grupo ${id}` };
+      return { id: record.id, name: record.name || `Grupo ${record.id}` };
     }
   }));
   return profiles
@@ -176,14 +217,16 @@ async function groupChoices(groups, query = "") {
 
 async function buildGroupTenureEmbeds(username, userId, groups) {
   const avatarUrl = await userAvatar(userId).catch(() => null);
-  const results = await Promise.all(groups.map(async groupId => {
+  const results = await Promise.all(groups.map(async entry => {
+    const record = groupRecord(entry);
     const [profileResult, membershipResult] = await Promise.allSettled([
-      groupProfile(groupId),
-      membershipForUser(groupId, userId),
+      groupProfile(record.id),
+      membershipForUser(record.id, userId),
     ]);
-    const profile = profileResult.status === "fulfilled"
+    const loadedProfile = profileResult.status === "fulfilled"
       ? profileResult.value
-      : { id: groupId, name: `Grupo ${groupId}`, iconUrl: null, roles: [] };
+      : { id: record.id, name: `Grupo ${record.id}`, iconUrl: null, roles: [] };
+    const profile = { ...loadedProfile, name: record.name || loadedProfile.name };
     const membership = membershipResult.status === "fulfilled" ? membershipResult.value : null;
     const error = membershipResult.status === "rejected" ? membershipResult.reason : null;
     return { profile, membership, error };
@@ -251,6 +294,27 @@ client.on("interactionCreate", async interaction => {
     return;
   }
 
+  if (interaction.commandName === "adicionar_grupo" && !isAdmin(interaction)) {
+    await interaction.reply({ content: "## Apenas administradores\nEste comando é restrito aos administradores do bot.", ephemeral: true });
+    return;
+  }
+
+  if (interaction.commandName === "adicionar_grupo") {
+    const groupId = validGroupId(interaction.options.getString("id"));
+    const groupName = String(interaction.options.getString("nome") || "").trim();
+    if (!groupId || !groupName) {
+      await interaction.reply({ content: "## Dados inválidos\nInforme um ID numérico e um nome para o grupo.", ephemeral: true });
+      return;
+    }
+    state.groups = state.groups.map(groupRecord);
+    const existing = state.groups.find(entry => entry.id === groupId);
+    if (existing) existing.name = groupName;
+    else state.groups.push({ id: groupId, name: groupName });
+    writeData(data);
+    await interaction.reply({ content: `## Grupo salvo\n**${groupName}** estará disponível no campo \`grupo\` de \/consultar.`, ephemeral: true });
+    return;
+  }
+
   if (interaction.commandName === "consultar") {
     if (!state.groups.length) {
       await interaction.reply({ content: "## Nenhum grupo configurado\nNenhum grupo está disponível para consulta.", ephemeral: true });
@@ -260,8 +324,9 @@ client.on("interactionCreate", async interaction => {
     try {
       const user = await resolveRobloxUser(interaction.options.getString("usuario"));
       const groupId = String(interaction.options.getString("grupo") || "").trim();
-      if (!groupId || !state.groups.includes(groupId)) throw new Error("Selecione um grupo monitorado na lista.");
-      const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, [groupId]);
+      if (!groupId || !groupIdExists(state.groups, groupId)) throw new Error("Selecione um grupo monitorado na lista.");
+      const selectedGroup = state.groups.find(entry => groupRecord(entry).id === groupId);
+      const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, [selectedGroup]);
       await interaction.editReply({ embeds });
     } catch (error) {
       console.warn("Não foi possível consultar tempo no grupo:", error.message);
