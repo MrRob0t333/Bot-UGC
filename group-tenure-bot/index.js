@@ -5,6 +5,7 @@ const path = require("path");
 const {
   Client,
   GatewayIntentBits,
+  EmbedBuilder,
   PermissionFlagsBits,
   REST,
   Routes,
@@ -32,31 +33,31 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_OPEN_CLOUD_API_KEY) {
 const commands = [
   new SlashCommandBuilder()
     .setName("group_add")
-    .setDescription("Admin: add a Roblox group to monitor")
-    .addStringOption(option => option.setName("group_id").setDescription("Roblox group ID").setRequired(true))
+    .setDescription("Admin: adicionar um grupo Roblox ao monitoramento")
+    .addStringOption(option => option.setName("group_id").setDescription("ID do grupo Roblox").setRequired(true))
     .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("group_remove")
-    .setDescription("Admin: remove a monitored Roblox group")
-    .addStringOption(option => option.setName("group_id").setDescription("Roblox group ID").setRequired(true))
+    .setDescription("Admin: remover um grupo Roblox monitorado")
+    .addStringOption(option => option.setName("group_id").setDescription("ID do grupo Roblox").setRequired(true))
     .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("group_list")
-    .setDescription("List Roblox groups monitored in this server")
+    .setDescription("Listar os grupos Roblox monitorados neste servidor")
     .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("group_time")
-    .setDescription("Check a Roblox user's current time in monitored groups")
-    .addStringOption(option => option.setName("username").setDescription("Roblox username").setRequired(true))
+    .setDescription("Consultar o tempo atual de um usuário nos grupos")
+    .addStringOption(option => option.setName("username").setDescription("Nome de usuário Roblox").setRequired(true))
     .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("link_roblox")
-    .setDescription("Link your Discord account to a Roblox username")
-    .addStringOption(option => option.setName("username").setDescription("Your Roblox username").setRequired(true))
+    .setDescription("Vincular sua conta Discord a um usuário Roblox")
+    .addStringOption(option => option.setName("username").setDescription("Seu nome de usuário Roblox").setRequired(true))
     .setDMPermission(false),
   new SlashCommandBuilder()
     .setName("my_group_time")
-    .setDescription("Check your linked Roblox account in monitored groups")
+    .setDescription("Consultar sua conta Roblox vinculada nos grupos")
     .setDMPermission(false),
 ].map(command => command.toJSON());
 
@@ -143,6 +144,46 @@ async function membershipForUser(groupId, userId) {
   return response?.groupMemberships?.[0] || null;
 }
 
+async function publicRobloxFetch(url) {
+  const response = await fetch(url);
+  const json = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`Roblox public API ${response.status}.`);
+  }
+  return json;
+}
+
+async function groupProfile(groupId) {
+  const [group, thumbnails, roles] = await Promise.all([
+    publicRobloxFetch(`https://groups.roblox.com/v1/groups/${groupId}`),
+    publicRobloxFetch(`https://thumbnails.roblox.com/v1/groups/icons?groupIds=${groupId}&size=150x150&format=Png&isCircular=false`),
+    publicRobloxFetch(`https://groups.roblox.com/v1/groups/${groupId}/roles`).catch(() => ({ roles: [] })),
+  ]);
+  return {
+    id: String(groupId),
+    name: group?.name || `Grupo ${groupId}`,
+    iconUrl: thumbnails?.data?.[0]?.imageUrl || null,
+    roles: roles?.roles || [],
+  };
+}
+
+async function userAvatar(userId) {
+  const thumbnails = await publicRobloxFetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`
+  );
+  return thumbnails?.data?.[0]?.imageUrl || null;
+}
+
+function membershipRole(membership, group) {
+  const role = membership?.role;
+  if (typeof role === "string" && role.trim()) {
+    const roleId = role.match(/(\d+)$/)?.[1];
+    const matchedRole = group?.roles?.find(entry => String(entry.id) === roleId);
+    return matchedRole?.name || "Membro";
+  }
+  return role?.displayName || role?.name || membership?.roleName || "Membro";
+}
+
 function formatDuration(start) {
   const elapsed = Math.max(0, Date.now() - new Date(start).getTime());
   const totalMinutes = Math.floor(elapsed / 60000);
@@ -152,11 +193,11 @@ function formatDuration(start) {
   const remainingDays = days % 30;
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const parts = [];
-  if (years) parts.push(`${years}y`);
-  if (months) parts.push(`${months}mo`);
-  if (remainingDays || !parts.length) parts.push(`${remainingDays}d`);
-  if (!years && hours) parts.push(`${hours}h`);
-  return parts.join(" ");
+  if (years) parts.push(`${years} ${years === 1 ? "ano" : "anos"}`);
+  if (months) parts.push(`${months} ${months === 1 ? "mês" : "meses"}`);
+  if (remainingDays || !parts.length) parts.push(`${remainingDays} ${remainingDays === 1 ? "dia" : "dias"}`);
+  if (!years && !months && hours) parts.push(`${hours} ${hours === 1 ? "hora" : "horas"}`);
+  return parts.slice(0, 3).join(", ");
 }
 
 function formatDate(iso) {
@@ -167,27 +208,46 @@ function formatDate(iso) {
   }).format(new Date(iso));
 }
 
-async function formatGroupTenure(username, userId, groups) {
-  const lines = ["# Roblox Group Time", `**User:** ${username} (\`${userId}\`)`, ""];
-  for (const groupId of groups) {
-    try {
-      const membership = await membershipForUser(groupId, userId);
-      if (!membership?.createTime) {
-        lines.push(`**Group \`${groupId}\`: Not currently a member.`);
-        continue;
-      }
-      lines.push(
-        `**Group \`${groupId}\`**`,
-        `Joined: ${formatDate(membership.createTime)}`,
-        `Current membership: ${formatDuration(membership.createTime)}`,
-        ""
-      );
-    } catch (error) {
-      lines.push(`**Group \`${groupId}\`: Could not check (${error.message}).`, "");
-    }
-  }
-  lines.push("Membership time uses Roblox's current membership createTime. Leaving and rejoining resets it.");
-  return lines.join("\n");
+async function buildGroupTenureEmbeds(username, userId, groups) {
+  const avatarUrl = await userAvatar(userId).catch(() => null);
+  const results = await Promise.all(groups.map(async groupId => {
+    const [profileResult, membershipResult] = await Promise.allSettled([
+      groupProfile(groupId),
+      membershipForUser(groupId, userId),
+    ]);
+    const profile = profileResult.status === "fulfilled"
+      ? profileResult.value
+      : { id: groupId, name: `Grupo ${groupId}`, iconUrl: null, roles: [] };
+    const membership = membershipResult.status === "fulfilled" ? membershipResult.value : null;
+    const error = membershipResult.status === "rejected" ? membershipResult.reason : null;
+    return { profile, membership, error };
+  }));
+
+  return results.map(({ profile, membership, error }) => {
+    const joinedAt = membership?.createTime ? new Date(membership.createTime) : null;
+    const joinedTimestamp = joinedAt ? Math.floor(joinedAt.getTime() / 1000) : null;
+    const isMember = Boolean(joinedAt);
+    const embed = new EmbedBuilder()
+      .setColor(isMember ? 0x57F287 : 0xED4245)
+      .setAuthor(avatarUrl ? { name: "Velvet Group Check", iconURL: avatarUrl } : { name: "Velvet Group Check" })
+      .setTitle(isMember ? "Membro do grupo" : "Membro não encontrado")
+      .setDescription(`**${username}** · Roblox ID: \`${userId}\``)
+      .addFields(
+        { name: "Grupo", value: `[${profile.name}](https://www.roblox.com/communities/${profile.id})`, inline: true },
+        { name: "Cargo", value: isMember ? membershipRole(membership, profile) : "Não é membro atualmente", inline: true },
+        {
+          name: "Tempo no grupo",
+          value: isMember
+            ? `\`${formatDuration(membership.createTime)}\`\nEntrou em <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`
+            : error ? "Não foi possível consultar agora." : "Sem vínculo atual com este grupo.",
+          inline: false,
+        }
+      )
+      .setFooter({ text: "O tempo considera a associação atual. Sair e entrar novamente reinicia a contagem." })
+      .setTimestamp();
+    if (profile.iconUrl) embed.setThumbnail(profile.iconUrl);
+    return embed;
+  });
 }
 
 async function registerCommands() {
@@ -238,12 +298,9 @@ client.on("interactionCreate", async interaction => {
   }
 
   if (interaction.commandName === "group_list") {
-    await interaction.reply({
-      content: state.groups.length
-        ? `# Monitored Roblox Groups\n${state.groups.map(id => `- \`${id}\``).join("\n")}`
-        : "# Monitored Roblox Groups\nNo groups are configured yet. An admin can use `/group_add`.",
-      ephemeral: true,
-    });
+    await interaction.reply({ content: state.groups.length
+      ? `## Grupos monitorados\n${state.groups.map(id => `- [Grupo ${id}](https://www.roblox.com/communities/${id})`).join("\n")}`
+      : "## Grupos monitorados\nNenhum grupo foi configurado ainda. Um admin pode usar `/group_add`.", ephemeral: true });
     return;
   }
 
@@ -265,14 +322,18 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({ content: "## No monitored groups\nAn admin must add a group first with `/group_add`.", ephemeral: true });
       return;
     }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     try {
       const linked = state.links[interaction.user.id];
       const user = interaction.commandName === "my_group_time"
         ? linked
         : await resolveRobloxUser(interaction.options.getString("username"));
       if (!user) throw new Error("No Roblox account linked. Use /link_roblox first.");
-      await interaction.editReply(await formatGroupTenure(user.username || user.name, user.id, state.groups));
+      const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, state.groups);
+      await interaction.editReply({ embeds: embeds.slice(0, 10) });
+      for (let offset = 10; offset < embeds.length; offset += 10) {
+        await interaction.followUp({ embeds: embeds.slice(offset, offset + 10) });
+      }
     } catch (error) {
       await interaction.editReply(`## Could not check group time\n${error.message}`);
     }
