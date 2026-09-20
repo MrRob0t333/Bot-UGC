@@ -6,6 +6,9 @@ const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   PermissionFlagsBits,
   REST,
   Routes,
@@ -25,6 +28,8 @@ const ADMIN_USER_IDS = new Set(
 const COMMAND_CHANNEL_ID = String(process.env.COMMAND_CHANNEL_ID || "").trim();
 const DATA_PATH = path.join(__dirname, "data", "group-tenure.json");
 const GROUP_PROFILE_CACHE_MS = 10 * 60 * 1000;
+const ELIGIBILITY_DAYS = 14;
+const ELIGIBILITY_MS = ELIGIBILITY_DAYS * 24 * 60 * 60 * 1000;
 const groupProfileCache = new Map();
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_OPEN_CLOUD_API_KEY) {
@@ -198,6 +203,21 @@ function formatDuration(start) {
   return parts.slice(0, 3).join(", ");
 }
 
+function eligibilityStatus(joinedAt) {
+  const elapsed = Math.max(0, Date.now() - joinedAt.getTime());
+  if (elapsed >= ELIGIBILITY_MS) {
+    return {
+      eligible: true,
+      text: `✅ **Elegível**\nJá completou os ${ELIGIBILITY_DAYS} dias exigidos.`,
+    };
+  }
+  const remaining = new Date(Date.now() - (ELIGIBILITY_MS - elapsed));
+  return {
+    eligible: false,
+    text: `⏳ **Ainda não elegível**\nFaltam ${formatDuration(remaining)} para completar ${ELIGIBILITY_DAYS} dias.`,
+  };
+}
+
 async function groupChoices(groups, query = "") {
   const needle = String(query).trim().toLocaleLowerCase("pt-BR");
   const profiles = await Promise.all(groups.map(async entry => {
@@ -236,23 +256,29 @@ async function buildGroupTenureEmbeds(username, userId, groups) {
     const joinedAt = membership?.createTime ? new Date(membership.createTime) : null;
     const joinedTimestamp = joinedAt ? Math.floor(joinedAt.getTime() / 1000) : null;
     const isMember = Boolean(joinedAt);
+    const eligibility = isMember ? eligibilityStatus(joinedAt) : null;
     const embed = new EmbedBuilder()
-      .setColor(isMember ? 0x57F287 : 0xED4245)
-      .setAuthor(avatarUrl ? { name: "Velvet | Consulta de Grupo", iconURL: avatarUrl } : { name: "Velvet | Consulta de Grupo" })
-      .setTitle(isMember ? "Membro do grupo" : "Membro não encontrado")
-      .setDescription(`**${username}** · ID Roblox: \`${userId}\``)
+      .setColor(isMember ? 0xD20A1D : 0x242428)
+      .setAuthor(avatarUrl ? { name: "VELVET • VERIFICAÇÃO DE GRUPO", iconURL: avatarUrl } : { name: "VELVET • VERIFICAÇÃO DE GRUPO" })
+      .setTitle(isMember ? "✦ Perfil de membro" : "✦ Perfil não encontrado")
+      .setDescription(`👤 **${username}**\n> ID Roblox: \`${userId}\``)
       .addFields(
-        { name: "Grupo", value: `[${profile.name}](https://www.roblox.com/communities/${profile.id})`, inline: true },
-        { name: "Cargo", value: isMember ? membershipRole(membership, profile) : "Não é membro atualmente", inline: true },
+        { name: "🏷️ GRUPO", value: `[${profile.name}](https://www.roblox.com/communities/${profile.id})`, inline: true },
+        { name: "🎭 CARGO", value: isMember ? membershipRole(membership, profile) : "Não é membro atualmente", inline: true },
         {
-          name: "Tempo no grupo",
+          name: "📅 ENTRADA E TEMPO",
           value: isMember
             ? `\`${formatDuration(membership.createTime)}\`\nEntrou em <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`
             : error ? "Não foi possível consultar agora." : "Sem vínculo atual com este grupo.",
           inline: false,
+        },
+        {
+          name: `🛡️ ELEGIBILIDADE (${ELIGIBILITY_DAYS} DIAS)`,
+          value: isMember ? eligibility.text : "❌ Não elegível enquanto não fizer parte do grupo.",
+          inline: false,
         }
       )
-      .setFooter({ text: "O tempo considera a associação atual. Sair e entrar novamente reinicia a contagem." })
+      .setFooter({ text: "VELVET • A contagem considera a associação atual no grupo." })
       .setTimestamp();
     if (profile.iconUrl) embed.setThumbnail(profile.iconUrl);
     return embed;
@@ -327,7 +353,15 @@ client.on("interactionCreate", async interaction => {
       if (!groupId || !groupIdExists(state.groups, groupId)) throw new Error("Selecione um grupo monitorado na lista.");
       const selectedGroup = state.groups.find(entry => groupRecord(entry).id === groupId);
       const embeds = await buildGroupTenureEmbeds(user.username || user.name, user.id, [selectedGroup]);
-      await interaction.editReply({ embeds });
+      const group = groupRecord(selectedGroup);
+      const groupButton = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel("Abrir grupo no Roblox")
+          .setEmoji("🔗")
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://www.roblox.com/communities/${group.id}`)
+      );
+      await interaction.editReply({ embeds, components: [groupButton] });
     } catch (error) {
       console.warn("Não foi possível consultar tempo no grupo:", error.message);
       await interaction.editReply(`## Não foi possível consultar o tempo no grupo\n${error.message}`);
