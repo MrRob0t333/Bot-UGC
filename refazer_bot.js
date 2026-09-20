@@ -17433,29 +17433,52 @@ client.on("interactionCreate", async interaction => {
         const id = ids[index];
         try {
           await interaction.followUp(`Preparing \`${id}\`...`).catch(() => {});
-          const result = await processUGC(id, { render: false });
-          const files = [
-            result.glbPath,
-            result.objPath,
-            result.rbxmPath,
-            result.hasTexture ? result.texturePath : null,
-          ];
+          const target = await classifyStealTarget(id);
+          const isClassicClothing = target.kind === "clothing";
+          let itemQuote;
 
-          await interaction.followUp({
-            content: `## Asset Copied\n**UGC:** \`${id}\``,
-            files: attachmentsFromPaths(files).slice(0, 10),
-          });
+          if (isClassicClothing) {
+            const clothing = await downloadClassicClothingTemplate(id);
+            await interaction.followUp({
+              content:
+                `## Clothing Template Copied\n` +
+                `**Name:** ${clothing.name}\n` +
+                `**Catalog ID:** \`${clothing.catalogId}\`\n` +
+                `**Type:** ${clothing.typeLabel}`,
+              files: [publicImageAttachment(
+                clothing.filePath,
+                publicClothingTemplateAttachmentName(clothing.name, clothing.catalogId)
+              )],
+            });
+            itemQuote = calculateClothingCopyPrice(interaction);
+          } else {
+            const result = await processUGC(id, { render: false });
+            const files = [
+              result.glbPath,
+              result.objPath,
+              result.rbxmPath,
+              result.hasTexture ? result.texturePath : null,
+            ];
 
-          const itemQuote = calculateCopyPrice(interaction);
+            await interaction.followUp({
+              content: `## Asset Copied\n**Name:** ${target.details?.Name || `UGC ${id}`}\n**UGC:** \`${id}\``,
+              files: attachmentsFromPaths(files, {
+                assetId: id,
+                assetName: target.details?.Name || `Roblox Asset ${id}`,
+              }).slice(0, 10),
+            });
+            itemQuote = calculateCopyPrice(interaction);
+          }
+
           if (itemQuote.walletAmount > 0) {
             const debit = removeWalletBalance({
               userId: interaction.user.id,
               amount: itemQuote.walletAmount,
               actorId: client.user.id,
-              reason: "Bulk original asset copied",
+              reason: isClassicClothing ? "Bulk classic clothing template copied" : "Bulk original asset copied",
               meta: {
                 command: "bulk_steal",
-                serviceKey: "copy",
+                serviceKey: isClassicClothing ? "clothing" : "copy",
                 ugcId: id,
                 priceTokens: itemQuote.walletAmount,
               },
@@ -17463,8 +17486,9 @@ client.on("interactionCreate", async interaction => {
             if (debit.ok) charged += itemQuote.walletAmount;
           }
 
-          addCopyUsage(interaction.user.id, 1);
-          results.push({ id, ok: true });
+          if (isClassicClothing) addClothingUsage(interaction.user.id, 1);
+          else addCopyUsage(interaction.user.id, 1);
+          results.push({ id, ok: true, type: isClassicClothing ? "clothing" : "asset" });
         } catch (err) {
           console.error(err);
           await interaction.followUp(`I could not copy \`${id}\`.`).catch(() => {});
