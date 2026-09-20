@@ -342,6 +342,7 @@ const SNIPER_PLAN_CONFIG = {
 
 const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
+const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 30);
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
 const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
 const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
@@ -13890,12 +13891,12 @@ function parseSteal2Ids(raw) {
     .slice(0, 20);
 }
 
-function parseBulkIds(raw) {
+function parseBulkIds(raw, limit = BULK_ASSET_LIMIT) {
   return [...new Set(String(raw || "")
     .split(/[\s,;]+/)
     .map(id => id.trim())
     .filter(id => /^\d+$/.test(id)))]
-    .slice(0, BULK_ASSET_LIMIT);
+    .slice(0, limit);
 }
 
 const pendingBulkViewPanels = new Map();
@@ -13974,10 +13975,10 @@ function bulkViewPanelPayload(action, { locked = false } = {}) {
   return {
     content:
       "## 🎬 Configurar views em lote\n" +
-      `**UGCs (${action.ids.length}/10):** ${idsPreview}\n` +
+      `**UGCs (${action.ids.length}/${BULK_VIEW_LIMIT}):** ${idsPreview}\n` +
       `**Ângulos:** ${angleLabel}\n\n` +
       `**Render atual:**\n${renderSettingsSummary(action.renderSettings, "pt-BR")}\n\n` +
-      "Selecione os presets acima, ajuste o material se quiser e clique em **Renderizar lote**.",
+      "Selecione os presets acima, ajuste o material se quiser e clique em **Renderizar lote**. Os UGCs são processados em sequência.",
     components,
   };
 }
@@ -14035,7 +14036,7 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
     : interaction.reply.bind(interaction);
   await sendInitial(
     `${copy.started}\n` +
-    `**${copy.ugcs}:** ${ids.length}/10\n` +
+    `**${copy.ugcs}:** ${ids.length}/${BULK_VIEW_LIMIT}\n` +
     `**${copy.angles}:** ${useAiFiveViews ? copy.angles5 : copy.angles4}\n\n` +
     `**${copy.settings}:**\n${renderSettingsSummary(renderSettings, lang)}\n\n` +
     copy.waiting
@@ -14729,12 +14730,12 @@ client.on("interactionCreate", async interaction => {
       modal.addComponents(new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("ids")
-          .setLabel("IDs dos UGCs (até 10)")
+          .setLabel(`IDs dos UGCs (até ${BULK_VIEW_LIMIT})`)
           .setStyle(TextInputStyle.Paragraph)
-          .setPlaceholder("135953034964536, 123456789, 987654321")
+          .setPlaceholder("135953034964536, 123456789, 987654321...")
           .setValue(action.ids.join(", "))
           .setRequired(true)
-          .setMaxLength(400)
+          .setMaxLength(1000)
       ));
       await interaction.showModal(modal);
       return;
@@ -14799,9 +14800,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (control === "ids") {
-      const ids = parseBulkIds(interaction.fields.getTextInputValue("ids")).slice(0, 10);
+      const ids = parseBulkIds(interaction.fields.getTextInputValue("ids"), BULK_VIEW_LIMIT);
       if (!ids.length) {
-        await interaction.reply({ content: "## IDs inválidos\nInforme de um a dez IDs numéricos.", flags: 64 });
+        await interaction.reply({ content: `## IDs inválidos\nInforme de um a ${BULK_VIEW_LIMIT} IDs numéricos.`, flags: 64 });
         return;
       }
       action.ids = ids;
