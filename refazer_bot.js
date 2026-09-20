@@ -1409,14 +1409,14 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("views_bulk")
-    .setDescription("Admin: render reference views for up to 10 UGC IDs")
+    .setDescription("Admin: renderizar views para até 10 UGCs")
     .addStringOption(o =>
-      o.setName("ids").setDescription("Optional: the form opens after you run the command").setRequired(false)
+      o.setName("ids").setDescription("IDs dos UGCs separados por espaço ou vírgula (até 10)").setRequired(true)
     )
     .addStringOption(o =>
       o
         .setName("lighting")
-        .setDescription("Lighting preset for this render batch")
+        .setDescription("Iluminação para todos os UGCs")
         .setRequired(false)
         .addChoices(
           { name: "Your default", value: "default" },
@@ -1429,7 +1429,7 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("pov")
-        .setDescription("Camera POV/framing for this render batch")
+        .setDescription("POV/enquadramento para todos os UGCs")
         .setRequired(false)
         .addChoices(
           { name: "Your default", value: "default" },
@@ -1442,7 +1442,7 @@ const commands = [
     .addStringOption(o =>
       o
         .setName("angles")
-        .setDescription("Reference angle set for every UGC")
+        .setDescription("Conjunto de ângulos para todos os UGCs")
         .setRequired(false)
         .addChoices(
           { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
@@ -1450,16 +1450,16 @@ const commands = [
         )
     )
     .addNumberOption(o =>
-      o.setName("ior").setDescription("Material IOR. 1.00 to 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
+      o.setName("ior").setDescription("IOR do material. 1.00 a 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
     )
     .addNumberOption(o =>
-      o.setName("roughness").setDescription("Material roughness. 0.00 shiny, 1.00 matte").setRequired(false).setMinValue(0).setMaxValue(1)
+      o.setName("roughness").setDescription("Rugosidade. 0.00 brilhante, 1.00 fosco").setRequired(false).setMinValue(0).setMaxValue(1)
     )
     .addNumberOption(o =>
-      o.setName("exposure").setDescription("Render exposure. -1.00 to 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
+      o.setName("exposure").setDescription("Exposição. -1.00 a 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
     )
     .addNumberOption(o =>
-      addLightPowerChoices(o.setName("light_power").setDescription("Light strength multiplier. 0.20 to 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
+      addLightPowerChoices(o.setName("light_power").setDescription("Potência da luz. 0.20 a 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
     )
     .toJSON(),
 
@@ -13948,43 +13948,62 @@ function parseBulkIds(raw) {
     .slice(0, BULK_ASSET_LIMIT);
 }
 
-function bulkViewsSettingsFromModal(interaction) {
-  const base = normalizeRenderSettings(walletPreferences(interaction.user.id).renderSettings);
-  const text = field => interaction.fields.getTextInputValue(field).trim().toLowerCase();
-  const lighting = text("lighting").replace(/[\s-]+/g, "_");
-  const pov = text("pov").replace(/[\s-]+/g, "_");
-  const rawMaterial = text("material").replace(/,/g, ".");
-  const values = rawMaterial.split(/[\s;/|]+/).filter(Boolean).map(Number);
-  const [ior, roughness, exposure, lightPower] = values;
-  const valid = (value, min, max, fallback) => Number.isFinite(value) && value >= min && value <= max ? value : fallback;
-
-  return {
-    renderSettings: normalizeRenderSettings({
-      ...base,
-      lighting: ["studio", "soft", "dramatic", "flat"].includes(lighting) ? lighting : base.lighting,
-      pov: ["normal", "close", "wide", "top_down"].includes(pov) ? pov : base.pov,
-      ior: valid(ior, 1, 2.5, base.ior),
-      roughness: valid(roughness, 0, 1, base.roughness),
-      exposure: valid(exposure, -1, 1, base.exposure),
-      lightPower: valid(lightPower, 0.2, 3, base.lightPower),
-    }),
-    useAiFiveViews: ["5", "ai5", "five", "5_views", "5views"].includes(text("angles")),
-  };
-}
-
-async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews }) {
+async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews, lang = "en" }) {
+  const copy = lang === "pt-BR"
+    ? {
+      started: "## Views em lote iniciadas",
+      completed: "## Views do UGC prontas",
+      finished: "## Views em lote finalizadas",
+      ugcs: "UGCs",
+      angles: "Ângulos",
+      settings: "Configurações de render",
+      preparing: "Renderizando views de",
+      name: "Nome",
+      mesh: "MeshId",
+      texture: "TextureId",
+      missing: "não encontrada",
+      angles4: "frente, direita, costas, esquerda",
+      angles5: "frente, direita, costas, esquerda, cima",
+      cached: "Fonte: render em cache",
+      failedOne: "Não consegui renderizar as views de",
+      success: "Sucesso",
+      failed: "Falhas",
+      none: "nenhuma",
+      waiting: "Vou enviar cada conjunto assim que ficar pronto.",
+    }
+    : {
+      started: "## Admin Bulk Views Started",
+      completed: "## UGC Views Ready",
+      finished: "## Admin Bulk Views Finished",
+      ugcs: "UGCs",
+      angles: "Angles",
+      settings: "Render settings",
+      preparing: "Rendering views for",
+      name: "Name",
+      mesh: "MeshId",
+      texture: "TextureId",
+      missing: "not found",
+      angles4: "front, right, back, left",
+      angles5: "front, right, back, left, top",
+      cached: "Source: cached render",
+      failedOne: "I could not render views for",
+      success: "Success",
+      failed: "Failed",
+      none: "none",
+      waiting: "I will send each rendered view set as soon as it is ready.",
+    };
   await interaction.reply(
-    "## Admin Bulk Views Started\n" +
-    `**UGCs:** ${ids.length}/10\n\n` +
-    `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
-    `**Render settings:**\n${renderSettingsSummary(renderSettings)}\n\n` +
-    "I will send each rendered view set as soon as it is ready."
+    `${copy.started}\n` +
+    `**${copy.ugcs}:** ${ids.length}/10\n` +
+    `**${copy.angles}:** ${useAiFiveViews ? copy.angles5 : copy.angles4}\n\n` +
+    `**${copy.settings}:**\n${renderSettingsSummary(renderSettings, lang)}\n\n` +
+    copy.waiting
   );
 
   const results = [];
   for (const id of ids) {
     try {
-      await interaction.followUp(`Rendering views for \`${id}\`...`).catch(() => {});
+      await interaction.followUp(`${copy.preparing} \`${id}\`...`).catch(() => {});
       const assetNamePromise = ugcDisplayName(id);
       const result = await processUGC(id, {
         exportGlb: false,
@@ -13998,27 +14017,27 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
       const assetName = await assetNamePromise;
       await interaction.followUp({
         content:
-          "## UGC Views Ready\n" +
-          `**Name:** ${assetName}\n` +
+          `${copy.completed}\n` +
+          `**${copy.name}:** ${assetName}\n` +
           `**UGC:** \`${id}\`\n` +
-          `**MeshId:** \`${result.meshId}\`\n` +
-          `**TextureId:** \`${result.textureId || "not found"}\`\n` +
-          `**Angles:** ${useAiFiveViews ? "front, right, back, left, top" : "front, right, back, left"}\n` +
-          (result.cached ? "\n**Source:** cached render" : ""),
+          `**${copy.mesh}:** \`${result.meshId}\`\n` +
+          `**${copy.texture}:** \`${result.textureId || copy.missing}\`\n` +
+          `**${copy.angles}:** ${useAiFiveViews ? copy.angles5 : copy.angles4}\n` +
+          (result.cached ? `\n**${copy.cached}**` : ""),
         files,
       });
       results.push({ id, ok: true });
     } catch (err) {
       console.error(err);
-      await interaction.followUp(`I could not render views for \`${id}\`.`).catch(() => {});
+      await interaction.followUp(`${copy.failedOne} \`${id}\`.`).catch(() => {});
       results.push({ id, ok: false });
     }
   }
 
   await interaction.followUp(
-    "## Admin Bulk Views Finished\n" +
-    `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
-    `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
+    `${copy.finished}\n` +
+    `**${copy.success}:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+    `**${copy.failed}:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || copy.none}`
   ).catch(() => {});
 }
 
@@ -14640,21 +14659,6 @@ async function processSteal2Batch(interaction, action) {
 }
 
 client.on("interactionCreate", async interaction => {
-  if (interaction.isModalSubmit() && interaction.customId === "views_bulk_config") {
-    if (!userIsAdmin(interaction)) {
-      await interaction.reply({ content: "## Admin only\nThis command is available only to bot admins.", flags: 64 });
-      return;
-    }
-    const ids = parseBulkIds(interaction.fields.getTextInputValue("ids")).slice(0, 10);
-    if (!ids.length) {
-      await interaction.reply({ content: "## No valid IDs found\nEnter one to ten numeric UGC IDs.", flags: 64 });
-      return;
-    }
-    const settings = bulkViewsSettingsFromModal(interaction);
-    await processBulkUgcViews(interaction, { ids, ...settings });
-    return;
-  }
-
   if (interaction.isModalSubmit() && interaction.customId === "steal2_config") {
     if (!userIsAdmin(interaction)) {
       await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
@@ -17416,24 +17420,20 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "views_bulk") {
-      const modal = new ModalBuilder()
-        .setCustomId("views_bulk_config")
-        .setTitle("Bulk UGC Views");
-      const input = (id, label, options = {}) => new TextInputBuilder()
-        .setCustomId(id)
-        .setLabel(label)
-        .setStyle(options.paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
-        .setRequired(options.required !== false)
-        .setPlaceholder(options.placeholder || "")
-        .setMaxLength(options.maxLength || 400);
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(input("ids", "UGC IDs, spaces or commas (up to 10)", { paragraph: true, placeholder: "123456 789012 345678", maxLength: 400 })),
-        new ActionRowBuilder().addComponents(input("lighting", "Lighting: studio, soft, dramatic or flat", { required: false, placeholder: "flat" })),
-        new ActionRowBuilder().addComponents(input("pov", "POV: normal, close, wide or top_down", { required: false, placeholder: "normal" })),
-        new ActionRowBuilder().addComponents(input("angles", "Views: 4 or 5 (5 includes top)", { required: false, placeholder: "5" })),
-        new ActionRowBuilder().addComponents(input("material", "IOR roughness exposure light power", { required: false, placeholder: "1 1 1 0.20", maxLength: 40 }))
-      );
-      await interaction.showModal(modal);
+      const lang = languageFor(interaction);
+      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
+      if (!ids.length) {
+        await interaction.reply({
+          content: lang === "pt-BR"
+            ? "## IDs inválidos\nInforme de um a dez IDs numéricos de UGC, separados por espaço ou vírgula."
+            : "## Invalid IDs\nEnter one to ten numeric UGC IDs, separated by spaces or commas.",
+          flags: 64,
+        });
+        return;
+      }
+      const renderSettings = renderSettingsForInteraction(interaction);
+      const useAiFiveViews = (interaction.options.getString("angles") || "multiview4") === "ai5";
+      await processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews, lang });
       return;
     }
 
