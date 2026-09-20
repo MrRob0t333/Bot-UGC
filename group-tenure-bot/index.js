@@ -170,13 +170,6 @@ async function groupProfile(groupId) {
   return profile;
 }
 
-async function userAvatar(userId) {
-  const thumbnails = await publicRobloxFetch(
-    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`
-  );
-  return thumbnails?.data?.[0]?.imageUrl || null;
-}
-
 function membershipRole(membership, group) {
   const role = membership?.role;
   if (typeof role === "string" && role.trim()) {
@@ -188,7 +181,10 @@ function membershipRole(membership, group) {
 }
 
 function formatDuration(start) {
-  const elapsed = Math.max(0, Date.now() - new Date(start).getTime());
+  return formatDurationMilliseconds(Math.max(0, Date.now() - new Date(start).getTime()));
+}
+
+function formatDurationMilliseconds(elapsed) {
   const totalMinutes = Math.floor(elapsed / 60000);
   const days = Math.floor(totalMinutes / 1440);
   const years = Math.floor(days / 365);
@@ -206,16 +202,9 @@ function formatDuration(start) {
 function eligibilityStatus(joinedAt) {
   const elapsed = Math.max(0, Date.now() - joinedAt.getTime());
   if (elapsed >= ELIGIBILITY_MS) {
-    return {
-      eligible: true,
-      text: `✅ **Elegível**\nJá completou os ${ELIGIBILITY_DAYS} dias exigidos.`,
-    };
+    return { eligible: true };
   }
-  const remaining = new Date(Date.now() - (ELIGIBILITY_MS - elapsed));
-  return {
-    eligible: false,
-    text: `⏳ **Ainda não elegível**\nFaltam ${formatDuration(remaining)} para completar ${ELIGIBILITY_DAYS} dias.`,
-  };
+  return { eligible: false };
 }
 
 async function groupChoices(groups, query = "") {
@@ -236,7 +225,6 @@ async function groupChoices(groups, query = "") {
 }
 
 async function buildGroupTenureEmbeds(username, userId, groups) {
-  const avatarUrl = await userAvatar(userId).catch(() => null);
   const results = await Promise.all(groups.map(async entry => {
     const record = groupRecord(entry);
     const [profileResult, membershipResult] = await Promise.allSettled([
@@ -257,28 +245,32 @@ async function buildGroupTenureEmbeds(username, userId, groups) {
     const joinedTimestamp = joinedAt ? Math.floor(joinedAt.getTime() / 1000) : null;
     const isMember = Boolean(joinedAt);
     const eligibility = isMember ? eligibilityStatus(joinedAt) : null;
+    const memberDescription = [
+      `**${username}**`,
+      "",
+      `**Usuário:** \`${userId}\``,
+      `✅ **Grupo:** [${profile.name}](https://www.roblox.com/communities/${profile.id})`,
+      `👤 **Cargo:** ${membershipRole(membership, profile)}`,
+      eligibility.eligible
+        ? `🛡️ **Elegível em 14 dias:** ✅ Sim`
+        : `🛡️ **Elegível em 14 dias:** ⏳ Não · faltam ${formatDurationMilliseconds(Math.max(0, ELIGIBILITY_MS - (Date.now() - joinedAt.getTime())))}`,
+      `⏱️ **Tempo no grupo:** ${formatDuration(membership.createTime)}`,
+      `📅 **Entrou em:** <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`,
+    ].join("\n");
+    const notMemberDescription = [
+      `**${username}**`,
+      "",
+      `**Usuário:** \`${userId}\``,
+      `❌ **Grupo:** [${profile.name}](https://www.roblox.com/communities/${profile.id})`,
+      error ? "⚠️ Não foi possível consultar a associação agora." : "Esta pessoa não faz parte deste grupo atualmente.",
+      "🛡️ **Elegível em 14 dias:** ❌ Não",
+    ].join("\n");
     const embed = new EmbedBuilder()
       .setColor(isMember ? 0xD20A1D : 0x242428)
-      .setAuthor(avatarUrl ? { name: "VELVET • VERIFICAÇÃO DE GRUPO", iconURL: avatarUrl } : { name: "VELVET • VERIFICAÇÃO DE GRUPO" })
-      .setTitle(isMember ? "✦ Perfil de membro" : "✦ Perfil não encontrado")
-      .setDescription(`👤 **${username}**\n> ID Roblox: \`${userId}\``)
-      .addFields(
-        { name: "🏷️ GRUPO", value: `[${profile.name}](https://www.roblox.com/communities/${profile.id})`, inline: true },
-        { name: "🎭 CARGO", value: isMember ? membershipRole(membership, profile) : "Não é membro atualmente", inline: true },
-        {
-          name: "📅 ENTRADA E TEMPO",
-          value: isMember
-            ? `\`${formatDuration(membership.createTime)}\`\nEntrou em <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`
-            : error ? "Não foi possível consultar agora." : "Sem vínculo atual com este grupo.",
-          inline: false,
-        },
-        {
-          name: `🛡️ ELEGIBILIDADE (${ELIGIBILITY_DAYS} DIAS)`,
-          value: isMember ? eligibility.text : "❌ Não elegível enquanto não fizer parte do grupo.",
-          inline: false,
-        }
-      )
-      .setFooter({ text: "VELVET • A contagem considera a associação atual no grupo." })
+      .setAuthor({ name: "VELVET • CONSULTA DE GRUPO" })
+      .setTitle(isMember ? "✨ Membro do grupo" : "⚠️ Membro não encontrado")
+      .setDescription(isMember ? memberDescription : notMemberDescription)
+      .setFooter({ text: "VELVET • A contagem considera a associação atual no grupo" })
       .setTimestamp();
     if (profile.iconUrl) embed.setThumbnail(profile.iconUrl);
     return embed;
