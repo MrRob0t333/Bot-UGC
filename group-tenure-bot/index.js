@@ -139,8 +139,16 @@ async function membershipForUser(groupId, userId) {
   const url = new URL(`https://apis.roblox.com/cloud/v2/groups/${groupId}/memberships`);
   url.searchParams.set("maxPageSize", "10");
   url.searchParams.set("filter", `user == 'users/${userId}'`);
-  const response = await robloxFetch(url);
-  return response?.groupMemberships?.[0] || null;
+
+  // Roblox can occasionally return an empty filtered page immediately after a valid lookup.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await robloxFetch(url);
+    const membership = response?.groupMemberships?.[0] || null;
+    if (membership || attempt === 1) return membership;
+    await new Promise(resolve => setTimeout(resolve, 350));
+  }
+
+  return null;
 }
 
 async function publicRobloxFetch(url) {
@@ -245,18 +253,20 @@ async function buildGroupTenureEmbeds(username, userId, groups) {
     const joinedTimestamp = joinedAt ? Math.floor(joinedAt.getTime() / 1000) : null;
     const isMember = Boolean(joinedAt);
     const eligibility = isMember ? eligibilityStatus(joinedAt) : null;
-    const memberDescription = [
-      `**${username}**`,
-      "",
-      `**Usuário:** \`${userId}\``,
-      `✅ **Grupo:** [${profile.name}](https://www.roblox.com/communities/${profile.id})`,
-      `👤 **Cargo:** ${membershipRole(membership, profile)}`,
-      eligibility.eligible
-        ? `🛡️ **Elegível em 14 dias:** ✅ Sim`
-        : `🛡️ **Elegível em 14 dias:** ⏳ Não · faltam ${formatDurationMilliseconds(Math.max(0, ELIGIBILITY_MS - (Date.now() - joinedAt.getTime())))}`,
-      `⏱️ **Tempo no grupo:** ${formatDuration(membership.createTime)}`,
-      `📅 **Entrou em:** <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`,
-    ].join("\n");
+    const memberDescription = isMember
+      ? [
+        `**${username}**`,
+        "",
+        `**Usuário:** \`${userId}\``,
+        `✅ **Grupo:** [${profile.name}](https://www.roblox.com/communities/${profile.id})`,
+        `👤 **Cargo:** ${membershipRole(membership, profile)}`,
+        eligibility.eligible
+          ? `🛡️ **Elegível em 14 dias:** ✅ Sim`
+          : `🛡️ **Elegível em 14 dias:** ⏳ Não · faltam ${formatDurationMilliseconds(Math.max(0, ELIGIBILITY_MS - (Date.now() - joinedAt.getTime())))}`,
+        `⏱️ **Tempo no grupo:** ${formatDuration(membership.createTime)}`,
+        `📅 **Entrou em:** <t:${joinedTimestamp}:D> (<t:${joinedTimestamp}:R>)`,
+      ].join("\n")
+      : null;
     const notMemberDescription = [
       `**${username}**`,
       "",
