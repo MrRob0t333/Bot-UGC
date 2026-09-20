@@ -22,6 +22,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
   ChannelType,
   PermissionFlagsBits,
   ModalBuilder,
@@ -1410,57 +1411,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName("views_bulk")
     .setDescription("Admin: renderizar views para até 10 UGCs")
-    .addStringOption(o =>
-      o.setName("ids").setDescription("IDs dos UGCs separados por espaço ou vírgula (até 10)").setRequired(true)
-    )
-    .addStringOption(o =>
-      o
-        .setName("lighting")
-        .setDescription("Iluminação para todos os UGCs")
-        .setRequired(false)
-        .addChoices(
-          { name: "Your default", value: "default" },
-          { name: "Studio balanced", value: "studio" },
-          { name: "Soft bright", value: "soft" },
-          { name: "Dramatic", value: "dramatic" },
-          { name: "Flat inspection", value: "flat" }
-        )
-    )
-    .addStringOption(o =>
-      o
-        .setName("pov")
-        .setDescription("POV/enquadramento para todos os UGCs")
-        .setRequired(false)
-        .addChoices(
-          { name: "Your default", value: "default" },
-          { name: "Normal", value: "normal" },
-          { name: "Close inspection", value: "close" },
-          { name: "Wide full item", value: "wide" },
-          { name: "Top-down tilt", value: "top_down" }
-        )
-    )
-    .addStringOption(o =>
-      o
-        .setName("angles")
-        .setDescription("Conjunto de ângulos para todos os UGCs")
-        .setRequired(false)
-        .addChoices(
-          { name: "Multiview 4 - front/right/back/left", value: "multiview4" },
-          { name: "5 Blender views - front/right/back/left/top", value: "ai5" }
-        )
-    )
-    .addNumberOption(o =>
-      o.setName("ior").setDescription("IOR do material. 1.00 a 2.50").setRequired(false).setMinValue(1).setMaxValue(2.5)
-    )
-    .addNumberOption(o =>
-      o.setName("roughness").setDescription("Rugosidade. 0.00 brilhante, 1.00 fosco").setRequired(false).setMinValue(0).setMaxValue(1)
-    )
-    .addNumberOption(o =>
-      o.setName("exposure").setDescription("Exposição. -1.00 a 1.00").setRequired(false).setMinValue(-1).setMaxValue(1)
-    )
-    .addNumberOption(o =>
-      addLightPowerChoices(o.setName("light_power").setDescription("Potência da luz. 0.20 a 3.00").setRequired(false).setMinValue(0.2).setMaxValue(3))
-    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -13948,6 +13898,94 @@ function parseBulkIds(raw) {
     .slice(0, BULK_ASSET_LIMIT);
 }
 
+const pendingBulkViewPanels = new Map();
+const BULK_VIEW_PANEL_TTL_MS = 20 * 60 * 1000;
+
+function newBulkViewPanel(interaction) {
+  const id = crypto.randomBytes(8).toString("hex");
+  const action = {
+    id,
+    ownerId: interaction.user.id,
+    ids: [],
+    renderSettings: normalizeRenderSettings(walletPreferences(interaction.user.id).renderSettings),
+    useAiFiveViews: false,
+    expiresAt: Date.now() + BULK_VIEW_PANEL_TTL_MS,
+    message: null,
+  };
+  pendingBulkViewPanels.set(id, action);
+  return action;
+}
+
+function getBulkViewPanel(actionId) {
+  const action = pendingBulkViewPanels.get(actionId);
+  if (!action || action.expiresAt <= Date.now()) {
+    pendingBulkViewPanels.delete(actionId);
+    return null;
+  }
+  return action;
+}
+
+function bulkViewSelect(customId, placeholder, selected, options) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(options.map(option => ({ ...option, default: option.value === selected })))
+  );
+}
+
+function bulkViewPanelPayload(action, { locked = false } = {}) {
+  const angleLabel = action.useAiFiveViews
+    ? "5 Blender views - frente/direita/costas/esquerda/cima"
+    : "4 views - frente/direita/costas/esquerda";
+  const idsPreview = action.ids.length ? action.ids.map(id => `\`${id}\``).join(", ") : "Nenhum ID adicionado";
+  const controlsDisabled = Boolean(locked);
+  const components = [
+    bulkViewSelect(`views_bulk_lighting:${action.id}`, "Iluminação", action.renderSettings.lighting, [
+      { label: "Flat inspection", value: "flat", description: "Leitura limpa de textura e forma" },
+      { label: "Studio balanced", value: "studio", description: "Luz equilibrada de produto" },
+      { label: "Soft bright", value: "soft", description: "Luz suave e mais clara" },
+      { label: "Dramatic", value: "dramatic", description: "Sombras mais marcadas" },
+    ]),
+    bulkViewSelect(`views_bulk_pov:${action.id}`, "POV / enquadramento", action.renderSettings.pov, [
+      { label: "Normal", value: "normal" },
+      { label: "Close inspection", value: "close" },
+      { label: "Wide full item", value: "wide" },
+      { label: "Top-down tilt", value: "top_down" },
+    ]),
+    bulkViewSelect(`views_bulk_angles:${action.id}`, "Conjunto de ângulos", action.useAiFiveViews ? "ai5" : "multiview4", [
+      { label: "4 views - frente/direita/costas/esquerda", value: "multiview4" },
+      { label: "5 Blender views - inclui cima", value: "ai5" },
+    ]),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`views_bulk_ids:${action.id}`).setLabel("Adicionar IDs").setEmoji("📋").setStyle(ButtonStyle.Primary).setDisabled(controlsDisabled),
+      new ButtonBuilder().setCustomId(`views_bulk_material:${action.id}`).setLabel("Material e luz").setEmoji("💡").setStyle(ButtonStyle.Secondary).setDisabled(controlsDisabled),
+      new ButtonBuilder().setCustomId(`views_bulk_start:${action.id}`).setLabel("Renderizar lote").setEmoji("🎬").setStyle(ButtonStyle.Success).setDisabled(controlsDisabled || !action.ids.length),
+      new ButtonBuilder().setCustomId(`views_bulk_cancel:${action.id}`).setLabel("Cancelar").setStyle(ButtonStyle.Danger).setDisabled(controlsDisabled),
+    ),
+  ];
+
+  if (controlsDisabled) {
+    for (const row of components.slice(0, 3)) {
+      row.components[0].setDisabled(true);
+    }
+  }
+
+  return {
+    content:
+      "## 🎬 Configurar views em lote\n" +
+      `**UGCs (${action.ids.length}/10):** ${idsPreview}\n` +
+      `**Ângulos:** ${angleLabel}\n\n` +
+      `**Render atual:**\n${renderSettingsSummary(action.renderSettings, "pt-BR")}\n\n` +
+      "Selecione os presets acima, ajuste o material se quiser e clique em **Renderizar lote**.",
+    components,
+  };
+}
+
+async function refreshBulkViewPanel(action) {
+  if (action.message) await action.message.edit(bulkViewPanelPayload(action));
+}
+
 async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews, lang = "en" }) {
   const copy = lang === "pt-BR"
     ? {
@@ -13992,7 +14030,10 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
       none: "none",
       waiting: "I will send each rendered view set as soon as it is ready.",
     };
-  await interaction.reply(
+  const sendInitial = interaction.replied || interaction.deferred
+    ? interaction.followUp.bind(interaction)
+    : interaction.reply.bind(interaction);
+  await sendInitial(
     `${copy.started}\n` +
     `**${copy.ugcs}:** ${ids.length}/10\n` +
     `**${copy.angles}:** ${useAiFiveViews ? copy.angles5 : copy.angles4}\n\n` +
@@ -14659,6 +14700,128 @@ async function processSteal2Batch(interaction, action) {
 }
 
 client.on("interactionCreate", async interaction => {
+  const bulkPanelMatch = String(interaction.customId || "").match(/^views_bulk_(ids|material|lighting|pov|angles|start|cancel):([a-f0-9]+)$/);
+  if (bulkPanelMatch) {
+    const [, control, actionId] = bulkPanelMatch;
+    const action = getBulkViewPanel(actionId);
+    if (!action) {
+      await interaction.reply({ content: "## Configuração expirada\nAbra `/views_bulk` novamente.", flags: 64 }).catch(() => {});
+      return;
+    }
+    if (action.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
+      await interaction.reply({ content: "## Apenas o admin que abriu este painel pode alterá-lo.", flags: 64 }).catch(() => {});
+      return;
+    }
+    action.expiresAt = Date.now() + BULK_VIEW_PANEL_TTL_MS;
+
+    if (interaction.isStringSelectMenu()) {
+      const value = interaction.values[0];
+      if (control === "lighting") action.renderSettings.lighting = value;
+      if (control === "pov") action.renderSettings.pov = value;
+      if (control === "angles") action.useAiFiveViews = value === "ai5";
+      action.renderSettings = normalizeRenderSettings(action.renderSettings);
+      await interaction.update(bulkViewPanelPayload(action));
+      return;
+    }
+
+    if (interaction.isButton() && control === "ids") {
+      const modal = new ModalBuilder().setCustomId(`views_bulk_ids:${action.id}`).setTitle("UGCs para renderizar");
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("ids")
+          .setLabel("IDs dos UGCs (até 10)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder("135953034964536, 123456789, 987654321")
+          .setValue(action.ids.join(", "))
+          .setRequired(true)
+          .setMaxLength(400)
+      ));
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isButton() && control === "material") {
+      const modal = new ModalBuilder().setCustomId(`views_bulk_material:${action.id}`).setTitle("Material e iluminação");
+      const input = (id, label, value, placeholder) => new TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(TextInputStyle.Short)
+        .setValue(String(value))
+        .setPlaceholder(placeholder)
+        .setRequired(true)
+        .setMaxLength(12);
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(input("ior", "IOR (1.00 a 2.50)", action.renderSettings.ior, "1.20")),
+        new ActionRowBuilder().addComponents(input("roughness", "Rugosidade (0.00 a 1.00)", action.renderSettings.roughness, "1.00")),
+        new ActionRowBuilder().addComponents(input("exposure", "Exposição (-1.00 a 1.00)", action.renderSettings.exposure, "1.00")),
+        new ActionRowBuilder().addComponents(input("light_power", "Potência da luz (0.20 a 3.00)", action.renderSettings.lightPower, "0.20"))
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isButton() && control === "cancel") {
+      pendingBulkViewPanels.delete(action.id);
+      await interaction.update({ content: "## Views em lote canceladas", components: [] });
+      return;
+    }
+
+    if (interaction.isButton() && control === "start") {
+      if (!action.ids.length) {
+        await interaction.reply({ content: "## Adicione pelo menos um ID antes de renderizar.", flags: 64 });
+        return;
+      }
+      pendingBulkViewPanels.delete(action.id);
+      await interaction.update({
+        content: "## 🎬 Iniciando views em lote\nA configuração foi travada e cada UGC será enviado quando ficar pronto.",
+        components: [],
+      });
+      await processBulkUgcViews(interaction, {
+        ids: action.ids,
+        renderSettings: action.renderSettings,
+        useAiFiveViews: action.useAiFiveViews,
+        lang: languageFor(interaction),
+      });
+      return;
+    }
+  }
+
+  if (interaction.isModalSubmit() && String(interaction.customId || "").startsWith("views_bulk_")) {
+    const [, control, actionId] = String(interaction.customId).match(/^views_bulk_(ids|material):([a-f0-9]+)$/) || [];
+    const action = actionId ? getBulkViewPanel(actionId) : null;
+    if (!action) {
+      await interaction.reply({ content: "## Configuração expirada\nAbra `/views_bulk` novamente.", flags: 64 });
+      return;
+    }
+    if (action.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
+      await interaction.reply({ content: "## Apenas o admin que abriu este painel pode alterá-lo.", flags: 64 });
+      return;
+    }
+
+    if (control === "ids") {
+      const ids = parseBulkIds(interaction.fields.getTextInputValue("ids")).slice(0, 10);
+      if (!ids.length) {
+        await interaction.reply({ content: "## IDs inválidos\nInforme de um a dez IDs numéricos.", flags: 64 });
+        return;
+      }
+      action.ids = ids;
+    } else {
+      const number = id => Number(String(interaction.fields.getTextInputValue(id)).replace(",", "."));
+      action.renderSettings = normalizeRenderSettings({
+        ...action.renderSettings,
+        ior: number("ior"),
+        roughness: number("roughness"),
+        exposure: number("exposure"),
+        lightPower: number("light_power"),
+      });
+    }
+
+    action.expiresAt = Date.now() + BULK_VIEW_PANEL_TTL_MS;
+    await refreshBulkViewPanel(action);
+    await interaction.reply({ content: control === "ids" ? "✅ IDs atualizados no painel." : "✅ Material e luz atualizados no painel.", flags: 64 });
+    return;
+  }
+
   if (interaction.isModalSubmit() && interaction.customId === "steal2_config") {
     if (!userIsAdmin(interaction)) {
       await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
@@ -17420,20 +17583,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "views_bulk") {
-      const lang = languageFor(interaction);
-      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, 10);
-      if (!ids.length) {
-        await interaction.reply({
-          content: lang === "pt-BR"
-            ? "## IDs inválidos\nInforme de um a dez IDs numéricos de UGC, separados por espaço ou vírgula."
-            : "## Invalid IDs\nEnter one to ten numeric UGC IDs, separated by spaces or commas.",
-          flags: 64,
-        });
-        return;
-      }
-      const renderSettings = renderSettingsForInteraction(interaction);
-      const useAiFiveViews = (interaction.options.getString("angles") || "multiview4") === "ai5";
-      await processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews, lang });
+      const action = newBulkViewPanel(interaction);
+      await interaction.reply(bulkViewPanelPayload(action));
+      action.message = await interaction.fetchReply();
       return;
     }
 
