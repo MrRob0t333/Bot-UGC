@@ -10731,6 +10731,20 @@ async function processUGC(ugcId, options = {}) {
   };
 }
 
+const ugcDisplayNameCache = new Map();
+const UGC_DISPLAY_NAME_CACHE_MS = 30 * 60 * 1000;
+
+async function ugcDisplayName(ugcId) {
+  const id = String(ugcId);
+  const cached = ugcDisplayNameCache.get(id);
+  if (cached && Date.now() - cached.savedAt < UGC_DISPLAY_NAME_CACHE_MS) return cached.name;
+
+  const details = await fetchCatalogDetailsSafe(id, { maxWaitMs: 5000 });
+  const name = String(details?.Name || details?.name || `UGC ${id}`).trim();
+  ugcDisplayNameCache.set(id, { name, savedAt: Date.now() });
+  return name;
+}
+
 function getRenderPaths(renderDir) {
   return ["frente.png", "direita.png", "costas.png", "esquerda.png", "isometrica.png"]
     .map(file => path.join(renderDir, file))
@@ -13971,6 +13985,7 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
   for (const id of ids) {
     try {
       await interaction.followUp(`Rendering views for \`${id}\`...`).catch(() => {});
+      const assetNamePromise = ugcDisplayName(id);
       const result = await processUGC(id, {
         exportGlb: false,
         render: true,
@@ -13980,9 +13995,11 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
       const files = useAiFiveViews
         ? aiFiveViewAttachments(result.renderDir, id)
         : ugcViewAttachments(result.renderDir, id);
+      const assetName = await assetNamePromise;
       await interaction.followUp({
         content:
           "## UGC Views Ready\n" +
+          `**Name:** ${assetName}\n` +
           `**UGC:** \`${id}\`\n` +
           `**MeshId:** \`${result.meshId}\`\n` +
           `**TextureId:** \`${result.textureId || "not found"}\`\n` +
@@ -17573,6 +17590,7 @@ client.on("interactionCreate", async interaction => {
           `${lang === "pt-BR" ? "Preparando" : lang === "es" ? "Preparando" : "Preparing"} ${angleDescription}...`
         );
 
+        const assetNamePromise = ugcDisplayName(id);
         const result = await processUGC(id, {
           exportGlb: false,
           render: true,
@@ -17582,6 +17600,7 @@ client.on("interactionCreate", async interaction => {
         const files = useAiFiveViews
           ? aiFiveViewAttachments(result.renderDir, id)
           : ugcViewAttachments(result.renderDir, id);
+        const assetName = await assetNamePromise;
 
         await interaction.editReply({
           content:
@@ -17590,6 +17609,7 @@ client.on("interactionCreate", async interaction => {
               : lang === "es"
                 ? "## Vistas del UGC listas\n"
                 : "## UGC Views Ready\n") +
+            `**${lang === "pt-BR" ? "Nome" : lang === "es" ? "Nombre" : "Name"}: ${assetName}\n` +
             `**UGC:** \`${id}\`\n` +
             `**MeshId:** \`${result.meshId}\`\n` +
             `**TextureId:** \`${result.textureId || "not found"}\`\n\n` +
