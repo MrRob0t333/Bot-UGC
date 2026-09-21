@@ -10044,6 +10044,21 @@ function isClassicClothingAssetType(assetTypeId) {
   return [2, 11, 12].includes(Number(assetTypeId));
 }
 
+async function fetchOriginalEnglishAssetDetails(assetId) {
+  const url = `https://economy.roblox.com/v2/assets/${encodeURIComponent(assetId)}/details?locale=en_us`;
+
+  try {
+    const response = await fetchRobloxWithRetry(url, {
+      headers: robloxHeaders({}, ""),
+    });
+    if (!response.ok) throw new Error(`Roblox request failed (${response.status}).`);
+    return JSON.parse(await response.text());
+  } catch (publicError) {
+    // The cookie-backed request is retained solely as a delivery fallback.
+    return fetchRobloxJson(url);
+  }
+}
+
 async function classifyStealTarget(rawId) {
   const catalogId = parseRobloxNumericId(rawId);
   if (!catalogId) return { kind: "asset", catalogId: null, details: null };
@@ -10121,7 +10136,7 @@ async function downloadClassicClothingTemplate(rawId) {
 
   let details = {};
   try {
-    details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${catalogId}/details`);
+    details = await fetchOriginalEnglishAssetDetails(catalogId);
     assetTypeId = Number(details.AssetTypeId || assetTypeId || 0);
   } catch (err) {
     console.warn(`Could not fetch clothing details for ${catalogId}:`, err.message);
@@ -15423,7 +15438,7 @@ client.on("interactionCreate", async interaction => {
       const resetPath = await createResetTemplateImage(action);
       let originalName = action.name;
       try {
-        const details = await fetchRobloxJson(`https://economy.roblox.com/v2/assets/${action.catalogId}/details`);
+        const details = await fetchOriginalEnglishAssetDetails(action.catalogId);
         originalName = details.Name || originalName;
       } catch (nameError) {
         console.warn(`Could not refresh original clothing name for ${action.catalogId}:`, nameError.message || nameError);
