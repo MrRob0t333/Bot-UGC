@@ -17439,16 +17439,23 @@ client.on("interactionCreate", async interaction => {
 
           if (isClassicClothing) {
             const clothing = await downloadClassicClothingTemplate(id);
+            const resetAction = createClothingTemplateAction({
+              userId: interaction.user.id,
+              result: clothing,
+              source: "bulk",
+            });
             await interaction.followUp({
               content:
                 `## Clothing Template Copied\n` +
                 `**Name:** ${clothing.name}\n` +
                 `**Catalog ID:** \`${clothing.catalogId}\`\n` +
-                `**Type:** ${clothing.typeLabel}`,
+                `**Type:** ${clothing.typeLabel}\n\n` +
+                "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
               files: [publicImageAttachment(
                 clothing.filePath,
                 publicClothingTemplateAttachmentName(clothing.name, clothing.catalogId)
               )],
+              components: [clothingResetButton(resetAction.id)],
             });
             itemQuote = calculateClothingCopyPrice(interaction);
           } else {
