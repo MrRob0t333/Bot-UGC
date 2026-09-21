@@ -1250,6 +1250,9 @@ const commands = [
     .addStringOption(o =>
       o.setName("ids").setDescription("UGC IDs, separated by space or comma").setRequired(true)
     )
+    .addBooleanOption(o =>
+      o.setName("reset_template").setDescription("For classic clothing, apply the template guide automatically")
+    )
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -17387,6 +17390,7 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "bulk_steal") {
       const bulkLimit = bulkAssetLimitFor(interaction);
       const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, bulkLimit);
+      const resetClassicTemplates = interaction.options.getBoolean("reset_template") === true;
 
       if (!ids.length) {
         await interaction.reply({
@@ -17439,24 +17443,40 @@ client.on("interactionCreate", async interaction => {
 
           if (isClassicClothing) {
             const clothing = await downloadClassicClothingTemplate(id);
-            const resetAction = createClothingTemplateAction({
-              userId: interaction.user.id,
-              result: clothing,
-              source: "bulk",
-            });
-            await interaction.followUp({
-              content:
-                `## Clothing Template Copied\n` +
-                `**Name:** ${clothing.name}\n` +
-                `**Catalog ID:** \`${clothing.catalogId}\`\n` +
-                `**Type:** ${clothing.typeLabel}\n\n` +
-                "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
-              files: [publicImageAttachment(
-                clothing.filePath,
-                publicClothingTemplateAttachmentName(clothing.name, clothing.catalogId)
-              )],
-              components: [clothingResetButton(resetAction.id)],
-            });
+            if (resetClassicTemplates) {
+              const resetPath = await createResetTemplateImage(clothing);
+              await interaction.followUp({
+                content:
+                  `## Clothing Template Reset\n` +
+                  `**Name:** ${clothing.name}\n` +
+                  `**Catalog ID:** \`${clothing.catalogId}\`\n` +
+                  `**Type:** ${clothing.typeLabel}\n\n` +
+                  "Template guide applied on top.",
+                files: [publicImageAttachment(
+                  resetPath,
+                  publicClothingTemplateAttachmentName(clothing.name, clothing.catalogId, "reset-template")
+                )],
+              });
+            } else {
+              const resetAction = createClothingTemplateAction({
+                userId: interaction.user.id,
+                result: clothing,
+                source: "bulk",
+              });
+              await interaction.followUp({
+                content:
+                  `## Clothing Template Copied\n` +
+                  `**Name:** ${clothing.name}\n` +
+                  `**Catalog ID:** \`${clothing.catalogId}\`\n` +
+                  `**Type:** ${clothing.typeLabel}\n\n` +
+                  "Use **Reset Template** to receive this same clothing with a visible template guide on top.",
+                files: [publicImageAttachment(
+                  clothing.filePath,
+                  publicClothingTemplateAttachmentName(clothing.name, clothing.catalogId)
+                )],
+                components: [clothingResetButton(resetAction.id)],
+              });
+            }
             itemQuote = calculateClothingCopyPrice(interaction);
           } else {
             const result = await processUGC(id, { render: false });
