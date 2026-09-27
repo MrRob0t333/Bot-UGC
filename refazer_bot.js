@@ -13988,7 +13988,18 @@ function parseBulkIds(raw, limit = BULK_ASSET_LIMIT) {
 }
 
 const pendingBulkViewPanels = new Map();
+const activeBulkViewJobs = new Map();
 const BULK_VIEW_PANEL_TTL_MS = 20 * 60 * 1000;
+
+function bulkViewStopButton(actionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`views_bulk_stop:${actionId}`)
+      .setLabel("Cancelar lote")
+      .setEmoji("🛑")
+      .setStyle(ButtonStyle.Danger)
+  );
+}
 
 function newBulkViewPanel(interaction) {
   const id = crypto.randomBytes(8).toString("hex");
@@ -14090,6 +14101,7 @@ async function processBulkUgcViews(interaction, {
   useAiFiveViews,
   deliveryMode = "per_item",
   lang = "en",
+  job = null,
 }) {
   const copy = lang === "pt-BR"
     ? {
@@ -14118,6 +14130,8 @@ async function processBulkUgcViews(interaction, {
       archiveOversize: "Um ou mais ZIPs ultrapassaram o limite de anexo do Discord.",
       perItemZip: "ZIP deste UGC",
       zipReady: "pronto",
+      cancelled: "Lote cancelado. O item atual foi finalizado; os próximos não serão renderizados.",
+      reason: "Motivo",
     }
     : {
       started: "## Admin Bulk Views Started",
@@ -14145,6 +14159,8 @@ async function processBulkUgcViews(interaction, {
       archiveOversize: "One or more ZIP files exceeded Discord's attachment limit.",
       perItemZip: "This UGC's ZIP",
       zipReady: "ready",
+      cancelled: "Batch cancelled. The current item finished; remaining items will not render.",
+      reason: "Reason",
     };
   const sendInitial = interaction.replied || interaction.deferred
     ? interaction.followUp.bind(interaction)
@@ -14159,6 +14175,7 @@ async function processBulkUgcViews(interaction, {
 
   const results = [];
   for (const id of ids) {
+    if (job?.cancelled) break;
     try {
       await interaction.followUp(`${copy.preparing} \`${id}\`...`).catch(() => {});
       const assetNamePromise = ugcDisplayName(id);
@@ -14198,9 +14215,14 @@ async function processBulkUgcViews(interaction, {
       results.push(item);
     } catch (err) {
       console.error(err);
-      await interaction.followUp(`${copy.failedOne} \`${id}\`.`).catch(() => {});
-      results.push({ id, ok: false });
+      const reason = String(err?.message || err).replace(/\s+/g, " ").slice(0, 300);
+      await interaction.followUp(`${copy.failedOne} \`${id}\`.\n**${copy.reason}:** ${reason || copy.none}`).catch(() => {});
+      results.push({ id, ok: false, reason });
     }
+  }
+
+  if (job?.cancelled) {
+    await interaction.followUp(`## ${copy.cancelled}`).catch(() => {});
   }
 
   const successful = results.filter(item => item.ok);
@@ -14233,6 +14255,11 @@ async function processBulkUgcViews(interaction, {
     `**${copy.success}:** ${successful.length}/${results.length}\n` +
     `**${copy.failed}:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || copy.none}`
   ).catch(() => {});
+
+  if (job) {
+    activeBulkViewJobs.delete(job.id);
+    await job.message?.edit({ components: [] }).catch(() => {});
+  }
 }
 
 function parseBulkClothingIds(raw) {
@@ -14853,6 +14880,25 @@ async function processSteal2Batch(interaction, action) {
 }
 
 client.on("interactionCreate", async interaction => {
+  const bulkStopMatch = String(interaction.customId || "").match(/^views_bulk_stop:([a-f0-9]+)$/);
+  if (bulkStopMatch) {
+    const job = activeBulkViewJobs.get(bulkStopMatch[1]);
+    if (!job) {
+      await interaction.reply({ content: "## Este lote já terminou ou expirou.", flags: 64 }).catch(() => {});
+      return;
+    }
+    if (job.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
+      await interaction.reply({ content: "## Apenas o admin que iniciou este lote pode cancelá-lo.", flags: 64 }).catch(() => {});
+      return;
+    }
+    job.cancelled = true;
+    await interaction.reply({
+      content: "## Cancelamento solicitado\nO render que já estiver em andamento termina, mas os próximos UGCs não serão iniciados.",
+      flags: 64,
+    }).catch(() => {});
+    return;
+  }
+
   const bulkPanelMatch = String(interaction.customId || "").match(/^views_bulk_(ids|material|lighting|pov|angles|delivery|start|cancel):([a-f0-9]+)$/);
   if (bulkPanelMatch) {
     const [, control, actionId] = bulkPanelMatch;
@@ -14926,9 +14972,16 @@ client.on("interactionCreate", async interaction => {
         return;
       }
       pendingBulkViewPanels.delete(action.id);
+      const job = {
+        id: action.id,
+        ownerId: action.ownerId,
+        cancelled: false,
+        message: interaction.message,
+      };
+      activeBulkViewJobs.set(job.id, job);
       await interaction.update({
         content: "## 🎬 Iniciando views em lote\nA configuração foi travada. Cada UGC será enviado com as imagens e a entrega ZIP selecionada.",
-        components: [],
+        components: [bulkViewStopButton(action.id)],
       });
       await processBulkUgcViews(interaction, {
         ids: action.ids,
@@ -14936,6 +14989,7 @@ client.on("interactionCreate", async interaction => {
         useAiFiveViews: action.useAiFiveViews,
         deliveryMode: action.deliveryMode,
         lang: languageFor(interaction),
+        job,
       });
       return;
     }
