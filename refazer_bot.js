@@ -7,6 +7,7 @@ const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
 const zlib = require("zlib");
+const AdmZip = require("adm-zip");
 const { execFile, execFileSync } = require("child_process");
 const { promisify } = require("util");
 const { ProxyAgent } = require("undici");
@@ -13878,6 +13879,75 @@ function aiFiveViewAttachments(renderDir, ugcId = "") {
     .filter(Boolean);
 }
 
+function bulkViewArchiveEntries(renderDir, ugcId, useAiFiveViews) {
+  const views = useAiFiveViews
+    ? [
+      ["frente", "front"],
+      ["direita", "right"],
+      ["costas", "back"],
+      ["esquerda", "left"],
+      ["up", "top"],
+    ]
+    : [
+      ["frente", "front"],
+      ["direita", "right"],
+      ["costas", "back"],
+      ["esquerda", "left"],
+    ];
+
+  return views
+    .map(([fileName, publicName], index) => {
+      const filePath = path.join(renderDir, `${fileName}.png`);
+      if (!fs.existsSync(filePath)) return null;
+      return {
+        filePath,
+        name: `${String(index + 1).padStart(2, "0")}-${publicName}.png`,
+        bytes: fs.statSync(filePath).size,
+      };
+    })
+    .filter(Boolean);
+}
+
+function createBulkViewArchives(items, maxBytes) {
+  const outputDir = path.join(__dirname, "temp", "refazer", "bulk-view-archives");
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  // PNGs usually compress very little, so source size is a dependable split estimate.
+  const targetBytes = Math.max(1024 * 1024, Math.floor(maxBytes * 0.82));
+  const groups = [];
+  let current = [];
+  let currentBytes = 0;
+
+  for (const item of items) {
+    const itemBytes = item.archiveFiles.reduce((sum, file) => sum + file.bytes, 0);
+    if (current.length && currentBytes + itemBytes > targetBytes) {
+      groups.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(item);
+    currentBytes += itemBytes;
+  }
+  if (current.length) groups.push(current);
+
+  return groups.map((group, index) => {
+    const zip = new AdmZip();
+    for (const item of group) {
+      const folder = `${String(item.index + 1).padStart(2, "0")}-${item.id}`;
+      for (const file of item.archiveFiles) {
+        zip.addLocalFile(file.filePath, folder, file.name);
+      }
+    }
+
+    const filePath = path.join(
+      outputDir,
+      `velvet_views_${Date.now()}_${crypto.randomBytes(4).toString("hex")}_${index + 1}.zip`
+    );
+    zip.writeZip(filePath);
+    return filePath;
+  });
+}
+
 function fullUgcViewAttachments(renderDir, ugcId = "") {
   const views = [
     ["front_left", "front-left"],
@@ -13928,6 +13998,7 @@ function newBulkViewPanel(interaction) {
     ids: [],
     renderSettings: normalizeRenderSettings(walletPreferences(interaction.user.id).renderSettings),
     useAiFiveViews: false,
+    deliveryMode: "per_item",
     expiresAt: Date.now() + BULK_VIEW_PANEL_TTL_MS,
     message: null,
   };
@@ -13957,6 +14028,9 @@ function bulkViewPanelPayload(action, { locked = false } = {}) {
   const angleLabel = action.useAiFiveViews
     ? "5 Blender views - frente/direita/costas/esquerda/cima"
     : "4 views - frente/direita/costas/esquerda";
+  const deliveryLabel = action.deliveryMode === "combined"
+    ? "ZIP combinado"
+    : "Imagens + ZIP por modelo";
   const idsPreview = action.ids.length ? action.ids.map(id => `\`${id}\``).join(", ") : "Nenhum ID adicionado";
   const controlsDisabled = Boolean(locked);
   const components = [
@@ -13976,6 +14050,10 @@ function bulkViewPanelPayload(action, { locked = false } = {}) {
       { label: "4 views - frente/direita/costas/esquerda", value: "multiview4" },
       { label: "5 Blender views - inclui cima", value: "ai5" },
     ]),
+    bulkViewSelect(`views_bulk_delivery:${action.id}`, "Entrega", action.deliveryMode, [
+      { label: "Imagens + ZIP por modelo", value: "per_item", description: "Cada UGC recebe imagens e um ZIP próprio" },
+      { label: "Imagens + ZIP combinado", value: "combined", description: "Todas as views entram em poucos ZIPs" },
+    ]),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`views_bulk_ids:${action.id}`).setLabel("Adicionar IDs").setEmoji("📋").setStyle(ButtonStyle.Primary).setDisabled(controlsDisabled),
       new ButtonBuilder().setCustomId(`views_bulk_material:${action.id}`).setLabel("Material e luz").setEmoji("💡").setStyle(ButtonStyle.Secondary).setDisabled(controlsDisabled),
@@ -13985,7 +14063,7 @@ function bulkViewPanelPayload(action, { locked = false } = {}) {
   ];
 
   if (controlsDisabled) {
-    for (const row of components.slice(0, 3)) {
+    for (const row of components.slice(0, 4)) {
       row.components[0].setDisabled(true);
     }
   }
@@ -13994,7 +14072,8 @@ function bulkViewPanelPayload(action, { locked = false } = {}) {
     content:
       "## 🎬 Configurar views em lote\n" +
       `**UGCs (${action.ids.length}/${BULK_VIEW_LIMIT}):** ${idsPreview}\n` +
-      `**Ângulos:** ${angleLabel}\n\n` +
+      `**Ângulos:** ${angleLabel}\n` +
+      `**Entrega:** ${deliveryLabel}\n\n` +
       `**Render atual:**\n${renderSettingsSummary(action.renderSettings, "pt-BR")}\n\n` +
       "Selecione os presets acima, ajuste o material se quiser e clique em **Renderizar lote**. Os UGCs são processados em sequência.",
     components,
@@ -14005,7 +14084,13 @@ async function refreshBulkViewPanel(action) {
   if (action.message) await action.message.edit(bulkViewPanelPayload(action));
 }
 
-async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFiveViews, lang = "en" }) {
+async function processBulkUgcViews(interaction, {
+  ids,
+  renderSettings,
+  useAiFiveViews,
+  deliveryMode = "per_item",
+  lang = "en",
+}) {
   const copy = lang === "pt-BR"
     ? {
       started: "## Views em lote iniciadas",
@@ -14026,7 +14111,13 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
       success: "Sucesso",
       failed: "Falhas",
       none: "nenhuma",
-      waiting: "Vou enviar cada conjunto assim que ficar pronto.",
+      waiting: "Vou enviar as imagens de cada UGC junto com o ZIP selecionado.",
+      archived: "Adicionado ao ZIP final",
+      archiveReady: "## ZIP das views pronto",
+      archivePart: "Arquivo",
+      archiveOversize: "Um ou mais ZIPs ultrapassaram o limite de anexo do Discord.",
+      perItemZip: "ZIP deste UGC",
+      zipReady: "pronto",
     }
     : {
       started: "## Admin Bulk Views Started",
@@ -14047,7 +14138,13 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
       success: "Success",
       failed: "Failed",
       none: "none",
-      waiting: "I will send each rendered view set as soon as it is ready.",
+      waiting: "I will send each UGC's images together with the selected ZIP delivery.",
+      archived: "Added to the final ZIP",
+      archiveReady: "## Views ZIP ready",
+      archivePart: "Archive",
+      archiveOversize: "One or more ZIP files exceeded Discord's attachment limit.",
+      perItemZip: "This UGC's ZIP",
+      zipReady: "ready",
     };
   const sendInitial = interaction.replied || interaction.deferred
     ? interaction.followUp.bind(interaction)
@@ -14071,10 +14168,20 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
         cacheViews: !useAiFiveViews,
         renderSettings,
       });
-      const files = useAiFiveViews
+      const archiveFiles = bulkViewArchiveEntries(result.renderDir, id, useAiFiveViews);
+      if (!archiveFiles.length) throw new Error("No rendered views were produced for this UGC.");
+      const assetName = await assetNamePromise;
+      const imageFiles = useAiFiveViews
         ? aiFiveViewAttachments(result.renderDir, id)
         : ugcViewAttachments(result.renderDir, id);
-      const assetName = await assetNamePromise;
+      const item = { id, ok: true, index, archiveFiles };
+      let itemZip = null;
+      if (deliveryMode === "per_item") {
+        const [archivePath] = createBulkViewArchives([item], discordAttachmentLimitBytes(interaction));
+        if (fs.statSync(archivePath).size <= discordAttachmentLimitBytes(interaction)) {
+          itemZip = new AttachmentBuilder(archivePath, { name: `${id}_views.zip` });
+        }
+      }
       await interaction.followUp({
         content:
           `${copy.completed}\n` +
@@ -14083,10 +14190,12 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
           `**${copy.mesh}:** \`${result.meshId}\`\n` +
           `**${copy.texture}:** \`${result.textureId || copy.missing}\`\n` +
           `**${copy.angles}:** ${useAiFiveViews ? copy.angles5 : copy.angles4}\n` +
+          `**${copy.archived}:** ${archiveFiles.length}\n` +
+          (deliveryMode === "per_item" ? `**${copy.perItemZip}:** ${itemZip ? copy.zipReady : copy.archiveOversize}\n` : "") +
           (result.cached ? `\n**${copy.cached}**` : ""),
-        files,
+        files: itemZip ? [...imageFiles, itemZip] : imageFiles,
       });
-      results.push({ id, ok: true });
+      results.push(item);
     } catch (err) {
       console.error(err);
       await interaction.followUp(`${copy.failedOne} \`${id}\`.`).catch(() => {});
@@ -14094,9 +14203,34 @@ async function processBulkUgcViews(interaction, { ids, renderSettings, useAiFive
     }
   }
 
+  const successful = results.filter(item => item.ok);
+  if (successful.length && deliveryMode === "combined") {
+    try {
+      const maxBytes = discordAttachmentLimitBytes(interaction);
+      const archives = createBulkViewArchives(successful, maxBytes);
+      for (let index = 0; index < archives.length; index += 1) {
+        const archivePath = archives[index];
+        const size = fs.statSync(archivePath).size;
+        if (size > maxBytes) {
+          await interaction.followUp(`${copy.archiveOversize} ${copy.archivePart} ${index + 1}: ${formatBytes(size)}.`).catch(() => {});
+          continue;
+        }
+        await interaction.followUp({
+          content: `${copy.archiveReady}\n**${copy.archivePart}:** ${index + 1}/${archives.length}\n**UGCs:** ${successful.length}`,
+          files: [new AttachmentBuilder(archivePath, { name: `velvet_views_${index + 1}_of_${archives.length}.zip` })],
+        });
+      }
+    } catch (err) {
+      console.error("Could not create bulk view ZIP archive:", err);
+      await interaction.followUp(lang === "pt-BR"
+        ? "Não consegui criar o ZIP final das views."
+        : "I could not create the final views ZIP.").catch(() => {});
+    }
+  }
+
   await interaction.followUp(
     `${copy.finished}\n` +
-    `**${copy.success}:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+    `**${copy.success}:** ${successful.length}/${results.length}\n` +
     `**${copy.failed}:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || copy.none}`
   ).catch(() => {});
 }
@@ -14719,7 +14853,7 @@ async function processSteal2Batch(interaction, action) {
 }
 
 client.on("interactionCreate", async interaction => {
-  const bulkPanelMatch = String(interaction.customId || "").match(/^views_bulk_(ids|material|lighting|pov|angles|start|cancel):([a-f0-9]+)$/);
+  const bulkPanelMatch = String(interaction.customId || "").match(/^views_bulk_(ids|material|lighting|pov|angles|delivery|start|cancel):([a-f0-9]+)$/);
   if (bulkPanelMatch) {
     const [, control, actionId] = bulkPanelMatch;
     const action = getBulkViewPanel(actionId);
@@ -14738,6 +14872,7 @@ client.on("interactionCreate", async interaction => {
       if (control === "lighting") action.renderSettings.lighting = value;
       if (control === "pov") action.renderSettings.pov = value;
       if (control === "angles") action.useAiFiveViews = value === "ai5";
+      if (control === "delivery") action.deliveryMode = value === "combined" ? "combined" : "per_item";
       action.renderSettings = normalizeRenderSettings(action.renderSettings);
       await interaction.update(bulkViewPanelPayload(action));
       return;
@@ -14792,13 +14927,14 @@ client.on("interactionCreate", async interaction => {
       }
       pendingBulkViewPanels.delete(action.id);
       await interaction.update({
-        content: "## 🎬 Iniciando views em lote\nA configuração foi travada e cada UGC será enviado quando ficar pronto.",
+        content: "## 🎬 Iniciando views em lote\nA configuração foi travada. Cada UGC será enviado com as imagens e a entrega ZIP selecionada.",
         components: [],
       });
       await processBulkUgcViews(interaction, {
         ids: action.ids,
         renderSettings: action.renderSettings,
         useAiFiveViews: action.useAiFiveViews,
+        deliveryMode: action.deliveryMode,
         lang: languageFor(interaction),
       });
       return;
