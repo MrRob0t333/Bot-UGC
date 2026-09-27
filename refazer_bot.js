@@ -14174,7 +14174,8 @@ async function processBulkUgcViews(interaction, {
   );
 
   const results = [];
-  for (const id of ids) {
+  for (let index = 0; index < ids.length; index += 1) {
+    const id = ids[index];
     if (job?.cancelled) break;
     try {
       await interaction.followUp(`${copy.preparing} \`${id}\`...`).catch(() => {});
