@@ -345,6 +345,7 @@ const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
 const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 80);
 const BULK_VIEW_RATE_LIMIT_RETRIES = Math.max(0, Number(process.env.REFAZER_BULK_VIEW_RATE_LIMIT_RETRIES || 2));
+const VIEW_RENDER_TIMEOUT_MS = Math.max(30_000, Number(process.env.REFAZER_VIEW_RENDER_TIMEOUT_MS || 120_000));
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
 const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
 const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
@@ -10353,19 +10354,30 @@ async function renderImages(objPath, texturePath, tempDir, renderSettings = DEFA
   const renderSettingsPath = path.join(tempDir, "render_settings.json");
   fs.writeFileSync(renderSettingsPath, JSON.stringify(normalizedRenderSettings, null, 2));
 
-  await execFileAsync(BLENDER_PATH, [
-    "--background",
-    "--factory-startup",
-    "--python-exit-code",
-    "1",
-    "--python",
-    path.join(__dirname, "render_views.py"),
-    "--",
-    objPath,
-    texturePath || "",
-    renderDir,
-    renderSettingsPath,
-  ]);
+  try {
+    await execFileAsync(BLENDER_PATH, [
+      "--background",
+      "--factory-startup",
+      "--python-exit-code",
+      "1",
+      "--python",
+      path.join(__dirname, "render_views.py"),
+      "--",
+      objPath,
+      texturePath || "",
+      renderDir,
+      renderSettingsPath,
+    ], {
+      timeout: VIEW_RENDER_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 1024 * 1024 * 8,
+    });
+  } catch (err) {
+    if (err?.killed || err?.signal === "SIGKILL") {
+      throw new Error(`Blender render timed out after ${Math.ceil(VIEW_RENDER_TIMEOUT_MS / 1000)}s.`);
+    }
+    throw err;
+  }
 
   return renderDir;
 }
