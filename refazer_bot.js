@@ -346,6 +346,10 @@ const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
 const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 80);
 const BULK_VIEW_RATE_LIMIT_RETRIES = Math.max(0, Number(process.env.REFAZER_BULK_VIEW_RATE_LIMIT_RETRIES || 2));
 const VIEW_RENDER_TIMEOUT_MS = Math.max(30_000, Number(process.env.REFAZER_VIEW_RENDER_TIMEOUT_MS || 120_000));
+const BULK_VIEW_ZIP_MAX_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.REFAZER_BULK_VIEW_ZIP_MAX_MB || 8) * 1024 * 1024
+);
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
 const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
 const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
@@ -13965,6 +13969,10 @@ function createBulkViewArchives(items, maxBytes) {
   });
 }
 
+function bulkViewZipAttachmentLimit(interaction) {
+  return Math.min(discordAttachmentLimitBytes(interaction), BULK_VIEW_ZIP_MAX_BYTES);
+}
+
 function fullUgcViewAttachments(renderDir, ugcId = "") {
   const views = [
     ["front_left", "front-left"],
@@ -14253,8 +14261,9 @@ async function processBulkUgcViews(interaction, {
       const item = { id, ok: true, index, archiveFiles };
       let itemZip = null;
       if (deliveryMode === "per_item") {
-        const [archivePath] = createBulkViewArchives([item], discordAttachmentLimitBytes(interaction));
-        if (fs.statSync(archivePath).size <= discordAttachmentLimitBytes(interaction)) {
+        const maxZipBytes = bulkViewZipAttachmentLimit(interaction);
+        const [archivePath] = createBulkViewArchives([item], maxZipBytes);
+        if (fs.statSync(archivePath).size <= maxZipBytes) {
           itemZip = new AttachmentBuilder(archivePath, { name: `${id}_views.zip` });
         }
       }
@@ -14287,7 +14296,7 @@ async function processBulkUgcViews(interaction, {
   const successful = results.filter(item => item.ok);
   if (successful.length && deliveryMode === "combined") {
     try {
-      const maxBytes = discordAttachmentLimitBytes(interaction);
+      const maxBytes = bulkViewZipAttachmentLimit(interaction);
       const archives = createBulkViewArchives(successful, maxBytes);
       for (let index = 0; index < archives.length; index += 1) {
         const archivePath = archives[index];
