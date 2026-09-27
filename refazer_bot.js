@@ -14121,6 +14121,19 @@ async function refreshBulkViewPanel(action) {
   if (action.message) await action.message.edit(bulkViewPanelPayload(action));
 }
 
+async function sendBulkViewDelivery(interaction, payload) {
+  try {
+    return await interaction.followUp(payload);
+  } catch (err) {
+    if (Number(err?.code) !== 50027) throw err;
+
+    const channel = interaction.channel || await client.channels.fetch(interaction.channelId).catch(() => null);
+    if (!channel?.isTextBased?.()) throw err;
+    console.warn("Bulk views interaction token expired; continuing delivery through the channel.");
+    return channel.send(payload);
+  }
+}
+
 async function processBulkUgcViews(interaction, {
   ids,
   renderSettings,
@@ -14191,7 +14204,7 @@ async function processBulkUgcViews(interaction, {
       coolingDown: "Roblox rate-limited requests. Pausing before retrying this same UGC",
     };
   const sendInitial = interaction.replied || interaction.deferred
-    ? interaction.followUp.bind(interaction)
+    ? payload => sendBulkViewDelivery(interaction, payload)
     : interaction.reply.bind(interaction);
   await sendInitial(
     `${copy.started}\n` +
@@ -14206,7 +14219,7 @@ async function processBulkUgcViews(interaction, {
     const id = ids[index];
     if (job?.cancelled) break;
     try {
-      await interaction.followUp(`${copy.preparing} \`${id}\`...`).catch(() => {});
+      await sendBulkViewDelivery(interaction, `${copy.preparing} \`${id}\`...`).catch(() => {});
       const assetNamePromise = ugcDisplayName(id);
       let result;
       for (let attempt = 0; attempt <= BULK_VIEW_RATE_LIMIT_RETRIES; attempt += 1) {
@@ -14221,7 +14234,7 @@ async function processBulkUgcViews(interaction, {
         } catch (err) {
           if (!isRobloxRateLimitError(err) || attempt >= BULK_VIEW_RATE_LIMIT_RETRIES) throw err;
           const delayMs = Math.max(ROBLOX_RATE_LIMIT_PAUSE_MS, 30_000);
-          await interaction.followUp(
+          await sendBulkViewDelivery(interaction,
             `⏳ ${copy.coolingDown}: \`${id}\` (${attempt + 1}/${BULK_VIEW_RATE_LIMIT_RETRIES}) - ${Math.ceil(delayMs / 60000)} min.`
           ).catch(() => {});
           if (!await waitForBulkViewRetry(job, delayMs)) break;
@@ -14245,7 +14258,7 @@ async function processBulkUgcViews(interaction, {
           itemZip = new AttachmentBuilder(archivePath, { name: `${id}_views.zip` });
         }
       }
-      await interaction.followUp({
+      await sendBulkViewDelivery(interaction, {
         content:
           `${copy.completed}\n` +
           `**${copy.name}:** ${assetName}\n` +
@@ -14262,13 +14275,13 @@ async function processBulkUgcViews(interaction, {
     } catch (err) {
       console.error(err);
       const reason = String(err?.message || err).replace(/\s+/g, " ").slice(0, 300);
-      await interaction.followUp(`${copy.failedOne} \`${id}\`.\n**${copy.reason}:** ${reason || copy.none}`).catch(() => {});
+      await sendBulkViewDelivery(interaction, `${copy.failedOne} \`${id}\`.\n**${copy.reason}:** ${reason || copy.none}`).catch(() => {});
       results.push({ id, ok: false, reason });
     }
   }
 
   if (job?.cancelled) {
-    await interaction.followUp(`## ${copy.cancelled}`).catch(() => {});
+    await sendBulkViewDelivery(interaction, `## ${copy.cancelled}`).catch(() => {});
   }
 
   const successful = results.filter(item => item.ok);
@@ -14280,23 +14293,23 @@ async function processBulkUgcViews(interaction, {
         const archivePath = archives[index];
         const size = fs.statSync(archivePath).size;
         if (size > maxBytes) {
-          await interaction.followUp(`${copy.archiveOversize} ${copy.archivePart} ${index + 1}: ${formatBytes(size)}.`).catch(() => {});
+          await sendBulkViewDelivery(interaction, `${copy.archiveOversize} ${copy.archivePart} ${index + 1}: ${formatBytes(size)}.`).catch(() => {});
           continue;
         }
-        await interaction.followUp({
+        await sendBulkViewDelivery(interaction, {
           content: `${copy.archiveReady}\n**${copy.archivePart}:** ${index + 1}/${archives.length}\n**UGCs:** ${successful.length}`,
           files: [new AttachmentBuilder(archivePath, { name: `velvet_views_${index + 1}_of_${archives.length}.zip` })],
         });
       }
     } catch (err) {
       console.error("Could not create bulk view ZIP archive:", err);
-      await interaction.followUp(lang === "pt-BR"
+      await sendBulkViewDelivery(interaction, lang === "pt-BR"
         ? "Não consegui criar o ZIP final das views."
         : "I could not create the final views ZIP.").catch(() => {});
     }
   }
 
-  await interaction.followUp(
+  await sendBulkViewDelivery(interaction,
     `${copy.finished}\n` +
     `**${copy.success}:** ${successful.length}/${results.length}\n` +
     `**${copy.failed}:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || copy.none}`
