@@ -342,7 +342,7 @@ const SNIPER_PLAN_CONFIG = {
 
 const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
-const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 30);
+const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 80);
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
 const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
 const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
@@ -14753,7 +14753,7 @@ client.on("interactionCreate", async interaction => {
           .setPlaceholder("135953034964536, 123456789, 987654321...")
           .setValue(action.ids.join(", "))
           .setRequired(true)
-          .setMaxLength(1000)
+          .setMaxLength(2000)
       ));
       await interaction.showModal(modal);
       return;
