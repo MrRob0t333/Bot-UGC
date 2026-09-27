@@ -344,6 +344,7 @@ const SNIPER_PLAN_CONFIG = {
 const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
 const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 80);
+const BULK_VIEW_RATE_LIMIT_RETRIES = Math.max(0, Number(process.env.REFAZER_BULK_VIEW_RATE_LIMIT_RETRIES || 2));
 const FREE_BULK_ASSET_LIMIT = Number(process.env.REFAZER_FREE_BULK_ASSET_LIMIT || 3);
 const BASIC_BULK_ASSET_LIMIT = Number(process.env.REFAZER_BASIC_BULK_ASSET_LIMIT || 7);
 const PREMIUM_BULK_ASSET_LIMIT = Number(process.env.REFAZER_PREMIUM_BULK_ASSET_LIMIT || 15);
@@ -9708,6 +9709,10 @@ function nextSniperHistoryTasks(count) {
 
 async function runSniperHistoryWorkerCycle() {
   if (!SNIPER_HISTORY_ENABLED || sniperHistoryWorkerRunning) return;
+  if (activeBulkViewJobs.size) {
+    console.log("[sniper_history] skipped while a bulk views job has priority");
+    return;
+  }
   sniperHistoryWorkerRunning = true;
   const startedAt = Date.now();
   const summary = { scans: 0, rows: 0, alerts: 0, trendAlerts: 0, breakoutAlerts: 0, categories: [], windows: [], startedAt: new Date(startedAt).toISOString() };
@@ -14001,6 +14006,15 @@ function bulkViewStopButton(actionId) {
   );
 }
 
+async function waitForBulkViewRetry(job, delayMs) {
+  const deadline = Date.now() + delayMs;
+  while (Date.now() < deadline) {
+    if (job?.cancelled) return false;
+    await wait(Math.min(1000, deadline - Date.now()));
+  }
+  return !job?.cancelled;
+}
+
 function newBulkViewPanel(interaction) {
   const id = crypto.randomBytes(8).toString("hex");
   const action = {
@@ -14132,6 +14146,7 @@ async function processBulkUgcViews(interaction, {
       zipReady: "pronto",
       cancelled: "Lote cancelado. O item atual foi finalizado; os próximos não serão renderizados.",
       reason: "Motivo",
+      coolingDown: "Roblox limitou as requisições. Pausando para tentar este mesmo UGC novamente",
     }
     : {
       started: "## Admin Bulk Views Started",
@@ -14161,6 +14176,7 @@ async function processBulkUgcViews(interaction, {
       zipReady: "ready",
       cancelled: "Batch cancelled. The current item finished; remaining items will not render.",
       reason: "Reason",
+      coolingDown: "Roblox rate-limited requests. Pausing before retrying this same UGC",
     };
   const sendInitial = interaction.replied || interaction.deferred
     ? interaction.followUp.bind(interaction)
@@ -14180,12 +14196,29 @@ async function processBulkUgcViews(interaction, {
     try {
       await interaction.followUp(`${copy.preparing} \`${id}\`...`).catch(() => {});
       const assetNamePromise = ugcDisplayName(id);
-      const result = await processUGC(id, {
-        exportGlb: false,
-        render: true,
-        cacheViews: !useAiFiveViews,
-        renderSettings,
-      });
+      let result;
+      for (let attempt = 0; attempt <= BULK_VIEW_RATE_LIMIT_RETRIES; attempt += 1) {
+        try {
+          result = await processUGC(id, {
+            exportGlb: false,
+            render: true,
+            cacheViews: !useAiFiveViews,
+            renderSettings,
+          });
+          break;
+        } catch (err) {
+          if (!isRobloxRateLimitError(err) || attempt >= BULK_VIEW_RATE_LIMIT_RETRIES) throw err;
+          const delayMs = Math.max(ROBLOX_RATE_LIMIT_PAUSE_MS, 30_000);
+          await interaction.followUp(
+            `⏳ ${copy.coolingDown}: \`${id}\` (${attempt + 1}/${BULK_VIEW_RATE_LIMIT_RETRIES}) - ${Math.ceil(delayMs / 60000)} min.`
+          ).catch(() => {});
+          if (!await waitForBulkViewRetry(job, delayMs)) break;
+        }
+      }
+      if (!result) {
+        if (job?.cancelled) break;
+        throw new Error("Roblox did not return a render after the retry window.");
+      }
       const archiveFiles = bulkViewArchiveEntries(result.renderDir, id, useAiFiveViews);
       if (!archiveFiles.length) throw new Error("No rendered views were produced for this UGC.");
       const assetName = await assetNamePromise;
