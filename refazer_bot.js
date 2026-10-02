@@ -412,6 +412,8 @@ const IMAGE_ASPECT_RATIOS = new Set(["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", 
 const LOCAL_IMAGE_CLEANUP_PRICE_BRL = Number(process.env.REFAZER_LOCAL_IMAGE_CLEANUP_PRICE_BRL || 0.5);
 const WALLET_TOKEN_NAME = "Service Credits";
 const WALLET_MIN_PURCHASE = Number(process.env.REFAZER_WALLET_MIN_PURCHASE || 300);
+// The store is closed by default. Set this to "true" only when credit sales are intentionally resumed.
+const SERVICE_CREDITS_PURCHASES_ENABLED = String(process.env.REFAZER_SERVICE_CREDITS_PURCHASES_ENABLED || "false").trim().toLowerCase() === "true";
 const GIFT_CODE_DEFAULT_EXPIRATION_DAYS = Number(process.env.REFAZER_GIFT_CODE_DEFAULT_EXPIRATION_DAYS || 7);
 const GIFT_CODE_MAX_EXPIRATION_DAYS = Number(process.env.REFAZER_GIFT_CODE_MAX_EXPIRATION_DAYS || 30);
 const PURCHASE_EXPIRATION_MINUTES = Number(process.env.REFAZER_PURCHASE_EXPIRATION_MINUTES || 30);
@@ -2428,6 +2430,7 @@ async function registerCommands() {
     "refazer_comandos",
     "velvet_saldo",
     "velvet_comprar",
+    "buy",
     "velvet_transferir",
     "velvet_sacar",
     "velvet_admin_add",
@@ -2452,6 +2455,7 @@ async function registerCommands() {
     "prompt_model",
     "admin_bulk_views",
     "admin_views_full",
+    "admin_buy",
     "admin_code_create",
     "admin_code_disable",
     "admin_codes",
@@ -4973,10 +4977,41 @@ function createPurchaseRequest({ userId, amount, currency = DEFAULT_CURRENCY, br
   return request;
 }
 
+function isServiceCreditsPurchaseRequest(request) {
+  const source = String(request?.source || "buy").toLowerCase();
+  return source === "buy" || source === "admin_buy" || source === "velvet_comprar";
+}
+
+function cancelPendingServiceCreditsPurchases(reason = "Service Credits sales are currently disabled.") {
+  const db = readWalletDb();
+  const cancelledAt = new Date().toISOString();
+  let cancelled = 0;
+
+  for (const request of db.purchaseRequests || []) {
+    if (request.status !== "pending" || !isServiceCreditsPurchaseRequest(request)) continue;
+    request.status = "cancelled";
+    request.cancelledAt = cancelledAt;
+    request.reason = reason;
+    cancelled += 1;
+  }
+
+  if (cancelled > 0) writeWalletDb(db);
+  return cancelled;
+}
+
 function resolvePurchase({ requestId, action, actorId, reason }) {
   const db = readWalletDb();
   const request = db.purchaseRequests.find(item => item.id === requestId);
   if (!request) return { ok: false, reason: "Pedido nao encontrado." };
+  if (!SERVICE_CREDITS_PURCHASES_ENABLED && isServiceCreditsPurchaseRequest(request)) {
+    if (request.status === "pending") {
+      request.status = "cancelled";
+      request.cancelledAt = new Date().toISOString();
+      request.reason = "Service Credits sales are currently disabled.";
+      writeWalletDb(db);
+    }
+    return { ok: false, reason: "As compras de Service Credits estao desativadas." };
+  }
   if (purchaseIsExpired(request)) {
     request.status = "expired";
     request.expiredAt = new Date().toISOString();
@@ -14778,6 +14813,10 @@ client.once("clientReady", async () => {
   console.log(`[limited_watch] enabled interval=${LIMITED_CHECK_INTERVAL_MS}ms`);
   startWebhookServer();
   expirePendingPurchases();
+  if (!SERVICE_CREDITS_PURCHASES_ENABLED) {
+    const cancelled = cancelPendingServiceCreditsPurchases();
+    console.log(`[credits_store] disabled; cancelled pending credit orders=${cancelled}`);
+  }
   expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
   setInterval(() => {
     expirePendingPurchases();
@@ -15980,6 +16019,15 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "velvet_comprar" || interaction.commandName === "buy") {
       const lang = languageFor(interaction);
+      if (!SERVICE_CREDITS_PURCHASES_ENABLED) {
+        await interaction.reply({
+          content: lang === "pt-BR"
+            ? "## Compras de Service Credits indisponiveis\nA loja esta fechada e nenhum checkout foi criado."
+            : "## Service Credits purchases unavailable\nThe store is closed and no checkout was created.",
+          flags: 64,
+        });
+        return;
+      }
       const amount = interaction.options.getInteger("quantidade") || interaction.options.getInteger("amount");
       const selectedCurrency = interaction.options.getString("moeda") || interaction.options.getString("currency");
       const selectedProvider = interaction.options.getString("gateway") || interaction.options.getString("provider");
@@ -16418,6 +16466,13 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "admin_buy") {
+      if (!SERVICE_CREDITS_PURCHASES_ENABLED) {
+        await interaction.reply({
+          content: "## Service Credits store disabled\nNo admin checkout was created.",
+          flags: 64,
+        });
+        return;
+      }
       const target = interaction.options.getUser("user");
       const amount = interaction.options.getInteger("amount");
       const priceBrl = interaction.options.getNumber("price_brl");
