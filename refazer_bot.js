@@ -84,6 +84,9 @@ const ELITE_LIFETIME_ROLE = cleanEnv(process.env.REFAZER_ELITE_LIFETIME_ROLE, "1
 const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "1521959526394237089");
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
+const SNIPER_OWNER_USER_IDS = new Set(parseIdListEnv(
+  process.env.REFAZER_SNIPER_OWNER_USER_IDS || "1108166595374751828,433699177705504768"
+));
 const AFFILIATE_ROLE = cleanEnv(process.env.REFAZER_AFFILIATE_ROLE, "1523108378346520607");
 const AI_IMAGE_ROLE = cleanEnv(process.env.REFAZER_AI_IMAGE_ROLE, "1531844183579558191");
 const COMMAND_CHANNEL_IDS = new Set(parseIdListEnv(process.env.REFAZER_COMMAND_CHANNELS || process.env.REFAZER_ALLOWED_COMMAND_CHANNELS));
@@ -1027,6 +1030,8 @@ const commands = [
           { name: "Waist accessories", value: "waist_accessories" },
           { name: "Faces", value: "faces" },
           { name: "Heads", value: "heads" },
+          { name: "Bodies", value: "bodies" },
+          { name: "Emotes", value: "emotes" },
           { name: "Bundles", value: "bundles" },
           { name: "Classic shirts", value: "classic_shirts" },
           { name: "Classic pants", value: "classic_pants" },
@@ -1108,7 +1113,7 @@ const commands = [
           { name: "Face accessories", value: "face_accessories" }, { name: "Neck accessories", value: "neck_accessories" },
           { name: "Shoulder accessories", value: "shoulder_accessories" }, { name: "Front accessories", value: "front_accessories" },
           { name: "Back accessories", value: "back_accessories" }, { name: "Waist accessories", value: "waist_accessories" },
-          { name: "Faces", value: "faces" }, { name: "Classic shirts", value: "classic_shirts" },
+          { name: "Faces", value: "faces" }, { name: "Heads", value: "heads" }, { name: "Bodies", value: "bodies" }, { name: "Emotes", value: "emotes" }, { name: "Classic shirts", value: "classic_shirts" },
           { name: "Classic pants", value: "classic_pants" }, { name: "Layered clothing", value: "layered_clothing" }
         )
     )
@@ -6622,6 +6627,10 @@ function userIsAdmin(interaction) {
   return hasRole(interaction, ADMIN_ROLE);
 }
 
+function userIsSniperOwner(interaction) {
+  return Boolean(interaction?.user?.id && SNIPER_OWNER_USER_IDS.has(interaction.user.id));
+}
+
 function memberCanUseAiImageEnhancement(member) {
   return Boolean(OPENAI_API_KEY) && (
     memberHasRole(member, ADMIN_ROLE) ||
@@ -6822,6 +6831,8 @@ const SNIPER_HISTORY_CATEGORIES = parseIdListEnv(
     "back_accessories",
     "waist_accessories",
     "faces",
+    "bodies",
+    "emotes",
     "classic_shirts",
     "classic_pants",
     "tshirts",
@@ -7581,6 +7592,8 @@ const SNIPER_CATEGORY_PARAMS = {
   waist_accessories: { Category: "11", AssetTypes: "47" },
   faces: { Category: "4", AssetTypes: "18" },
   heads: { Category: "4", AssetTypes: "17,79" },
+  bodies: { Category: "4", AssetTypes: "27,28,29,30,31" },
+  emotes: { Category: "12", AssetTypes: "61" },
   bundles: { Category: "17", BundleTypes: "1,2,3" },
   classic_shirts: { Category: "3", AssetTypes: "11" },
   classic_pants: { Category: "3", AssetTypes: "12" },
@@ -7609,6 +7622,8 @@ const SNIPER_CATEGORY_LABELS = {
   waist_accessories: "Waist accessories",
   faces: "Faces",
   heads: "Heads",
+  bodies: "Bodies",
+  emotes: "Emotes",
   bundles: "Bundles",
   classic_shirts: "Classic shirts",
   classic_pants: "Classic pants",
@@ -7638,6 +7653,8 @@ const SNIPER_CATEGORY_ASSET_TYPES = {
   waist_accessories: [47],
   faces: [18],
   heads: [17, 79],
+  bodies: [27, 28, 29, 30, 31],
+  emotes: [61],
   classic_shirts: [11],
   classic_pants: [12],
   tshirts: [2],
@@ -7665,6 +7682,8 @@ const SNIPER_CATEGORY_FALLBACKS = {
   waist_accessories: ["accessories", "all"],
   faces: ["all"],
   heads: ["all"],
+  bodies: ["all"],
+  emotes: ["all"],
   bundles: ["all"],
   classic_shirts: ["clothing", "all"],
   classic_pants: ["clothing", "all"],
@@ -7683,6 +7702,13 @@ const ROBLOX_ASSET_TYPE_NAME_TO_ID = {
   pants: 12,
   head: 17,
   face: 18,
+  torso: 27,
+  rightarm: 28,
+  leftarm: 29,
+  leftleg: 30,
+  rightleg: 31,
+  emoteanimation: 61,
+  emote: 61,
   hairaccessory: 41,
   hair: 41,
   faceaccessory: 42,
@@ -7714,6 +7740,8 @@ const SNIPER_CATEGORY_NAME_HINTS = {
   waist_accessories: ["waist", "belt", "cintura", "cinto"],
   faces: ["face", "rosto", "smile", "sorriso"],
   heads: ["head", "cabeça", "cabeca"],
+  bodies: ["body", "corpo", "torso", "arm", "leg", "perna", "braco", "braço"],
+  emotes: ["emote", "animation", "pose", "dance", "wave", "point", "cheer", "laugh"],
   classic_shirts: ["shirt", "camisa"],
   classic_pants: ["pants", "calca", "calça"],
   tshirts: ["t-shirt", "tshirt", "camiseta"],
@@ -17100,8 +17128,8 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "auto_sniper_config") {
-      if (!userIsAdmin(interaction)) {
-        await interaction.reply({ content: "## Admin Only\nThis configuration is restricted to the team.", flags: 64 });
+      if (!userIsSniperOwner(interaction)) {
+        await interaction.reply({ content: "## Owners Only\nThe market radar configuration is restricted to the bot owners.", flags: 64 });
         return;
       }
       const config = autoSniperConfig();
@@ -17140,8 +17168,8 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "super_sniper") {
       try {
         await interaction.deferReply({ flags: 64 });
-        if (!userIsAdmin(interaction)) {
-          await interaction.editReply("## Admin Only\nThis market research command is restricted to the team.");
+        if (!userIsSniperOwner(interaction)) {
+          await interaction.editReply("## Owners Only\nThis market research command is restricted to the bot owners.");
           return;
         }
         const window = interaction.options.getString("window");
@@ -17186,8 +17214,8 @@ client.on("interactionCreate", async interaction => {
     if (interaction.commandName === "trend_radar") {
       try {
         await interaction.deferReply({ flags: 64 });
-        if (!userIsAdmin(interaction)) {
-          await interaction.editReply("## Admin Only\nThis trend radar is restricted to the team.");
+        if (!userIsSniperOwner(interaction)) {
+          await interaction.editReply("## Owners Only\nThis trend radar is restricted to the bot owners.");
           return;
         }
         const window = interaction.options.getString("window") || "yesterday";
@@ -17215,10 +17243,10 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply({ flags: 64 });
       const limitedOnly = interaction.commandName === "limited_sniper";
 
-      if (!userIsAdmin(interaction)) {
+      if (!userIsSniperOwner(interaction)) {
         await interaction.editReply(
-          "## Admin Only\n" +
-          "This market radar is restricted to the team."
+          "## Owners Only\n" +
+          "This market radar is restricted to the bot owners."
         );
         return;
       }
