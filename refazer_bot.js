@@ -84,6 +84,7 @@ const ELITE_LIFETIME_ROLE = cleanEnv(process.env.REFAZER_ELITE_LIFETIME_ROLE, "1
 const NORMAL_ROLE = cleanEnv(process.env.REFAZER_NORMAL_ROLE, "1521959526394237089");
 const FREE_ROLE = cleanEnv(process.env.REFAZER_FREE_ROLE, "1523104972068356187");
 const ADMIN_ROLE = cleanEnv(process.env.REFAZER_ADMIN_ROLE, "1522293475801038868");
+const ASSET_TOOLS_ROLE = cleanEnv(process.env.REFAZER_ASSET_TOOLS_ROLE, "1560011742401011722");
 const SNIPER_OWNER_USER_IDS = new Set(parseIdListEnv(
   process.env.REFAZER_SNIPER_OWNER_USER_IDS || "1108166595374751828,433699177705504768"
 ));
@@ -993,7 +994,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("steal2")
-    .setDescription("Admin: guided batch copy with safe texture controls")
+    .setDescription("Asset team: guided batch copy with safe texture controls")
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -1428,7 +1429,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("views_bulk")
-    .setDescription("Admin: renderizar views para até 10 UGCs")
+    .setDescription("Equipe de assets: renderizar views para até 80 UGCs")
     .toJSON(),
 
   new SlashCommandBuilder()
@@ -2876,7 +2877,7 @@ function getSaoPauloDayKey() {
 
 function userCopyPlan(interaction) {
   if (userIsElite(interaction)) return "elite";
-  if (userHasPremiumAccess(interaction) || userIsAdmin(interaction)) return "premium";
+  if (userHasPremiumAccess(interaction) || userCanUseAssetTools(interaction)) return "premium";
   if (hasRole(interaction, NORMAL_ROLE)) return "basic";
   return "free";
 }
@@ -6631,6 +6632,10 @@ function userIsSniperOwner(interaction) {
   return Boolean(interaction?.user?.id && SNIPER_OWNER_USER_IDS.has(interaction.user.id));
 }
 
+function userCanUseAssetTools(interaction) {
+  return userIsAdmin(interaction) || hasRole(interaction, ASSET_TOOLS_ROLE);
+}
+
 function memberCanUseAiImageEnhancement(member) {
   return Boolean(OPENAI_API_KEY) && (
     memberHasRole(member, ADMIN_ROLE) ||
@@ -6643,7 +6648,7 @@ function userIsAffiliate(interaction) {
 }
 
 function userIsAllowed(interaction) {
-  return userIsAdmin(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
+  return userCanUseAssetTools(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
 function commandChannelIsAllowed(interaction) {
@@ -15022,8 +15027,8 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({ content: "## Este lote já terminou ou expirou.", flags: 64 }).catch(() => {});
       return;
     }
-    if (job.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
-      await interaction.reply({ content: "## Apenas o admin que iniciou este lote pode cancelá-lo.", flags: 64 }).catch(() => {});
+    if (job.ownerId !== interaction.user.id || !userCanUseAssetTools(interaction)) {
+      await interaction.reply({ content: "## Apenas quem iniciou este lote pode cancelá-lo.", flags: 64 }).catch(() => {});
       return;
     }
     job.cancelled = true;
@@ -15042,8 +15047,8 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({ content: "## Configuração expirada\nAbra `/views_bulk` novamente.", flags: 64 }).catch(() => {});
       return;
     }
-    if (action.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
-      await interaction.reply({ content: "## Apenas o admin que abriu este painel pode alterá-lo.", flags: 64 }).catch(() => {});
+    if (action.ownerId !== interaction.user.id || !userCanUseAssetTools(interaction)) {
+      await interaction.reply({ content: "## Apenas quem abriu este painel pode alterá-lo.", flags: 64 }).catch(() => {});
       return;
     }
     action.expiresAt = Date.now() + BULK_VIEW_PANEL_TTL_MS;
@@ -15137,8 +15142,8 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({ content: "## Configuração expirada\nAbra `/views_bulk` novamente.", flags: 64 });
       return;
     }
-    if (action.ownerId !== interaction.user.id || !userIsAdmin(interaction)) {
-      await interaction.reply({ content: "## Apenas o admin que abriu este painel pode alterá-lo.", flags: 64 });
+    if (action.ownerId !== interaction.user.id || !userCanUseAssetTools(interaction)) {
+      await interaction.reply({ content: "## Apenas quem abriu este painel pode alterá-lo.", flags: 64 });
       return;
     }
 
@@ -16020,7 +16025,6 @@ client.on("interactionCreate", async interaction => {
       "admin_post_terms",
       "admin_post_info",
       "admin_post_model_starter",
-      "views_bulk",
       "admin_views_full",
       "model_views",
       "admin_roblox_status",
@@ -17558,8 +17562,8 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "steal2") {
-      if (!userIsAdmin(interaction)) {
-        await interaction.reply({ content: "## Admin only\nThe steal2 command is available only to bot admins.", flags: 64 });
+      if (!userCanUseAssetTools(interaction)) {
+        await interaction.reply({ content: "## Asset tools only\nThe steal2 command is limited to the asset tools team.", flags: 64 });
         return;
       }
 
@@ -17894,7 +17898,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "bulk_steal") {
-      if (!userHasPremiumAccess(interaction) && !userIsAdmin(interaction)) {
+      if (!userHasPremiumAccess(interaction) && !userCanUseAssetTools(interaction)) {
         await interaction.reply({
           content: "## 🔒 Premium / Elite only\nBulk copy is available for Premium and Elite members.",
           flags: 64,
@@ -17991,6 +17995,10 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "views_bulk") {
+      if (!userCanUseAssetTools(interaction)) {
+        await interaction.reply({ content: "## Asset tools only\nBulk views are limited to the asset tools team.", flags: 64 });
+        return;
+      }
       const action = newBulkViewPanel(interaction);
       await interaction.reply(bulkViewPanelPayload(action));
       action.message = await interaction.fetchReply();
@@ -18085,7 +18093,7 @@ client.on("interactionCreate", async interaction => {
         : "multiview4";
       const useAiFiveViews = angleSet === "ai5";
 
-      if (useAiFiveViews && !userIsAdmin(interaction)) {
+      if (useAiFiveViews && !userCanUseAssetTools(interaction)) {
         await interaction.reply({
           content: lang === "pt-BR"
             ? "## Apenas admins\n" +
