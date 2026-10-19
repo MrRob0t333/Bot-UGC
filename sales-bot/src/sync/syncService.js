@@ -7,11 +7,16 @@
  *  - sincronização incremental do mais novo para o mais antigo com regra de parada;
  *  - avisos via "outbox": vendas novas ficam com notified_at NULL até o Discord confirmar.
  *
- * Regra de parada do incremental: para quando uma página inteira já era conhecida
- * E todas as vendas dela são mais antigas que o "corte". O corte é a venda pendente
- * mais antiga do grupo (limitada a PENDING_RECHECK_DAYS); sem pendentes, o corte é
- * "agora" (basta uma página inteira conhecida). Assim os pendentes são re-lidos até
- * virarem liberados, sem varrer 10 dias de páginas a cada 3 minutos.
+ * Cada ciclo tem duas fases:
+ *  1. Vendas novas de todos os grupos (rápido, ~1 página por grupo) → avisos saem logo.
+ *  2. Trabalho pesado em segundo plano, com orçamento de tempo por ciclo e rodízio
+ *     entre os grupos: backfill do histórico e a revisão periódica dos pendentes.
+ *     Ambos são retomáveis por cursor salvo, então um grupo com milhares de vendas
+ *     por dia não atrasa os avisos dos outros.
+ *
+ * Regra de parada do incremental: para na primeira página inteira já conhecida.
+ * A revisão de pendentes (a cada PENDING_SWEEP_MINUTES) varre até a venda pendente
+ * mais antiga do grupo, limitada a PENDING_RECHECK_DAYS, para virar pendente → liberado.
  */
 
 const { RobloxAuthError, RobloxPermissionError, RobloxError } = require("../roblox/errors");
@@ -22,6 +27,9 @@ const AUTH_RETRY_MS = 15 * 60 * 1000;
 const PERMISSION_RETRY_MS = 30 * 60 * 1000;
 const FAILURE_ALERT_THRESHOLD = 5;
 const BACKFILL_PAGES_PER_CYCLE = 50;
+const SWEEP_PAGES_PER_CYCLE = 50;
+// Fração do intervalo de coleta que o trabalho em segundo plano pode usar por ciclo.
+const BACKGROUND_BUDGET_SHARE = 0.6;
 
 // Sem unref(): a espera precisa manter o processo vivo. Com unref(), um script
 // (npm run check / sync:once) encerrava com código 0 no meio de um retry.
@@ -37,9 +45,11 @@ function createSyncService(deps) {
     clock = () => new Date(),
     sleep = defaultSleep,
     backfillPagesPerCycle = BACKFILL_PAGES_PER_CYCLE,
+    sweepPagesPerCycle = SWEEP_PAGES_PER_CYCLE,
   } = deps;
 
   let inFlight = null;
+  let rotation = 0;
   let stopping = false;
   const groupRetryAt = new Map();
 
@@ -127,7 +137,7 @@ function createSyncService(deps) {
   }
 
   /** Avança o backfill até `maxPages` páginas. Retorna { pages, inserted, done }. */
-  async function runBackfillChunk(group, { maxPages = backfillPagesPerCycle } = {}) {
+  async function runBackfillChunk(group, { maxPages = backfillPagesPerCycle, deadline = null } = {}) {
     let state = repo.getSyncState(group.id);
     if (state.backfill_done) return { pages: 0, inserted: 0, done: true };
     if (!state.backfill_started_at) {
@@ -137,7 +147,7 @@ function createSyncService(deps) {
     let cursor = state.backfill_cursor || null;
     let pages = 0;
     let inserted = 0;
-    while (pages < maxPages && !stopping) {
+    while (pages < maxPages && !stopping && !pastDeadline(deadline)) {
       let page;
       try {
         page = await roblox.getSalesPage(group.id, cursor);
@@ -164,6 +174,8 @@ function createSyncService(deps) {
           backfill_pages: totalPages,
           backfill_completed_at: clock().toISOString(),
         });
+        // O backfill acabou de ler o status de tudo: a próxima revisão de pendentes fica para depois.
+        setSweepState(group, { lastCompletedAt: clock().toISOString(), inProgress: false, cursor: null });
         const total = repo.countSales({ groupId: group.id });
         logger?.info(`Backfill concluído: ${group.name} — ${total} vendas no banco.`);
         await alerts?.notify({
@@ -174,28 +186,18 @@ function createSyncService(deps) {
         return { pages, inserted, done: true };
       }
       repo.updateSyncState(group.id, { backfill_cursor: cursor, backfill_pages: totalPages });
-      if (config.sync.backfillPageDelayMs > 0 && pages < maxPages) await sleep(config.sync.backfillPageDelayMs);
+      if (config.sync.backfillPageDelayMs > 0 && pages < maxPages && !pastDeadline(deadline)) await sleep(config.sync.backfillPageDelayMs);
     }
     return { pages, inserted, done: false };
   }
 
-  /**
-   * Incremental: novas vendas (para aviso) e, periodicamente, revisão dos pendentes.
-   * A revisão (varrer até a venda pendente mais antiga) é cara em grupos com muitas
-   * vendas, então só roda a cada PENDING_SWEEP_MINUTES; nos outros ciclos o
-   * incremental para na primeira página inteira já conhecida.
-   */
-  async function runIncremental(group) {
-    const now = clock();
-    const sweepKey = `sweep:${group.id}`;
-    const lastSweep = repo.getState(sweepKey);
-    const sweepMinutes = config.sync.pendingSweepMinutes ?? 360;
-    const sweepDue = !lastSweep || now.getTime() - Date.parse(lastSweep) >= sweepMinutes * 60000;
-    const windowStart = new Date(now.getTime() - config.sync.pendingRecheckDays * DAY_MS);
-    const oldestPending = sweepDue ? repo.oldestPendingCreatedAt(group.id) : null;
-    const cutoff = oldestPending ? new Date(Math.max(oldestPending.getTime(), windowStart.getTime())) : now;
-    const maxPages = oldestPending ? (config.sync.maxSweepPages ?? 1000) : config.sync.maxIncrementalPages;
+  function pastDeadline(deadline) {
+    return deadline !== null && deadline !== undefined && clock().getTime() >= deadline;
+  }
 
+  /** Incremental: só vendas novas. Para na primeira página inteira já conhecida. */
+  async function runIncremental(group) {
+    const maxPages = config.sync.maxIncrementalPages;
     let cursor = null;
     let pages = 0;
     const totals = { inserted: [], released: [], becamePending: [] };
@@ -208,19 +210,94 @@ function createSyncService(deps) {
       totals.becamePending.push(...result.becamePending);
       pages += 1;
 
-      if (!page.sales.length) break;
-      const allKnown = result.inserted.length === 0;
-      const allOlderThanCutoff = page.sales.every(sale => new Date(sale.createdAt).getTime() <= cutoff.getTime());
-      if (allKnown && allOlderThanCutoff) break;
-      if (!page.nextCursor) break;
+      if (!page.sales.length || result.inserted.length === 0 || !page.nextCursor) break;
       if (pages >= maxPages) {
         logger?.warn(`Incremental de ${group.name} atingiu o limite de ${pages} páginas; continua no próximo ciclo.`);
         break;
       }
       cursor = page.nextCursor;
     }
-    if (sweepDue) repo.setState(sweepKey, now.toISOString());
-    return { pages, inserted: totals.inserted, released: totals.released, becamePending: totals.becamePending, swept: sweepDue };
+    return { pages, inserted: totals.inserted, released: totals.released, becamePending: totals.becamePending };
+  }
+
+  function sweepState(group) {
+    const raw = repo.getState(`sweep:${group.id}`);
+    if (!raw) return {};
+    if (typeof raw === "string") return { lastCompletedAt: raw }; // formato antigo
+    return raw;
+  }
+
+  function setSweepState(group, patch) {
+    const next = { ...sweepState(group), ...patch };
+    repo.setState(`sweep:${group.id}`, next);
+    return next;
+  }
+
+  function sweepDue(group) {
+    const state = sweepState(group);
+    if (state.inProgress) return true;
+    const minutes = config.sync.pendingSweepMinutes ?? 360;
+    return !state.lastCompletedAt || clock().getTime() - Date.parse(state.lastCompletedAt) >= minutes * 60000;
+  }
+
+  /**
+   * Revisão de pendentes, retomável: re-lê do topo até a venda pendente mais antiga
+   * (limitada a PENDING_RECHECK_DAYS), em blocos de até `maxPages` por ciclo.
+   * Retorna { pages, released, inserted, done, skipped? }.
+   */
+  async function runSweepChunk(group, { maxPages = sweepPagesPerCycle, deadline = null } = {}) {
+    const out = { pages: 0, released: [], inserted: [], done: false };
+    if (!sweepDue(group)) return { ...out, skipped: true };
+    let state = sweepState(group);
+    if (!state.inProgress) {
+      const oldestPending = repo.oldestPendingCreatedAt(group.id);
+      const now = clock();
+      if (!oldestPending) {
+        setSweepState(group, { lastCompletedAt: now.toISOString(), inProgress: false, cursor: null });
+        return { ...out, done: true };
+      }
+      const windowStart = new Date(now.getTime() - config.sync.pendingRecheckDays * DAY_MS);
+      const cutoff = new Date(Math.max(oldestPending.getTime(), windowStart.getTime()));
+      state = setSweepState(group, { inProgress: true, cursor: null, cutoff: cutoff.toISOString(), pages: 0, startedAt: now.toISOString() });
+    }
+    const cutoffMs = Date.parse(state.cutoff);
+    const limit = config.sync.maxSweepPages ?? 1000;
+    let cursor = state.cursor || null;
+    let total = Number(state.pages || 0);
+    const finish = () => {
+      setSweepState(group, { lastCompletedAt: clock().toISOString(), inProgress: false, cursor: null, pages: total });
+      out.done = true;
+      return out;
+    };
+    while (out.pages < maxPages && !stopping && !pastDeadline(deadline)) {
+      let page;
+      try {
+        page = await roblox.getSalesPage(group.id, cursor);
+      } catch (error) {
+        if (cursor && error instanceof RobloxError && error.status === 400) {
+          logger?.warn(`Cursor da revisão de pendentes expirou em ${group.name}; recomeçando do topo.`);
+          cursor = null;
+          setSweepState(group, { cursor: null });
+          continue;
+        }
+        throw error;
+      }
+      logSkipped(group, page.skipped);
+      const result = repo.upsertSales(page.sales, { markNotified: false, now: clock() });
+      out.released.push(...result.released);
+      out.inserted.push(...result.inserted);
+      out.pages += 1;
+      total += 1;
+      const reachedCutoff = !page.sales.length || page.sales.every(sale => new Date(sale.createdAt).getTime() <= cutoffMs);
+      if (reachedCutoff || !page.nextCursor) return finish();
+      if (total >= limit) {
+        logger?.warn(`Revisão de pendentes de ${group.name} atingiu o limite de ${total} páginas (MAX_SWEEP_PAGES).`);
+        return finish();
+      }
+      cursor = page.nextCursor;
+      setSweepState(group, { cursor, pages: total });
+    }
+    return out;
   }
 
   function logSkipped(group, skipped) {
@@ -229,13 +306,20 @@ function createSyncService(deps) {
     }
   }
 
-  async function syncGroup(group) {
+  function handleError(group, error) {
+    if (error instanceof RobloxAuthError) return onAuthError(error);
+    if (error instanceof RobloxPermissionError) return onPermissionError(group, error);
+    return null;
+  }
+
+  /** Fase 1 de um grupo: começa o backfill (1 página, para o topo ficar conhecido) e busca vendas novas. */
+  async function syncNew(group) {
     const startedAt = clock();
     const result = { groupId: group.id, groupName: group.name, ok: false, backfill: null, newSales: 0, released: 0, pages: 0 };
     try {
       const state = repo.getSyncState(group.id);
-      if (!state.backfill_done) {
-        result.backfill = await runBackfillChunk(group);
+      if (!state.backfill_done && !state.backfill_started_at) {
+        result.backfill = await runBackfillChunk(group, { maxPages: 1 });
       }
       const incremental = await runIncremental(group);
       result.newSales = incremental.inserted.length;
@@ -247,19 +331,58 @@ function createSyncService(deps) {
       logger?.debug(`Sync ${group.name}: ${result.newSales} novas, ${result.released} liberadas, ${result.pages} pág. em ${clock() - startedAt} ms`);
     } catch (error) {
       result.error = error;
-      if (error instanceof RobloxAuthError) await onAuthError(error);
-      else if (error instanceof RobloxPermissionError) await onPermissionError(group, error);
+      await handleError(group, error);
       await recordFailure(group, error);
       logger?.warn(`Falha ao sincronizar ${group.name}: ${error?.message || error}`);
     }
     return result;
   }
 
+  /** Fase 2 de um grupo: um bloco de backfill ou de revisão de pendentes. Atualiza `result`. */
+  async function runBackground(group, result, deadline) {
+    try {
+      if (!repo.getSyncState(group.id).backfill_done) {
+        const chunk = await runBackfillChunk(group, { deadline });
+        result.backfill = result.backfill
+          ? { pages: result.backfill.pages + chunk.pages, inserted: result.backfill.inserted + chunk.inserted, done: chunk.done }
+          : chunk;
+        return;
+      }
+      const sweep = await runSweepChunk(group, { deadline });
+      if (!sweep.skipped) {
+        result.sweep = { pages: sweep.pages, released: sweep.released.length, done: sweep.done };
+        result.released += sweep.released.length;
+        result.newSales += sweep.inserted.length;
+      }
+    } catch (error) {
+      result.backgroundError = error;
+      await handleError(group, error);
+      repo.recordSyncError(group.id, `segundo-plano:${error?.kind || "erro"}`, error?.message || String(error), clock());
+      logger?.warn(`Falha no segundo plano de ${group.name} (continua no próximo ciclo): ${error?.message || error}`);
+    }
+  }
+
+  /** Fases 1 e 2 para um grupo só (sem orçamento de tempo). */
+  async function syncGroup(group) {
+    const result = await syncNew(group);
+    if (result.ok) await runBackground(group, result, null);
+    return result;
+  }
+
+  function backgroundBudgetMs() {
+    if (Number.isFinite(config.sync.backgroundBudgetMs)) return config.sync.backgroundBudgetMs;
+    return Math.round(config.sync.pollIntervalMinutes * 60000 * BACKGROUND_BUDGET_SHARE);
+  }
+
   /**
    * Um ciclo de sincronização de todos os grupos (single-flight: chamadas
    * simultâneas compartilham o mesmo ciclo).
+   * @param {object} [options]
+   * @param {boolean} [options.force] ignora as esperas de cookie inválido / sem permissão
+   * @param {boolean} [options.background=true] roda a fase 2 (backfill/revisão)
+   * @param {Function} [options.afterNew] chamado entre as fases (ex.: enviar avisos)
    */
-  function runCycle({ force = false } = {}) {
+  function runCycle({ force = false, background = true, afterNew = null } = {}) {
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const startedAt = clock();
@@ -268,6 +391,7 @@ function createSyncService(deps) {
         return { skipped: "cookie_invalid", retryAt: cookie.retryAt, groups: [] };
       }
       const groups = [];
+      let authFailed = false;
       for (const group of config.groups) {
         if (stopping) break;
         const retryAt = groupRetryAt.get(group.id);
@@ -275,11 +399,37 @@ function createSyncService(deps) {
           groups.push({ groupId: group.id, groupName: group.name, ok: false, skipped: "permission_backoff" });
           continue;
         }
-        const result = await syncGroup(group);
+        const result = await syncNew(group);
         groups.push(result);
         // Cookie inválido afeta todos os grupos: não insiste nos demais.
-        if (result.error instanceof RobloxAuthError) break;
+        if (result.error instanceof RobloxAuthError) {
+          authFailed = true;
+          break;
+        }
       }
+
+      if (afterNew) {
+        try {
+          await afterNew();
+        } catch (error) {
+          logger?.warn(`Falha ao enviar avisos entre as fases: ${error?.message || error}`);
+        }
+      }
+
+      if (background && !authFailed) {
+        const deadline = startedAt.getTime() + backgroundBudgetMs();
+        const ready = groups.filter(result => result.ok);
+        const offset = ready.length ? rotation % ready.length : 0;
+        rotation += 1;
+        const ordered = [...ready.slice(offset), ...ready.slice(0, offset)];
+        for (const result of ordered) {
+          if (stopping || pastDeadline(deadline)) break;
+          const group = config.groups.find(item => item.id === result.groupId);
+          await runBackground(group, result, deadline);
+          if (result.backgroundError instanceof RobloxAuthError) break;
+        }
+      }
+
       repo.setState("sync:last_cycle", { at: clock().toISOString(), ms: clock() - startedAt });
       return { groups, startedAt: startedAt.toISOString(), durationMs: clock() - startedAt };
     })().finally(() => {
@@ -330,6 +480,7 @@ function createSyncService(deps) {
     syncGroup,
     runBackfillChunk,
     runIncremental,
+    runSweepChunk,
     snapshotFunds,
     cookieState,
     isRunning: () => Boolean(inFlight),
