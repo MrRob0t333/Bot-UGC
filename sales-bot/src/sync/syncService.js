@@ -23,10 +23,9 @@ const PERMISSION_RETRY_MS = 30 * 60 * 1000;
 const FAILURE_ALERT_THRESHOLD = 5;
 const BACKFILL_PAGES_PER_CYCLE = 50;
 
-const defaultSleep = ms => new Promise(resolve => {
-  const timer = setTimeout(resolve, ms);
-  timer.unref?.();
-});
+// Sem unref(): a espera precisa manter o processo vivo. Com unref(), um script
+// (npm run check / sync:once) encerrava com código 0 no meio de um retry.
+const defaultSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function createSyncService(deps) {
   const {
