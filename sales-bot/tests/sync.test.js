@@ -247,3 +247,23 @@ test("vendas com mais de 10 dias inseridas pelo incremental (bot parado) também
   await sync.runCycle();
   assert.equal(repo.countUnnotified(), 15);
 });
+
+test("revisão de pendentes só roda a cada PENDING_SWEEP_MINUTES (ciclos normais leem 1 página)", async () => {
+  const repo = memoryRepo();
+  let current = sales(400, { stepMin: 60, pending: n => n === 150 });
+  const roblox = fakeRoblox(() => paginate(current));
+  const options = { config: { sync: { ...testConfig().sync, pendingSweepMinutes: 360 } } };
+  const sync = service(repo, roblox, options);
+  await sync.runCycle(); // backfill + primeira revisão
+  current = sales(400, { stepMin: 60, pending: () => false });
+  options.now = new Date(NOW.getTime() + 3 * 60000);
+  roblox.calls.pages.length = 0;
+  let cycle = await sync.runCycle();
+  assert.deepEqual(roblox.calls.pages, [null], "ciclo normal não varre pendentes");
+  assert.equal(cycle.groups[0].released, 0);
+  options.now = new Date(NOW.getTime() + 6 * 3600000 + 60000);
+  roblox.calls.pages.length = 0;
+  cycle = await sync.runCycle();
+  assert.equal(cycle.groups[0].released, 1, "revisão periódica libera o pendente");
+  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2"]);
+});
