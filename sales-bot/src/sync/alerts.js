@@ -22,12 +22,14 @@ function createAlerts({ repo, logger }) {
     if (!sender) {
       queue.push(alert);
       if (queue.length > 50) queue.shift();
-      return;
+      return true;
     }
     try {
       await sender(alert);
+      return true;
     } catch (error) {
-      logger?.warn("Não foi possível enviar alerta ao Discord:", error);
+      logger?.warn("Não foi possível enviar alerta ao Discord:", error?.message || error);
+      return false;
     }
   }
 
@@ -51,7 +53,14 @@ function createAlerts({ repo, logger }) {
       if (current[key]) return false;
       current[key] = { since: new Date().toISOString(), title };
       repo.setState(STATE_KEY, current);
-      await deliver({ key, title, message, level });
+      const delivered = await deliver({ key, title, message, level });
+      if (!delivered) {
+        // Envio falhou (ex.: bot sem acesso ao canal): libera para tentar de novo depois.
+        const latest = active();
+        delete latest[key];
+        repo.setState(STATE_KEY, latest);
+        return false;
+      }
       return true;
     },
 
