@@ -150,3 +150,19 @@ test("alertas: avisa uma vez por problema e avisa a recuperação; enfileira at�
   await alerts.raise("forbidden:1", { title: "a", message: "b" });
   assert.deepEqual(createAlerts({ repo }).activeKeys(), ["forbidden:1"]);
 });
+
+test("alertas: se o envio falhar, o alerta volta a ser tentado depois", async () => {
+  const repo = memoryRepo();
+  const alerts = createAlerts({ repo });
+  let fail = true;
+  const sent = [];
+  await alerts.setSender(async alert => {
+    if (fail) throw new Error("Missing Access");
+    sent.push(alert);
+  });
+  assert.equal(await alerts.raise("forbidden:1", { title: "a", message: "b" }), false);
+  assert.equal(alerts.isActive("forbidden:1"), false);
+  fail = false;
+  assert.equal(await alerts.raise("forbidden:1", { title: "a", message: "b" }), true);
+  assert.equal(sent.length, 1);
+});
