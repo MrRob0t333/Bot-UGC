@@ -81,6 +81,8 @@ function testConfig(overrides = {}) {
       fundsSnapshotMinutes: 30,
       backupKeep: 14,
       maxIncrementalPages: 100,
+      pendingSweepMinutes: 0,
+      maxSweepPages: 1000,
     },
     schedules: {
       daily: { hour: 23, minute: 0 },
