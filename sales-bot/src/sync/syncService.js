@@ -179,12 +179,22 @@ function createSyncService(deps) {
     return { pages, inserted, done: false };
   }
 
-  /** Incremental: novas vendas (para aviso) + atualização de pendentes. */
+  /**
+   * Incremental: novas vendas (para aviso) e, periodicamente, revisão dos pendentes.
+   * A revisão (varrer até a venda pendente mais antiga) é cara em grupos com muitas
+   * vendas, então só roda a cada PENDING_SWEEP_MINUTES; nos outros ciclos o
+   * incremental para na primeira página inteira já conhecida.
+   */
   async function runIncremental(group) {
     const now = clock();
+    const sweepKey = `sweep:${group.id}`;
+    const lastSweep = repo.getState(sweepKey);
+    const sweepMinutes = config.sync.pendingSweepMinutes ?? 360;
+    const sweepDue = !lastSweep || now.getTime() - Date.parse(lastSweep) >= sweepMinutes * 60000;
     const windowStart = new Date(now.getTime() - config.sync.pendingRecheckDays * DAY_MS);
-    const oldestPending = repo.oldestPendingCreatedAt(group.id);
+    const oldestPending = sweepDue ? repo.oldestPendingCreatedAt(group.id) : null;
     const cutoff = oldestPending ? new Date(Math.max(oldestPending.getTime(), windowStart.getTime())) : now;
+    const maxPages = oldestPending ? (config.sync.maxSweepPages ?? 1000) : config.sync.maxIncrementalPages;
 
     let cursor = null;
     let pages = 0;
@@ -203,13 +213,14 @@ function createSyncService(deps) {
       const allOlderThanCutoff = page.sales.every(sale => new Date(sale.createdAt).getTime() <= cutoff.getTime());
       if (allKnown && allOlderThanCutoff) break;
       if (!page.nextCursor) break;
-      if (pages >= config.sync.maxIncrementalPages) {
+      if (pages >= maxPages) {
         logger?.warn(`Incremental de ${group.name} atingiu o limite de ${pages} páginas; continua no próximo ciclo.`);
         break;
       }
       cursor = page.nextCursor;
     }
-    return { pages, inserted: totals.inserted, released: totals.released, becamePending: totals.becamePending };
+    if (sweepDue) repo.setState(sweepKey, now.toISOString());
+    return { pages, inserted: totals.inserted, released: totals.released, becamePending: totals.becamePending, swept: sweepDue };
   }
 
   function logSkipped(group, skipped) {
