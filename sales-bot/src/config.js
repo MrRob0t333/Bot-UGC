@@ -212,6 +212,8 @@ function loadConfig(options = {}) {
     fundsSnapshotMinutes: int(env, "FUNDS_SNAPSHOT_MINUTES", 30, { min: 5, max: 1440 }, errors),
     backupKeep: int(env, "BACKUP_KEEP", 14, { min: 1, max: 365 }, errors),
     maxIncrementalPages: int(env, "MAX_INCREMENTAL_PAGES", 100, { min: 1, max: 10000 }, errors),
+    pendingSweepMinutes: int(env, "PENDING_SWEEP_MINUTES", 360, { min: 15, max: 10080 }, errors),
+    maxSweepPages: int(env, "MAX_SWEEP_PAGES", 1000, { min: 1, max: 100000 }, errors),
   };
 
   const schedules = {
