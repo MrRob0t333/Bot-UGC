@@ -101,6 +101,26 @@ test("http: limitador por minuto espera quando a janela enche", async () => {
   assert.ok(waits[0] >= 60000);
 });
 
+test("http: espera do retry mantém o processo vivo (script não encerra no meio)", async () => {
+  const { spawnSync } = require("node:child_process");
+  const path = require("node:path");
+  const script = `
+    const { createHttpClient } = require(${JSON.stringify(path.join(__dirname, "..", "src", "roblox", "http.js"))});
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      const status = calls === 1 ? 503 : 200;
+      return { status, headers: { get: () => null }, text: async () => (status === 200 ? '{"ok":true}' : "fora") };
+    };
+    createHttpClient({ fetchImpl, baseDelayMs: 200, maxDelayMs: 400 })
+      .getJson("https://x.test/a")
+      .then(json => { console.log("TERMINOU", JSON.stringify(json)); process.exitCode = 7; });
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 10000 });
+  assert.match(result.stdout, /TERMINOU \{"ok":true\}/);
+  assert.equal(result.status, 7, "o processo só pode sair depois do retry terminar");
+});
+
 test("http: Retry-After em data HTTP", () => {
   const now = Date.parse("2026-10-18T12:00:00Z");
   assert.equal(parseRetryAfter("Sun, 18 Oct 2026 12:00:05 GMT", now), 5000);
