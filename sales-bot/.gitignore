@@ -1,0 +1,6 @@
+.env
+data/
+node_modules/
+*.log
+config/groups.json
+config/item_prices.json
