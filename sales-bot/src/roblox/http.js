@@ -13,10 +13,9 @@
 const { RobloxError, RobloxAuthError, RobloxPermissionError } = require("./errors");
 const { redact } = require("../logger");
 
-const defaultSleep = ms => new Promise(resolve => {
-  const timer = setTimeout(resolve, ms);
-  timer.unref?.();
-});
+// Sem unref(): a espera precisa manter o processo vivo. Com unref(), um script
+// (npm run check / sync:once) encerrava com código 0 no meio de um retry.
+const defaultSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 class RateLimiter {
   constructor({ perMinute = 60, now = () => Date.now(), sleep = defaultSleep } = {}) {
