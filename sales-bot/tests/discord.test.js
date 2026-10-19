@@ -278,6 +278,28 @@ test("agenda: ocorrências diária 23:00, semanal domingo 23:05 e mensal dia 1 0
   assert.equal(lastOccurrence("monthly", schedules, beforeMonthly, tz).toISOString(), "2026-10-01T12:00:00.000Z");
 });
 
+test("agenda: se o envio falhar, tenta de novo a cada 5 min (não a cada 30 s)", async () => {
+  const repo = memoryRepo();
+  seed(repo, 5);
+  const config = testConfig();
+  let now = new Date("2026-10-19T02:01:00Z"); // dom 18/10 23:01 SP: diário devido
+  let attempts = 0;
+  let fail = true;
+  const send = async () => {
+    attempts += 1;
+    if (fail) throw new Error("Missing Access");
+  };
+  const scheduler = createScheduler({ repo, config: { ...config, schedules: { ...config.schedules, weekly: null, monthly: null } }, send, ctx: { timeZone: config.timezone, groupName: id => id }, clock: () => now });
+  assert.deepEqual(await scheduler.tick(), []);
+  now = new Date(now.getTime() + 30 * 1000);
+  assert.deepEqual(await scheduler.tick(), []);
+  assert.equal(attempts, 1, "não tenta de novo em 30 s");
+  fail = false;
+  now = new Date(now.getTime() + 5 * 60 * 1000);
+  assert.deepEqual(await scheduler.tick(), ["daily"]);
+  assert.equal(attempts, 2);
+});
+
 test("agenda: dispara uma vez por ocorrência e não repete após reinício", async () => {
   const repo = memoryRepo();
   seed(repo, 5);
