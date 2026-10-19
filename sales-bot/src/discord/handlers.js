@@ -315,7 +315,8 @@ function createHandlers(app) {
   }
 
   async function sincronizar(interaction) {
-    const result = await app.sync.runCycle({ force: true });
+    // Só a busca de vendas novas (rápido); backfill e revisão seguem nos ciclos automáticos.
+    const result = await app.sync.runCycle({ force: true, background: false });
     await app.notifier?.flush();
     const lines = (result.groups || []).map(group => {
       if (group.ok) {
