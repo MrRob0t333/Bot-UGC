@@ -116,7 +116,7 @@ test("incremental: sem novidades e sem pendentes para na primeira página", asyn
   assert.deepEqual(roblox.calls.pages, [null]);
 });
 
-test("incremental: re-lê páginas até a venda pendente mais antiga e atualiza pendente → liberado", async () => {
+test("revisão de pendentes: re-lê páginas até a venda pendente mais antiga e atualiza pendente → liberado", async () => {
   const repo = memoryRepo();
   // 400 vendas, 1 por hora; a de índice 150 (~6,25 dias atrás) está pendente.
   const isPending = new Set([150]);
@@ -136,8 +136,9 @@ test("incremental: re-lê páginas até a venda pendente mais antiga e atualiza 
   const cycle = await sync.runCycle();
   assert.equal(cycle.groups[0].released, 1);
   assert.equal(repo.listSales({ pending: true }).length, 0);
-  // Precisou ler até a página que contém o índice 150 (página 1) e a próxima toda antiga (página 2).
-  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2"]);
+  // Incremental lê a 1ª página; a revisão lê do topo até a página com o índice 150 (página 1)
+  // e a próxima toda antiga (página 2).
+  assert.deepEqual(roblox.calls.pages, [null, null, "c1", "c2"]);
   const sale = repo.listSales({}, { limit: 1000 }).find(item => item.id === pendingId);
   assert.equal(sale.isPending, false);
   assert.notEqual(sale.updatedAt, sale.firstSeenAt);
@@ -148,7 +149,7 @@ test("incremental: re-lê páginas até a venda pendente mais antiga e atualiza 
   assert.deepEqual(roblox.calls.pages, [null]);
 });
 
-test("incremental: pendente além de PENDING_RECHECK_DAYS não força varrer o histórico", async () => {
+test("revisão de pendentes: pendente além de PENDING_RECHECK_DAYS não força varrer o histórico", async () => {
   const repo = memoryRepo();
   // 1 venda a cada 6h; a de índice 120 (30 dias atrás) está pendente "para sempre".
   const roblox = fakeRoblox(paginate(sales(400, { stepMin: 360, pending: n => n === 120 }), 20));
@@ -156,8 +157,9 @@ test("incremental: pendente além de PENDING_RECHECK_DAYS não força varrer o h
   await sync.runCycle();
   roblox.calls.pages.length = 0;
   await sync.runCycle();
-  // Corte = 10 dias = 40 vendas = 2 páginas de 20; lê 0,1 (recentes) e 2 (toda antiga e conhecida) → para.
-  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2"]);
+  // Incremental: página 0. Revisão: corte = 10 dias = 40 vendas = 2 páginas de 20;
+  // lê 0,1 (recentes) e 2 (toda antiga) → para.
+  assert.deepEqual(roblox.calls.pages, [null, null, "c1", "c2"]);
 });
 
 test("cookie inválido: alerta uma vez, espaça tentativas e avisa a recuperação", async () => {
@@ -254,7 +256,7 @@ test("revisão de pendentes só roda a cada PENDING_SWEEP_MINUTES (ciclos normai
   const roblox = fakeRoblox(() => paginate(current));
   const options = { config: { sync: { ...testConfig().sync, pendingSweepMinutes: 360 } } };
   const sync = service(repo, roblox, options);
-  await sync.runCycle(); // backfill + primeira revisão
+  await sync.runCycle(); // backfill (já conta como revisão)
   current = sales(400, { stepMin: 60, pending: () => false });
   options.now = new Date(NOW.getTime() + 3 * 60000);
   roblox.calls.pages.length = 0;
@@ -265,5 +267,94 @@ test("revisão de pendentes só roda a cada PENDING_SWEEP_MINUTES (ciclos normai
   roblox.calls.pages.length = 0;
   cycle = await sync.runCycle();
   assert.equal(cycle.groups[0].released, 1, "revisão periódica libera o pendente");
-  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2"]);
+  assert.deepEqual(roblox.calls.pages, [null, null, "c1", "c2"]);
+});
+
+test("revisão de pendentes é retomável: continua do cursor no ciclo seguinte", async () => {
+  const repo = memoryRepo();
+  let current = sales(400, { stepMin: 60, pending: n => n === 150 });
+  const roblox = fakeRoblox(() => paginate(current));
+  const options = { deps: { sweepPagesPerCycle: 1 } };
+  const sync = service(repo, roblox, options);
+  await sync.runCycle(); // backfill
+  current = sales(400, { stepMin: 60, pending: () => false });
+  const reads = [];
+  for (let i = 1; i <= 4; i += 1) {
+    options.now = new Date(NOW.getTime() + i * 3 * 60000);
+    roblox.calls.pages.length = 0;
+    const cycle = await sync.runCycle();
+    reads.push([...roblox.calls.pages]);
+    if (i === 3) assert.equal(cycle.groups[0].released, 0);
+  }
+  // Cada ciclo: 1 página do incremental + 1 da revisão (null → c1 → c2, que é toda antiga).
+  assert.deepEqual(reads, [[null, null], [null, "c1"], [null, "c2"], [null]]);
+  assert.equal(repo.listSales({ pending: true }).length, 0);
+});
+
+test("ciclo: vendas novas de todos os grupos e avisos antes do trabalho pesado", async () => {
+  const repo = memoryRepo();
+  const config = testConfig({ groups: [{ id: "111", name: "A", split: {} }, { id: "222", name: "B", split: {} }] });
+  const roblox = fakeRoblox(paginate(sales(300)));
+  const order = [];
+  const original = roblox.getSalesPage;
+  roblox.getSalesPage = async (groupId, cursor) => {
+    order.push(`${groupId}:${cursor}`);
+    return original(groupId, cursor);
+  };
+  const sync = createSyncService({ repo, roblox, config, alerts: fakeAlerts(), clock: () => NOW, sleep: async () => {} });
+  let countAtHook = null;
+  await sync.runCycle({ afterNew: async () => { countAtHook = order.length; } });
+  // Fase 1: 1ª página do backfill + incremental de cada grupo. Só depois o resto do backfill.
+  assert.deepEqual(order.slice(0, 4), ["111:null", "111:null", "222:null", "222:null"]);
+  assert.equal(countAtHook, 4, "avisos saem antes do backfill continuar");
+  assert.equal(repo.getSyncState("111").backfill_done, 1);
+  assert.equal(repo.getSyncState("222").backfill_done, 1);
+  assert.equal(repo.countUnnotified(), 0);
+});
+
+test("ciclo: orçamento de tempo esgotado deixa o trabalho pesado para o próximo ciclo", async () => {
+  const repo = memoryRepo();
+  const roblox = fakeRoblox(paginate(sales(300)));
+  const sync = service(repo, roblox, { config: { sync: { ...testConfig().sync, backgroundBudgetMs: 0 } } });
+  const cycle = await sync.runCycle();
+  assert.equal(cycle.groups[0].ok, true);
+  assert.equal(repo.countSales(), 100, "só a 1ª página (início do backfill)");
+  assert.equal(repo.getSyncState("111").backfill_cursor, "c1");
+  assert.deepEqual(roblox.calls.pages, [null, null]);
+});
+
+test("ciclo: rodízio — o grupo que começa o segundo plano muda a cada ciclo", async () => {
+  const repo = memoryRepo();
+  const config = testConfig({ groups: [{ id: "111", name: "A", split: {} }, { id: "222", name: "B", split: {} }] });
+  const roblox = fakeRoblox(paginate(sales(1000)));
+  const firstBackground = [];
+  let phase2 = false;
+  const original = roblox.getSalesPage;
+  roblox.getSalesPage = async (groupId, cursor) => {
+    if (phase2) {
+      firstBackground.push(groupId);
+      phase2 = false;
+    }
+    return original(groupId, cursor);
+  };
+  const sync = createSyncService({ repo, roblox, config, alerts: fakeAlerts(), clock: () => NOW, sleep: async () => {}, backfillPagesPerCycle: 1 });
+  for (let i = 0; i < 3; i += 1) await sync.runCycle({ afterNew: async () => { phase2 = true; } });
+  assert.deepEqual(firstBackground, ["111", "222", "111"]);
+});
+
+test("ciclo: erro no segundo plano não marca o grupo como falho nem perde o progresso", async () => {
+  const repo = memoryRepo();
+  const { RobloxError } = require("../src/roblox/errors");
+  const roblox = fakeRoblox(paginate(sales(300)));
+  const original = roblox.getSalesPage;
+  roblox.getSalesPage = async (groupId, cursor) => {
+    if (cursor === "c1") throw new RobloxError("Roblox respondeu 429", { status: 429, retryable: true });
+    return original(groupId, cursor);
+  };
+  const sync = service(repo, roblox);
+  const cycle = await sync.runCycle();
+  assert.equal(cycle.groups[0].ok, true);
+  assert.ok(cycle.groups[0].backgroundError);
+  assert.equal(repo.getSyncState("111").consecutive_failures, 0);
+  assert.equal(repo.getSyncState("111").backfill_cursor, "c1", "continua de onde parou");
 });
