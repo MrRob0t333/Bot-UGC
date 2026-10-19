@@ -158,3 +158,43 @@ test("cookieClient: monta a URL de transações com cursor", async () => {
   assert.equal(url.searchParams.get("limit"), "100");
   assert.equal(url.searchParams.get("cursor"), "cur/1");
 });
+
+test("http: 429 repetido espera cada vez mais, corta o ritmo e pausa tudo ao esgotar", async () => {
+  const limited = () => response(429, "lento", { "retry-after": "5" });
+  const { http, sleeps } = client([limited(), limited(), limited(), limited(), limited()], { requestsPerMinute: 60 });
+  await assert.rejects(http.getJson("https://x.test/a"), error => error.status === 429);
+  assert.equal(sleeps.length, 4);
+  assert.equal(sleeps[0], 5000, "nunca menos que o Retry-After");
+  assert.ok(sleeps[3] > sleeps[0] * 4, "espera dobra a cada tentativa");
+  assert.equal(http.limiter.limit, 30, "ritmo cai pela metade (uma vez por rajada)");
+  assert.ok(http.limiter.pausedUntil > Date.now() + 50000, "próximas requisições ficam pausadas ~1 min");
+});
+
+test("http: limitador adaptativo volta a subir aos poucos sem 429", async () => {
+  let now = 1_000_000;
+  const limiter = new RateLimiter({ perMinute: 60, now: () => now, sleep: async ms => { now += ms; } });
+  assert.equal(limiter.penalize(), true);
+  assert.equal(limiter.limit, 30);
+  now += 10_000;
+  assert.equal(limiter.penalize(), false, "429 da mesma rajada não corta de novo");
+  now += 60_000;
+  limiter.penalize();
+  assert.equal(limiter.limit, 15);
+  now += 5 * 60_000;
+  await limiter.acquire();
+  assert.equal(limiter.limit, 21);
+  for (let i = 0; i < 20; i += 1) {
+    now += 5 * 60_000;
+    limiter.recover();
+  }
+  assert.equal(limiter.limit, 60, "nunca passa do configurado");
+});
+
+test("http: pausa do limitador segura a próxima requisição", async () => {
+  let now = 0;
+  const waits = [];
+  const limiter = new RateLimiter({ perMinute: 60, now: () => now, sleep: async ms => { waits.push(ms); now += ms; } });
+  limiter.penalize(60_000);
+  await limiter.acquire();
+  assert.deepEqual(waits, [60_000]);
+});
