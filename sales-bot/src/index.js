@@ -127,7 +127,8 @@ async function main() {
 
   const pollMs = config.sync.pollIntervalMinutes * 60 * 1000;
   stops.push(every("coleta", pollMs, async () => {
-    const result = await core.sync.runCycle();
+    // Avisos saem logo depois das vendas novas, antes do backfill/revisão de pendentes.
+    const result = await core.sync.runCycle({ afterNew: () => app.notifier.flush() });
     if (result.skipped) logger.debug(`Ciclo pulado: ${result.skipped}`);
     await app.notifier.flush();
   }));
