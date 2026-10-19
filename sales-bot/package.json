@@ -1,0 +1,26 @@
+{
+  "name": "roblox-sales-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bot Discord privado que acompanha as vendas dos grupos Roblox (avisos, resumos, lista, exportação e saldo).",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "sync:once": "node src/cli/sync-once.js",
+    "check": "node src/cli/check.js",
+    "register": "node src/cli/register-commands.js",
+    "test": "node --test --test-concurrency=1"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.4.1"
+  }
+}

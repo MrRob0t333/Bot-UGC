@@ -1,0 +1,4 @@
+[
+  { "itemId": 1234567890, "name": "Camisa Exemplo", "price": 100 },
+  { "itemId": 9876543210, "name": "Calça Exemplo", "price": 50 }
+]
