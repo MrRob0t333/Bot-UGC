@@ -4,8 +4,10 @@
  * Cliente HTTP resiliente (padrões do "Release It!"):
  *  - timeout por requisição (AbortController);
  *  - retry com backoff exponencial + jitter para falhas transitórias (rede, 5xx, 429);
- *  - respeita Retry-After em 429/503;
- *  - limitador de requisições por minuto (janela deslizante), compartilhado;
+ *  - respeita Retry-After em 429/503 (em 429 espera no mínimo ~5 s, dobrando);
+ *  - limitador de requisições por minuto (janela deslizante), compartilhado e
+ *    adaptativo: cada 429 corta o ritmo pela metade, que depois sobe aos poucos;
+ *    se as tentativas de um 429 se esgotarem, todas as requisições pausam 1 min;
  *  - 401/403 NÃO são re-tentados aqui: viram erros tipados para a camada de cima
  *    decidir (marcar cookie inválido, avisar uma vez, espaçar tentativas).
  */
@@ -17,31 +19,72 @@ const { redact } = require("../logger");
 // (npm run check / sync:once) encerrava com código 0 no meio de um retry.
 const defaultSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+const RATE_LIMIT_BASE_MS = 5000;
+const RATE_LIMIT_PAUSE_MS = 60 * 1000;
+
+// Depois de um 429, o limite volta a subir aos poucos: +10% a cada 5 min sem 429.
+const RECOVERY_STEP_MS = 5 * 60 * 1000;
+// Vários 429 em sequência (as tentativas de uma mesma requisição) contam como um só corte.
+const PENALTY_WINDOW_MS = 30 * 1000;
+
 class RateLimiter {
-  constructor({ perMinute = 60, now = () => Date.now(), sleep = defaultSleep } = {}) {
+  constructor({ perMinute = 60, minPerMinute = 6, now = () => Date.now(), sleep = defaultSleep } = {}) {
     this.perMinute = perMinute;
+    this.minPerMinute = Math.max(1, Math.min(perMinute, minPerMinute));
+    this.limit = perMinute; // limite efetivo (cai com 429, sobe sozinho)
     this.now = now;
     this.sleep = sleep;
     this.timestamps = [];
     this.queue = Promise.resolve();
+    this.pausedUntil = 0;
+    this.lastChangeAt = 0;
   }
 
   /** Aguarda até haver espaço na janela de 60s. Serializa chamadas concorrentes. */
   acquire() {
     const run = async () => {
+      const pause = this.pausedUntil - this.now();
+      if (pause > 0) await this.sleep(pause);
+      this.recover();
       for (;;) {
         const current = this.now();
         while (this.timestamps.length && current - this.timestamps[0] >= 60000) this.timestamps.shift();
-        if (this.timestamps.length < this.perMinute) {
+        if (this.timestamps.length < this.limit) {
           this.timestamps.push(current);
           return;
         }
-        await this.sleep(Math.max(50, 60000 - (current - this.timestamps[0]) + 10));
+        await this.sleep(Math.max(50, 60000 - (current - this.timestamps[this.timestamps.length - this.limit]) + 10));
       }
     };
     const next = this.queue.then(run, run);
     this.queue = next.catch(() => {});
     return next;
+  }
+
+  /**
+   * A Roblox respondeu 429: corta o limite pela metade (no máximo uma vez a cada 30 s)
+   * e, se `pauseMs`, segura TODAS as próximas requisições por esse tempo.
+   * Retorna true se o limite mudou.
+   */
+  penalize(pauseMs = 0) {
+    const now = this.now();
+    let changed = false;
+    if (now - this.lastChangeAt >= PENALTY_WINDOW_MS || this.limit >= this.perMinute) {
+      const next = Math.max(this.minPerMinute, Math.floor(this.limit / 2));
+      changed = next !== this.limit;
+      this.limit = next;
+      this.lastChangeAt = now;
+    }
+    if (pauseMs > 0) this.pausedUntil = Math.max(this.pausedUntil, now + pauseMs);
+    return changed;
+  }
+
+  recover() {
+    if (this.limit >= this.perMinute) return;
+    const now = this.now();
+    if (now - this.lastChangeAt < RECOVERY_STEP_MS) return;
+    this.limit = Math.min(this.perMinute, this.limit + Math.max(1, Math.round(this.perMinute / 10)));
+    this.lastChangeAt = now;
   }
 }
 
@@ -82,6 +125,12 @@ function createHttpClient(options = {}) {
     defaultHeaders = {},
   } = options;
   const limiter = options.limiter || new RateLimiter({ perMinute: requestsPerMinute, sleep });
+
+  function onRateLimited(pauseMs) {
+    if (limiter.penalize?.(pauseMs)) {
+      logger?.warn(`Roblox pediu para ir mais devagar: ritmo reduzido para ${limiter.limit} req/min (volta a subir sozinho).`);
+    }
+  }
 
   async function requestOnce(url, init) {
     await limiter.acquire();
@@ -151,12 +200,20 @@ function createHttpClient(options = {}) {
         retryable,
         url: safeUrl,
       });
+      if (status === 429) onRateLimited(attempt >= maxRetries ? RATE_LIMIT_PAUSE_MS : 0);
       if (!retryable || attempt >= maxRetries) throw lastError;
 
       const retryAfter = parseRetryAfter(response.headers?.get?.("retry-after"));
+      // Em 429 a Roblox costuma mandar Retry-After curto demais (5 s) e responder 429 de novo:
+      // usa o maior entre o Retry-After e um backoff que começa em ~5 s e dobra.
+      const backoff = backoffDelay(attempt, {
+        baseMs: status === 429 ? Math.max(baseDelayMs, RATE_LIMIT_BASE_MS) : baseDelayMs,
+        maxMs: maxDelayMs,
+        random,
+      });
       const delay = retryAfter !== null
-        ? Math.min(Math.max(retryAfter, 250), 5 * 60000)
-        : backoffDelay(attempt, { baseMs: baseDelayMs, maxMs: maxDelayMs, random });
+        ? Math.min(Math.max(retryAfter, status === 429 ? backoff : 250), 5 * 60000)
+        : backoff;
       logger?.warn(`${lastError.message} — nova tentativa em ${delay} ms (${attempt + 1}/${maxRetries})`);
       await sleep(delay);
     }
