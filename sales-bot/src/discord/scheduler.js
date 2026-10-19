@@ -53,8 +53,12 @@ function titleFor(kind, period, tz) {
 
 const PERIOD_FOR = { daily: "hoje", weekly: "semana", monthly: "mes_passado" };
 
+const RETRY_MS = 5 * 60 * 1000;
+
 function createScheduler({ repo, config, send, ctx, logger, clock = () => new Date() }) {
   let running = false;
+  // Falha ao enviar (ex.: bot sem acesso ao canal): tenta de novo a cada 5 min, não a cada 30 s.
+  const retryAt = new Map();
 
   async function runKind(kind, occurrence) {
     const period = resolvePeriod(PERIOD_FOR[kind], { now: occurrence, timeZone: config.timezone });
@@ -80,6 +84,7 @@ function createScheduler({ repo, config, send, ctx, logger, clock = () => new Da
           const key = `schedule:${kind}:last`;
           const last = repo.getState(key);
           if (last === occurrence.toISOString()) continue;
+          if ((retryAt.get(kind) || 0) > now.getTime()) continue;
           if (now - occurrence > CATCH_UP_MS) {
             // Perdeu a janela (bot fora por muito tempo): registra sem enviar.
             repo.setState(key, occurrence.toISOString());
@@ -88,9 +93,11 @@ function createScheduler({ repo, config, send, ctx, logger, clock = () => new Da
           try {
             await runKind(kind, occurrence);
             repo.setState(key, occurrence.toISOString());
+            retryAt.delete(kind);
             fired.push(kind);
           } catch (error) {
-            logger?.warn(`Falha ao enviar resumo ${kind} (tento de novo):`, error?.message || error);
+            retryAt.set(kind, now.getTime() + RETRY_MS);
+            logger?.warn(`Falha ao enviar resumo ${kind} (tento de novo em 5 min):`, error?.message || error);
           }
         }
       } finally {
