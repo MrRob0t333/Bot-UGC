@@ -82,7 +82,7 @@ npm test            # testes automatizados (Roblox mockada)
 npm run register    # re-registra os slash commands (o bot já faz isso ao iniciar)
 ```
 
-Na **primeira execução** o bot importa todo o histórico de vendas que a API devolver (*backfill*), devagar e retomável; essas vendas antigas **não** geram aviso. Quando termina, ele avisa no canal de alertas. Dica de diagnóstico: `npm run sync:once -- --dump` salva a primeira página bruta da API em `data/debug/`.
+Na **primeira execução** o bot importa o histórico de vendas dos últimos **60 dias** (`BACKFILL_MAX_DAYS`; `0` = tudo o que a API devolver), devagar e retomável; essas vendas antigas **não** geram aviso. Quando termina, ele avisa no canal de alertas. Dica de diagnóstico: `npm run sync:once -- --dump` salva a primeira página bruta da API em `data/debug/`.
 
 ## 5. Comandos
 
