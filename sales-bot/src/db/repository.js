@@ -137,6 +137,27 @@ function createRepository(db) {
       return row?.v ? new Date(row.v) : null;
     },
 
+    /** Primeira e última venda do grupo vindas da API (exclui as importadas de CSV). */
+    apiSalesRange(groupId) {
+      const row = db.prepare("SELECT MIN(created_at) AS oldest, MAX(created_at) AS newest FROM sales WHERE group_id = ? AND id NOT LIKE ?").get(String(groupId), `${groupId}:csv:%`);
+      return { oldest: row?.oldest || null, newest: row?.newest || null };
+    },
+
+    /** Venda já existente equivalente a uma linha do CSV (mesmo comprador, item e valor; horário mais próximo). */
+    findMatchingSale({ groupId, buyerId, itemId, amount, from, to, around, exclude = new Set() }) {
+      const rows = db.prepare(`SELECT id, created_at FROM sales
+        WHERE group_id = ? AND buyer_id IS ? AND item_id IS ? AND amount = ? AND created_at >= ? AND created_at <= ? AND id NOT LIKE ?`)
+        .all(String(groupId), buyerId ?? null, itemId ?? null, Math.trunc(amount), from, to, `${groupId}:csv:%`);
+      const target = Date.parse(around);
+      let best = null;
+      for (const row of rows) {
+        if (exclude.has(row.id)) continue;
+        const distance = Math.abs(Date.parse(row.created_at) - target);
+        if (!best || distance < best.distance) best = { id: row.id, distance };
+      }
+      return best ? best.id : null;
+    },
+
     oldestSaleCreatedAt(groupId) {
       const row = db.prepare("SELECT MIN(created_at) AS v FROM sales WHERE group_id = ?").get(String(groupId));
       return row?.v ? new Date(row.v) : null;
