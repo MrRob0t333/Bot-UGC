@@ -9,6 +9,7 @@ const { PERIOD_CHOICES } = require("../reports/periods");
 
 const STRING = 3;
 const BOOLEAN = 5;
+const NUMBER = 10;
 
 function periodOption({ required = false, description = "Período" } = {}) {
   return { type: STRING, name: "periodo", description, required, choices: PERIOD_CHOICES };
@@ -67,6 +68,17 @@ const COMMANDS = [
     name: "status",
     description: "Saúde do bot: sincronização, cookie, backfill, erros",
     options: [publicOption],
+  },
+  {
+    name: "simular",
+    description: "Simulação: mostra o resumo e o gráfico com as vendas reais multiplicadas",
+    options: [
+      { type: NUMBER, name: "multiplicador", description: "Quantas vezes multiplicar (ex.: 2, 10, 2.5)", required: true, min_value: 0.1, max_value: 1000 },
+      periodOption({ description: "Período (padrão: hoje)" }),
+      groupOption,
+      ...dateOptions,
+      publicOption,
+    ],
   },
   {
     name: "sincronizar",
