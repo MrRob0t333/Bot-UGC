@@ -57,7 +57,7 @@ Registro curto das escolhas feitas durante a construção, com o motivo de cada 
   - Vendas entre 23:00 e 23:59 não aparecem no resumo diário daquele dia, mas entram no semanal/mensal e em `/resumo`.
 - **Período anterior equivalente:** períodos "até agora" (hoje, mês atual, ano) comparam com o mesmo trecho decorrido do período anterior; janelas móveis (24h/7d/30d) e personalizado comparam com a janela imediatamente anterior de mesma duração; "tudo" não compara.
 - Datas personalizadas `dd/mm/aaaa` com **fim inclusivo**.
-- **`/simular`** multiplica as vendas reais por qualquer fator (0,1 a 1000) para metas e brincadeiras, mas sempre marcado como simulação: título "🧪 SIMULAÇÃO ×N", aviso "Não são vendas reais" na descrição, cor amarela, rodapé e o próprio gráfico com a marca. Não existe versão sem a marca, para que um print nunca passe por faturamento real. A comparação com o período anterior é omitida (simulado vs. real não faz sentido).
+- **`/grafico` personalizável:** cor das barras (nomes em português ou #hex), tema claro/escuro, título, subtítulo, rodapé e linha de média. O `multiplicador` multiplica só os números exibidos naquele gráfico (banco, `/resumo`, avisos e resumos automáticos continuam reais) e acrescenta um "×N" pequeno e fixo ao lado do título — o texto personalizado não consegue removê-lo, para que um gráfico multiplicado nunca passe por faturamento real.
 - Embeds montados como JSON da API (sem `EmbedBuilder`), o que permite testá-los sem o Discord. Uma cor principal (azul), cinza para neutro, vermelho/amarelo/verde só em alertas.
 
 ## Gráficos
