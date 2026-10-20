@@ -372,3 +372,65 @@ test("backfill: para no limite de BACKFILL_MAX_DAYS e só guarda vendas dentro d
   assert.equal(repo.getSyncState("111").backfill_done, 1);
   assert.ok(alerts.sent.some(alert => /últimos 60 dias/.test(alert.message)));
 });
+
+/** Roblox falsa que recusa (HTTP 400) o cursor a partir de `limitCursor`, como a API real faz após ~100 páginas. */
+function cappedRoblox(pagesRef, limitCursor) {
+  const { RobloxError } = require("../src/roblox/errors");
+  const roblox = fakeRoblox(pagesRef);
+  const original = roblox.getSalesPage;
+  roblox.getSalesPage = async (groupId, cursor) => {
+    if (cursor === limitCursor) {
+      roblox.calls.pages.push(cursor);
+      throw new RobloxError("Roblox respondeu 400 em https://economy.roblox.com/v2/groups/1/transactions", { status: 400 });
+    }
+    return original(groupId, cursor);
+  };
+  return roblox;
+}
+
+test("backfill: cursor recusado (400) = fim do histórico da API, sem recomeçar do topo", async () => {
+  const repo = memoryRepo();
+  const roblox = cappedRoblox(paginate(sales(500, { stepMin: 5 })), "c3");
+  const alerts = fakeAlerts();
+  const sync = service(repo, roblox, { alerts });
+  const result = await sync.runBackfillChunk({ id: "111", name: "Grupo A" });
+  assert.equal(result.done, true);
+  assert.equal(result.apiLimit, true);
+  assert.equal(repo.countSales(), 300);
+  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2", "c3"], "não volta para o topo");
+  assert.equal(repo.getSyncState("111").backfill_done, 1);
+  assert.ok(alerts.sent.some(alert => /mais recentes/.test(alert.message)));
+  roblox.calls.pages.length = 0;
+  assert.equal((await sync.runBackfillChunk({ id: "111", name: "Grupo A" })).done, true);
+  assert.deepEqual(roblox.calls.pages, []);
+});
+
+test("revisão de pendentes: cursor recusado (400) encerra a revisão em vez de recomeçar", async () => {
+  const repo = memoryRepo();
+  const roblox = cappedRoblox(paginate(sales(500, { stepMin: 5, pending: n => n === 250 })), "c3");
+  const sync = service(repo, roblox);
+  await sync.runBackfillChunk({ id: "111", name: "Grupo A" });
+  roblox.calls.pages.length = 0;
+  const sweep = await sync.runSweepChunk({ id: "111", name: "Grupo A" });
+  assert.equal(sweep.done, true);
+  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2", "c3"]);
+});
+
+test("saldo: grupos sem permissão não gastam requisições até a próxima tentativa", async () => {
+  const repo = memoryRepo();
+  const config = testConfig({ groups: [{ id: "111", name: "A", split: {} }, { id: "222", name: "B", split: {} }] });
+  const ok = fakeRoblox([[rawSale(1)]]);
+  const roblox = {
+    ...ok,
+    async getSalesPage(groupId, cursor) {
+      if (groupId === "111") throw new RobloxPermissionError("403", { status: 403 });
+      return ok.getSalesPage(groupId, cursor);
+    },
+  };
+  const sync = createSyncService({ repo, roblox, config, alerts: fakeAlerts(), clock: () => NOW, sleep: async () => {} });
+  await sync.runCycle();
+  const results = await sync.snapshotFunds();
+  assert.equal(results[0].skipped, "permission_backoff");
+  assert.equal(results[1].ok, true);
+  assert.equal(ok.calls.funds, 1, "só o grupo com permissão consultou o saldo");
+});
