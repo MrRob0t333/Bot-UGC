@@ -137,6 +137,11 @@ function createRepository(db) {
       return row?.v ? new Date(row.v) : null;
     },
 
+    oldestSaleCreatedAt(groupId) {
+      const row = db.prepare("SELECT MIN(created_at) AS v FROM sales WHERE group_id = ?").get(String(groupId));
+      return row?.v ? new Date(row.v) : null;
+    },
+
     countSales(filter) {
       const { where, params } = buildWhere(filter);
       return Number(db.prepare(`SELECT COUNT(*) AS c FROM sales s ${where}`).get(...params).c);
