@@ -147,6 +147,9 @@ function createSyncService(deps) {
     let cursor = state.backfill_cursor || null;
     let pages = 0;
     let inserted = 0;
+    const maxDays = config.sync.backfillMaxDays ?? 0;
+    const startedAtMs = Date.parse(state.backfill_started_at) || clock().getTime();
+    const backfillCutoffMs = maxDays > 0 ? startedAtMs - maxDays * DAY_MS : null;
     while (pages < maxPages && !stopping && !pastDeadline(deadline)) {
       let page;
       try {
@@ -162,10 +165,14 @@ function createSyncService(deps) {
         throw error;
       }
       logSkipped(group, page.skipped);
-      const result = repo.upsertSales(page.sales, { markNotified: true, now: clock() });
+      // Só guarda o que está dentro do limite de dias (o resto da página é mais antigo).
+      const keep = backfillCutoffMs === null ? page.sales : page.sales.filter(sale => Date.parse(sale.createdAt) >= backfillCutoffMs);
+      const result = repo.upsertSales(keep, { markNotified: true, now: clock() });
       inserted += result.inserted.length;
       pages += 1;
-      cursor = page.nextCursor;
+      // Chegou ao limite de dias: a página já tem vendas mais antigas que o corte.
+      const reachedLimit = backfillCutoffMs !== null && page.sales.some(sale => Date.parse(sale.createdAt) < backfillCutoffMs);
+      cursor = reachedLimit ? null : page.nextCursor;
       const totalPages = Number(repo.getSyncState(group.id).backfill_pages || 0) + 1;
       if (!cursor) {
         repo.updateSyncState(group.id, {
@@ -180,7 +187,7 @@ function createSyncService(deps) {
         logger?.info(`Backfill concluído: ${group.name} — ${total} vendas no banco.`);
         await alerts?.notify({
           title: `Histórico importado: ${group.name}`,
-          message: `Backfill concluído com **${formatNumber(total)}** vendas no banco (${formatNumber(totalPages)} páginas). A partir de agora só vendas novas geram aviso.`,
+          message: `Backfill concluído com **${formatNumber(total)}** vendas no banco (${formatNumber(totalPages)} páginas${maxDays > 0 ? `, últimos ${maxDays} dias` : ""}). A partir de agora só vendas novas geram aviso.`,
           level: "info",
         });
         return { pages, inserted, done: true };
