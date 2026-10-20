@@ -14,11 +14,13 @@ const { buildBarChartSvg, svgToPng, parseColor, NAMED_COLORS } = require("../cha
 const { formatNumber, percentChange, truncate } = require("../format");
 const { formatDate, dayKey, DAY_MS } = require("../time");
 const { redact } = require("../logger");
+const { importSalesCsv, groupIdFromFilename } = require("../importers/salesCsv");
 const embeds = require("./embeds");
 const { totalPagesFor, nextPage, parseCustomId, buttonsRow, PAGE_SIZE, SESSION_TTL_MS } = require("./pagination");
 
 const EPHEMERAL = 64; // MessageFlags.Ephemeral
 const MAX_ATTACHMENT_BYTES = 9 * 1024 * 1024;
+const MAX_IMPORT_BYTES = 30 * 1024 * 1024;
 
 class UserError extends Error {}
 
@@ -246,13 +248,16 @@ function createHandlers(app) {
     const net = Math.round(totals.net * factor);
     const count = Math.round(totals.count * factor);
     const unit = granularity === "day" ? "dia" : granularity === "week" ? "semana" : "mês";
-    const avg = shown.length ? net / shown.length : 0;
+    // Média pelo tempo real do período (7 dias = ÷7), não pelo número de barras: um período
+    // móvel começa e termina no meio de um dia e teria 8 barras parciais.
+    const unitMs = granularity === "day" ? DAY_MS : granularity === "week" ? 7 * DAY_MS : 30.4375 * DAY_MS;
+    const avg = net / Math.max(1, (period.end.getTime() - start.getTime()) / unitMs);
 
     const title = options.getString("titulo") || `${formatNumber(net)} Robux em ${formatNumber(count)} vendas`;
     const subtitle = options.getString("subtitulo") ?? `${period.label}${group ? ` · ${group.name}` : ""} · por ${unit}${showAverage ? ` · média ${formatNumber(avg)}/${unit}` : ""}`;
     const footer = options.getString("rodape") ?? `Valores líquidos · ${period.description}`;
     const baseName = `grafico_${period.key}_${dayKey(app.clock(), tz)}`;
-    const chart = chartAttachment(shown, { title, titleTag: tag, subtitle, footer, baseName, color, theme, showAverage });
+    const chart = chartAttachment(shown, { title, titleTag: tag, subtitle, footer, baseName, color, theme, showAverage, average: avg });
     const embedTitle = options.getString("titulo") || `Vendas por ${unit} · ${period.label}`;
     const embed = {
       color: parseInt((color || "#2F6FDE").slice(1), 16),
@@ -266,6 +271,39 @@ function createHandlers(app) {
       embeds: [embed],
       files: [chart.file],
     });
+  }
+
+  /** /importar: lê o CSV de vendas da Roblox anexado e completa o histórico antigo. */
+  async function importar(interaction) {
+    const file = interaction.options.getAttachment?.("arquivo");
+    if (!file) throw new UserError("Anexe o arquivo CSV do relatório de vendas.");
+    if (file.size > MAX_IMPORT_BYTES) throw new UserError("Arquivo grande demais (máximo 30 MB). Importe um mês por vez.");
+    if (!/\.csv$/i.test(file.name || "")) throw new UserError("O arquivo precisa ser .csv (o relatório de vendas da Roblox).");
+    const chosen = groupFromOption(interaction);
+    const fromName = groupIdFromFilename(file.name);
+    const group = chosen || config.groups.find(entry => entry.id === fromName);
+    if (!group) throw new UserError(fromName ? `O grupo ${fromName} do arquivo não está em config/groups.json.` : "Não achei o ID do grupo no nome do arquivo. Escolha o grupo na opção `grupo`.");
+    if (chosen && fromName && chosen.id !== fromName) throw new UserError(`O arquivo é do grupo ${fromName}, mas você escolheu ${chosen.name}.`);
+
+    const response = await (app.fetchImpl || globalThis.fetch)(file.url);
+    if (!response.ok) throw new UserError("Não consegui baixar o arquivo do Discord. Tente enviar de novo.");
+    const text = await response.text();
+    let result;
+    try {
+      result = importSalesCsv(repo, { groupId: group.id, text, now: app.clock() });
+    } catch (error) {
+      throw new UserError(error.message);
+    }
+    const period = result.from ? `${formatDate(new Date(result.from), tz)} → ${formatDate(new Date(result.to), tz)}` : "—";
+    const lines = [
+      `**${group.name}** · ${formatNumber(result.rows)} linhas (${period})`,
+      `✅ Importadas: **${formatNumber(result.imported)}** vendas antigas · **${formatNumber(result.importedNet)}** Robux líquidos (preço cheio: ${formatNumber(result.importedGross)})`,
+      `🔁 Já estavam no bot: ${formatNumber(result.matched + (result.alreadyImported || 0))}`,
+    ];
+    if (result.newerSkipped) lines.push(`⏭️ Mais novas que a última coleta (a coleta normal pega): ${formatNumber(result.newerSkipped)}`);
+    if (result.unmatched) lines.push(`⚠️ No período que o bot já tem, mas sem par exato (não importadas para não duplicar): ${formatNumber(result.unmatched)}`);
+    if (result.invalid) lines.push(`⚠️ Linhas ignoradas (sem data ou valor): ${formatNumber(result.invalid)}`);
+    await interaction.editReply({ content: lines.join("\n").slice(0, 2000) });
   }
 
   async function saldo(interaction) {
@@ -358,7 +396,7 @@ function createHandlers(app) {
     });
   }
 
-  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, saldo, item, status, sincronizar };
+  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, saldo, item, status, importar, sincronizar };
 
   // ------------------------------------------------------------ autocomplete
 
