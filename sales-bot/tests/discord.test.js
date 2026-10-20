@@ -44,6 +44,7 @@ function fakeInteraction({ type = "command", commandName, options = {}, userId =
       getString: name => (options[name] === undefined ? null : options[name]),
       getBoolean: name => (options[name] === undefined ? null : options[name]),
       getNumber: name => (options[name] === undefined ? null : options[name]),
+      getAttachment: name => (options[name] === undefined ? null : options[name]),
       getFocused: () => focused,
     },
     async reply(payload) { interaction.replied = true; calls.push(["reply", payload]); },
@@ -60,7 +61,7 @@ const lastPayload = (interaction, kind) => [...interaction.calls].reverse().find
 
 test("comandos: todos definidos com nomes válidos e opção de período", () => {
   const names = COMMANDS.map(command => command.name);
-  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "sincronizar"]);
+  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "importar", "sincronizar"]);
   for (const command of COMMANDS) {
     assert.match(command.name, /^[a-z_]{1,32}$/);
     assert.ok(command.description.length <= 100, command.name);
@@ -237,6 +238,38 @@ test("gráfico SVG: tema escuro, cor própria, sem média e marca ×N no título
   assert.match(svg, /<tspan[^>]*>  ×10<\/tspan>/);
   assert.ok(!svg.includes("média"));
   assert.match(buildBarChartSvg(buckets, { title: "T" }), /média/);
+});
+
+test("/grafico: média usa o tempo real do período (7 dias ÷ 7, não ÷ 8 barras)", async () => {
+  const repo = memoryRepo();
+  seed(repo, 5);
+  const { handlers } = makeApp({ repo });
+  const interaction = fakeInteraction({ commandName: "grafico", options: { periodo: "7d" } });
+  await handlers.handle(interaction);
+  const embed = lastPayload(interaction, "editReply").embeds[0];
+  const net = repo.totals({}).net;
+  assert.ok(embed.description.includes(`média ${Math.round(net / 7)} por dia`), embed.description);
+});
+
+test("/importar: lê o CSV anexado, importa só o que a API não alcança e responde o resumo", async () => {
+  const repo = memoryRepo();
+  seed(repo, 3); // vendas da API nas últimas horas
+  repo.updateSyncState("111", { backfill_done: 1 });
+  const { app, handlers } = makeApp({ repo });
+  const old = new Date(NOW.getTime() - 10 * 24 * 3600 * 1000).toISOString();
+  const csv = "\uFEFFId,Buyer User Id,Date and Time,Location,Location Id,Universe Id,Universe,Asset Id,Asset Name,Asset Type,Hold Status,Revenue,Price\n" +
+    `abc+1/x==,42,${old},Website,Null,Null,Null,900,"Chapéu, azul",Hat,Released,30.0,100.0\n`;
+  app.fetchImpl = async url => ({ ok: url === "https://cdn.test/Sales_Group111_2026-10.csv", text: async () => csv });
+  const interaction = fakeInteraction({ commandName: "importar", options: { arquivo: { url: "https://cdn.test/Sales_Group111_2026-10.csv", name: "Sales_Group111_2026-10.csv", size: csv.length } } });
+  await handlers.handle(interaction);
+  const content = lastPayload(interaction, "editReply").content;
+  assert.match(content, /Importadas: \*\*1\*\* vendas antigas · \*\*30\*\* Robux líquidos \(preço cheio: 100\)/);
+  assert.equal(repo.countSales({ groupId: "111" }), 4);
+  assert.equal(repo.countUnnotified(), 0, "importação não gera avisos");
+
+  const wrong = fakeInteraction({ commandName: "importar", options: { arquivo: { url: "x", name: "planilha.xlsx", size: 10 } } });
+  await handlers.handle(wrong);
+  assert.match(JSON.stringify(wrong.calls), /precisa ser \.csv/);
 });
 
 test("/saldo, /item, /status e /sincronizar respondem", async () => {
