@@ -96,4 +96,31 @@ function buildSummary(repo, { period, groupId = null, groups = [], ownerIds = []
   };
 }
 
-module.exports = { buildSummary, splitAmount, partnerShares, groupName };
+// Campos de contagem/valor que uma simulação multiplica (percentuais e datas ficam iguais).
+const SCALED_KEYS = ["net", "count", "releasedNet", "releasedCount", "pendingNet", "pendingCount", "gross", "coveredNet", "coveredCount"];
+
+function scaleRow(row, factor) {
+  const out = { ...row };
+  for (const key of SCALED_KEYS) if (typeof out[key] === "number") out[key] = Math.round(out[key] * factor);
+  return out;
+}
+
+/**
+ * Cópia do resumo com valores e contagens multiplicados (comando /simular).
+ * A comparação com o período anterior é removida: comparar número simulado com real não faz sentido.
+ */
+function scaleSummary(summary, factor) {
+  return {
+    ...summary,
+    simulatedFactor: factor,
+    totals: scaleRow(summary.totals, factor),
+    previous: null,
+    topItems: summary.topItems.map(row => scaleRow(row, factor)),
+    topBuyers: summary.topBuyers.map(row => scaleRow(row, factor)),
+    byGroup: summary.byGroup.map(row => scaleRow(row, factor)),
+    partners: summary.partners.map(row => scaleRow(row, factor)),
+    gross: summary.gross ? scaleRow(summary.gross, factor) : null,
+  };
+}
+
+module.exports = { buildSummary, scaleSummary, splitAmount, partnerShares, groupName };
