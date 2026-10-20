@@ -21,12 +21,17 @@
 
 const { RobloxAuthError, RobloxPermissionError, RobloxError } = require("../roblox/errors");
 const { formatNumber } = require("../format");
+const { formatDate } = require("../time");
+const { redact } = require("../logger");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AUTH_RETRY_MS = 15 * 60 * 1000;
 const PERMISSION_RETRY_MS = 30 * 60 * 1000;
 const FAILURE_ALERT_THRESHOLD = 5;
 const BACKFILL_PAGES_PER_CYCLE = 50;
+// Observado em produção (out/2026): a API de transações de grupo recusa o cursor (HTTP 400)
+// depois de ~100 páginas de 100 vendas. Usado só no texto do aviso.
+const API_HISTORY_PAGES = 100;
 const SWEEP_PAGES_PER_CYCLE = 50;
 // Fração do intervalo de coleta que o trabalho em segundo plano pode usar por ciclo.
 const BACKGROUND_BUDGET_SHARE = 0.6;
@@ -150,17 +155,40 @@ function createSyncService(deps) {
     const maxDays = config.sync.backfillMaxDays ?? 0;
     const startedAtMs = Date.parse(state.backfill_started_at) || clock().getTime();
     const backfillCutoffMs = maxDays > 0 ? startedAtMs - maxDays * DAY_MS : null;
+    const finish = async ({ totalPages, apiLimit = false }) => {
+      repo.updateSyncState(group.id, {
+        backfill_done: 1,
+        backfill_cursor: null,
+        backfill_pages: totalPages,
+        backfill_completed_at: clock().toISOString(),
+      });
+      // O backfill acabou de ler o status de tudo: a próxima revisão de pendentes fica para depois.
+      setSweepState(group, { lastCompletedAt: clock().toISOString(), inProgress: false, cursor: null });
+      const total = repo.countSales({ groupId: group.id });
+      const oldest = repo.oldestSaleCreatedAt?.(group.id);
+      const since = oldest ? ` (desde ${formatDate(oldest, config.timezone)})` : "";
+      logger?.info(`Backfill concluído: ${group.name} — ${total} vendas no banco${since}${apiLimit ? " (limite da API da Roblox)" : ""}.`);
+      const scope = apiLimit
+        ? `. A Roblox só deixa ler as ~${formatNumber(API_HISTORY_PAGES * 100)} vendas mais recentes de cada grupo, então o histórico começa${since || " aí"}`
+        : maxDays > 0 ? `, últimos ${maxDays} dias` : "";
+      await alerts?.notify({
+        title: `Histórico importado: ${group.name}`,
+        message: `Backfill concluído com **${formatNumber(total)}** vendas no banco (${formatNumber(totalPages)} páginas${scope}). A partir de agora só vendas novas geram aviso.`,
+        level: "info",
+      });
+      return { pages, inserted, done: true, apiLimit };
+    };
     while (pages < maxPages && !stopping && !pastDeadline(deadline)) {
       let page;
       try {
         page = await roblox.getSalesPage(group.id, cursor);
       } catch (error) {
-        // Cursor salvo pode expirar: recomeça do topo (ingestão é idempotente).
-        if (cursor && error instanceof RobloxError && error.status === 400) {
-          logger?.warn(`Cursor de backfill expirou em ${group.name}; recomeçando do início.`);
-          cursor = null;
-          repo.updateSyncState(group.id, { backfill_cursor: null });
-          continue;
+        // A API de transações só pagina ~100 páginas para trás: depois disso responde 400 ao
+        // cursor. Antes isto era tratado como "cursor expirou" e o backfill recomeçava do topo
+        // para sempre. Agora é o fim do histórico disponível.
+        if (cursor && isCursorRejected(error)) {
+          logger?.warn(`Roblox recusou o cursor do backfill de ${group.name} (${redact(error.message)}); fim do histórico disponível.`);
+          return finish({ totalPages: Number(repo.getSyncState(group.id).backfill_pages || 0), apiLimit: true });
         }
         throw error;
       }
@@ -174,28 +202,15 @@ function createSyncService(deps) {
       const reachedLimit = backfillCutoffMs !== null && page.sales.some(sale => Date.parse(sale.createdAt) < backfillCutoffMs);
       cursor = reachedLimit ? null : page.nextCursor;
       const totalPages = Number(repo.getSyncState(group.id).backfill_pages || 0) + 1;
-      if (!cursor) {
-        repo.updateSyncState(group.id, {
-          backfill_done: 1,
-          backfill_cursor: null,
-          backfill_pages: totalPages,
-          backfill_completed_at: clock().toISOString(),
-        });
-        // O backfill acabou de ler o status de tudo: a próxima revisão de pendentes fica para depois.
-        setSweepState(group, { lastCompletedAt: clock().toISOString(), inProgress: false, cursor: null });
-        const total = repo.countSales({ groupId: group.id });
-        logger?.info(`Backfill concluído: ${group.name} — ${total} vendas no banco.`);
-        await alerts?.notify({
-          title: `Histórico importado: ${group.name}`,
-          message: `Backfill concluído com **${formatNumber(total)}** vendas no banco (${formatNumber(totalPages)} páginas${maxDays > 0 ? `, últimos ${maxDays} dias` : ""}). A partir de agora só vendas novas geram aviso.`,
-          level: "info",
-        });
-        return { pages, inserted, done: true };
-      }
+      if (!cursor) return finish({ totalPages });
       repo.updateSyncState(group.id, { backfill_cursor: cursor, backfill_pages: totalPages });
       if (config.sync.backfillPageDelayMs > 0 && pages < maxPages && !pastDeadline(deadline)) await sleep(config.sync.backfillPageDelayMs);
     }
     return { pages, inserted, done: false };
+  }
+
+  function isCursorRejected(error) {
+    return error instanceof RobloxError && error.status === 400;
   }
 
   function pastDeadline(deadline) {
@@ -281,11 +296,11 @@ function createSyncService(deps) {
       try {
         page = await roblox.getSalesPage(group.id, cursor);
       } catch (error) {
-        if (cursor && error instanceof RobloxError && error.status === 400) {
-          logger?.warn(`Cursor da revisão de pendentes expirou em ${group.name}; recomeçando do topo.`);
-          cursor = null;
-          setSweepState(group, { cursor: null });
-          continue;
+        // Fim das páginas que a Roblox deixa ler: a revisão termina aqui (recomeçar do topo
+        // só repetiria as mesmas páginas até bater no mesmo limite).
+        if (cursor && isCursorRejected(error)) {
+          logger?.info(`Revisão de pendentes de ${group.name} chegou ao limite de páginas da Roblox (${total} pág.).`);
+          return finish();
         }
         throw error;
       }
@@ -450,6 +465,13 @@ function createSyncService(deps) {
     const results = [];
     for (const group of config.groups) {
       if (stopping) break;
+      // Grupo sem permissão: não gasta requisições (o limite da Roblox é pequeno);
+      // a coleta de vendas tenta de novo a cada 30 min e libera o saldo junto.
+      const retryAt = groupRetryAt.get(group.id);
+      if (retryAt && retryAt > clock().getTime()) {
+        results.push({ groupId: group.id, groupName: group.name, ok: false, skipped: "permission_backoff" });
+        continue;
+      }
       try {
         const funds = await roblox.getFunds(group.id);
         let pendingRobux = null;
