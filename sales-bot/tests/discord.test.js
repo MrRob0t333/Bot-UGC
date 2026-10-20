@@ -43,6 +43,7 @@ function fakeInteraction({ type = "command", commandName, options = {}, userId =
     options: {
       getString: name => (options[name] === undefined ? null : options[name]),
       getBoolean: name => (options[name] === undefined ? null : options[name]),
+      getNumber: name => (options[name] === undefined ? null : options[name]),
       getFocused: () => focused,
     },
     async reply(payload) { interaction.replied = true; calls.push(["reply", payload]); },
@@ -59,7 +60,7 @@ const lastPayload = (interaction, kind) => [...interaction.calls].reverse().find
 
 test("comandos: todos definidos com nomes válidos e opção de período", () => {
   const names = COMMANDS.map(command => command.name);
-  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "sincronizar"]);
+  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "simular", "sincronizar"]);
   for (const command of COMMANDS) {
     assert.match(command.name, /^[a-z_]{1,32}$/);
     assert.ok(command.description.length <= 100, command.name);
@@ -184,6 +185,38 @@ test("/grafico: gera imagem (PNG se resvg instalado, senão SVG)", async () => {
   assert.equal(payload.files.length, 1);
   assert.match(payload.files[0].name, /\.(png|svg)$/);
   assert.match(payload.embeds[0].title, /^Vendas por dia/);
+});
+
+test("/simular: multiplica valores e deixa claro em todo lugar que é simulação", async () => {
+  const repo = memoryRepo();
+  seed(repo, 5);
+  const real = repo.totals({});
+  const { handlers } = makeApp({ repo });
+  const interaction = fakeInteraction({ commandName: "simular", options: { multiplicador: 10, periodo: "tudo" } });
+  await handlers.handle(interaction);
+  const payload = lastPayload(interaction, "editReply");
+  const embed = payload.embeds[0];
+  assert.match(embed.title, /SIMULAÇÃO ×10/);
+  assert.match(embed.description, /Não são vendas reais/);
+  assert.ok(embed.description.includes(`## ${real.net * 10} Robux`), embed.description);
+  assert.match(embed.footer.text, /SIMULAÇÃO ×10 · não são vendas reais/);
+  assert.equal(payload.files.length, 1);
+  assert.match(payload.files[0].name, /^simulacao_10_/);
+  const vendas = embed.fields.find(field => field.name === "Vendas");
+  assert.ok(vendas.value.includes(`**${real.count * 10}**`), vendas.value);
+  // Os dados reais não mudam.
+  assert.equal(repo.totals({}).net, real.net);
+
+  const decimal = fakeInteraction({ commandName: "simular", options: { multiplicador: 2.5, periodo: "tudo" } });
+  await handlers.handle(decimal);
+  assert.match(lastPayload(decimal, "editReply").embeds[0].title, /SIMULAÇÃO ×2,5/);
+});
+
+test("/simular: multiplicador inválido mostra erro amigável", async () => {
+  const { handlers } = makeApp();
+  const interaction = fakeInteraction({ commandName: "simular", options: { multiplicador: 0, periodo: "hoje" } });
+  await handlers.handle(interaction);
+  assert.match(JSON.stringify(interaction.calls), /maior que 0/);
 });
 
 test("/saldo, /item, /status e /sincronizar respondem", async () => {
