@@ -60,7 +60,7 @@ const lastPayload = (interaction, kind) => [...interaction.calls].reverse().find
 
 test("comandos: todos definidos com nomes válidos e opção de período", () => {
   const names = COMMANDS.map(command => command.name);
-  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "simular", "sincronizar"]);
+  assert.deepEqual(names, ["resumo", "vendas", "exportar", "grafico", "saldo", "item", "status", "sincronizar"]);
   for (const command of COMMANDS) {
     assert.match(command.name, /^[a-z_]{1,32}$/);
     assert.ok(command.description.length <= 100, command.name);
@@ -187,36 +187,56 @@ test("/grafico: gera imagem (PNG se resvg instalado, senão SVG)", async () => {
   assert.match(payload.embeds[0].title, /^Vendas por dia/);
 });
 
-test("/simular: multiplica valores e deixa claro em todo lugar que é simulação", async () => {
+test("/grafico personalizado: cor, tema, textos e multiplicador só na exibição", async () => {
   const repo = memoryRepo();
   seed(repo, 5);
   const real = repo.totals({});
   const { handlers } = makeApp({ repo });
-  const interaction = fakeInteraction({ commandName: "simular", options: { multiplicador: 10, periodo: "tudo" } });
+  const interaction = fakeInteraction({
+    commandName: "grafico",
+    options: { periodo: "tudo", cor: "verde", tema: "escuro", titulo: "Meta da equipe", subtitulo: "Outubro", rodape: "Equipe Velvet", media: false, multiplicador: 10 },
+  });
   await handlers.handle(interaction);
   const payload = lastPayload(interaction, "editReply");
   const embed = payload.embeds[0];
-  assert.match(embed.title, /SIMULAÇÃO ×10/);
-  assert.match(embed.description, /Não são vendas reais/);
+  assert.equal(embed.title, "Meta da equipe · ×10", "×N fica fixo ao lado do título personalizado");
+  assert.equal(embed.color, 0x1a9f55);
   assert.ok(embed.description.includes(`## ${real.net * 10} Robux`), embed.description);
-  assert.match(embed.footer.text, /SIMULAÇÃO ×10 · não são vendas reais/);
+  assert.ok(!/média/.test(embed.description));
+  assert.equal(embed.footer.text, "Equipe Velvet");
   assert.equal(payload.files.length, 1);
-  assert.match(payload.files[0].name, /^simulacao_10_/);
-  const vendas = embed.fields.find(field => field.name === "Vendas");
-  assert.ok(vendas.value.includes(`**${real.count * 10}**`), vendas.value);
   // Os dados reais não mudam.
   assert.equal(repo.totals({}).net, real.net);
-
-  const decimal = fakeInteraction({ commandName: "simular", options: { multiplicador: 2.5, periodo: "tudo" } });
-  await handlers.handle(decimal);
-  assert.match(lastPayload(decimal, "editReply").embeds[0].title, /SIMULAÇÃO ×2,5/);
+  const normal = fakeInteraction({ commandName: "grafico", options: { periodo: "tudo" } });
+  await handlers.handle(normal);
+  const normalEmbed = lastPayload(normal, "editReply").embeds[0];
+  assert.ok(normalEmbed.description.includes(`## ${real.net} Robux`));
+  assert.ok(!normalEmbed.title.includes("×"));
 });
 
-test("/simular: multiplicador inválido mostra erro amigável", async () => {
+test("/grafico: cor ou multiplicador inválidos mostram erro amigável", async () => {
   const { handlers } = makeApp();
-  const interaction = fakeInteraction({ commandName: "simular", options: { multiplicador: 0, periodo: "hoje" } });
-  await handlers.handle(interaction);
-  assert.match(JSON.stringify(interaction.calls), /maior que 0/);
+  const badColor = fakeInteraction({ commandName: "grafico", options: { cor: "furta-cor" } });
+  await handlers.handle(badColor);
+  assert.match(JSON.stringify(badColor.calls), /Cor inválida/);
+  const badFactor = fakeInteraction({ commandName: "grafico", options: { multiplicador: 0 } });
+  await handlers.handle(badFactor);
+  assert.match(JSON.stringify(badFactor.calls), /maior que 0/);
+});
+
+test("gráfico SVG: tema escuro, cor própria, sem média e marca ×N no título", () => {
+  const { buildBarChartSvg, parseColor } = require("../src/charts/barChart");
+  assert.equal(parseColor("verde"), "#1A9F55");
+  assert.equal(parseColor("#ff00aa"), "#FF00AA");
+  assert.equal(parseColor("ff00aa"), "#FF00AA");
+  assert.equal(parseColor("nada"), null);
+  const buckets = [{ label: "1", net: 10, count: 1 }, { label: "2", net: 30, count: 2 }];
+  const svg = buildBarChartSvg(buckets, { title: "T", titleTag: "×10", color: "#FF00AA", theme: "escuro", showAverage: false });
+  assert.match(svg, /fill="#FF00AA"/);
+  assert.match(svg, /fill="#1E1F22"/);
+  assert.match(svg, /<tspan[^>]*>  ×10<\/tspan>/);
+  assert.ok(!svg.includes("média"));
+  assert.match(buildBarChartSvg(buckets, { title: "T" }), /média/);
 });
 
 test("/saldo, /item, /status e /sincronizar respondem", async () => {
