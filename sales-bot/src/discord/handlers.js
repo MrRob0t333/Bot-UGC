@@ -7,10 +7,10 @@
  */
 
 const { resolvePeriod, PeriodError, LABELS } = require("../reports/periods");
-const { buildSummary, scaleSummary, groupName: groupNameOf } = require("../reports/summary");
+const { buildSummary, groupName: groupNameOf } = require("../reports/summary");
 const { bucketize, chooseGranularity } = require("../reports/timeline");
 const { salesToCsv, BOM } = require("../reports/csv");
-const { buildBarChartSvg, svgToPng } = require("../charts/barChart");
+const { buildBarChartSvg, svgToPng, parseColor, NAMED_COLORS } = require("../charts/barChart");
 const { formatNumber, percentChange, truncate } = require("../format");
 const { formatDate, dayKey, DAY_MS } = require("../time");
 const { redact } = require("../logger");
@@ -206,38 +206,11 @@ function createHandlers(app) {
     return files;
   }
 
-  function chartAttachment(buckets, { title, subtitle, footer, baseName }) {
-    const svg = buildBarChartSvg(buckets, { title, subtitle, footer });
-    const png = svgToPng(svg);
+  function chartAttachment(buckets, { baseName, ...style }) {
+    const svg = buildBarChartSvg(buckets, style);
+    const png = svgToPng(svg, { theme: style.theme });
     if (png) return { file: { attachment: png, name: `${baseName}.png` }, image: `attachment://${baseName}.png` };
     return { file: { attachment: Buffer.from(svg, "utf8"), name: `${baseName}.svg` }, image: null };
-  }
-
-  async function grafico(interaction) {
-    const group = groupFromOption(interaction);
-    const period = periodFromOptions(interaction, "30d", group?.id);
-    const filter = { start: period.start, end: period.end, groupId: group?.id || null };
-    const totals = repo.totals(filter);
-    const start = period.start || (totals.firstAt ? new Date(totals.firstAt) : new Date(app.clock().getTime() - 30 * DAY_MS));
-    const { granularity, buckets } = bucketize(repo.salesTimeline(filter), start, period.end, tz);
-    const unit = granularity === "day" ? "dia" : granularity === "week" ? "semana" : "mês";
-    const avg = buckets.length ? totals.net / buckets.length : 0;
-    const title = `${formatNumber(totals.net)} Robux em ${formatNumber(totals.count)} vendas`;
-    const subtitle = `${period.label}${group ? ` · ${group.name}` : ""} · por ${unit} · média ${formatNumber(avg)}/${unit}`;
-    const baseName = `grafico_${period.key}_${dayKey(app.clock(), tz)}`;
-    const chart = chartAttachment(buckets, { title, subtitle, footer: `Valores líquidos · ${period.description}`, baseName });
-    const embed = {
-      color: embeds.COLORS.primary,
-      title: `Vendas por ${unit} · ${period.label}`,
-      description: `## ${formatNumber(totals.net)} Robux\n${formatNumber(totals.count)} vendas · média ${formatNumber(avg)} por ${unit}`,
-      footer: { text: `Valores líquidos (após a taxa da Roblox) · ${period.description}` },
-    };
-    if (chart.image) embed.image = { url: chart.image };
-    await interaction.editReply({
-      content: chart.image ? undefined : "⚠️ `@resvg/resvg-js` não está instalado; enviei o gráfico em SVG. Rode `npm install` para gerar PNG.",
-      embeds: [embed],
-      files: [chart.file],
-    });
   }
 
   /** "×10", "×2,5" */
@@ -246,36 +219,53 @@ function createHandlers(app) {
   }
 
   /**
-   * /simular: resumo + gráfico com as vendas reais multiplicadas, sempre identificado como
-   * simulação no título, na descrição, no rodapé e na imagem (não dá para confundir com o real).
+   * /grafico com aparência personalizável (cor, tema, textos, linha de média).
+   * O multiplicador muda só o que aparece neste gráfico (banco e outros comandos ficam reais)
+   * e deixa um "×N" discreto e fixo ao lado do título, que os textos personalizados não removem.
    */
-  async function simular(interaction) {
-    const factor = interaction.options.getNumber?.("multiplicador");
-    if (!Number.isFinite(factor) || factor <= 0 || factor > 1000) throw new UserError("O multiplicador precisa ser maior que 0 e no máximo 1000.");
-    const mult = multiplierLabel(factor);
-    const tag = `SIMULAÇÃO ${mult}`;
+  async function grafico(interaction) {
     const group = groupFromOption(interaction);
-    const period = periodFromOptions(interaction, "hoje", group?.id);
-    const real = buildSummary(repo, { period, groupId: group?.id || null, groups: config.groups, ownerIds: config.ownerIds });
-    const summary = scaleSummary(real, factor);
-    const embed = embeds.summaryEmbed(summary, ctx, { title: `🧪 ${tag} · ${period.label}${group ? ` · ${group.name}` : ""}` });
-    embed.color = embeds.COLORS.warn;
-    embed.description = `**⚠️ ${tag}: vendas reais multiplicadas por ${mult.slice(1)}. Não são vendas reais.**\n${embed.description}`;
-    embed.footer = { text: `${tag} · não são vendas reais · ${period.description}` };
+    const period = periodFromOptions(interaction, "30d", group?.id);
+    const options = interaction.options;
+    const rawFactor = options.getNumber?.("multiplicador");
+    const factor = rawFactor === null || rawFactor === undefined ? 1 : rawFactor;
+    if (!Number.isFinite(factor) || factor <= 0 || factor > 1000) throw new UserError("O multiplicador precisa ser maior que 0 e no máximo 1000.");
+    const colorText = options.getString("cor");
+    const color = parseColor(colorText);
+    if (colorText && !color) throw new UserError(`Cor inválida. Use um nome (${Object.keys(NAMED_COLORS).join(", ")}) ou um código como #1A9F55.`);
+    const theme = options.getString("tema") || "claro";
+    const showAverage = options.getBoolean?.("media") !== false;
+    const tag = factor === 1 ? "" : multiplierLabel(factor);
 
     const filter = { start: period.start, end: period.end, groupId: group?.id || null };
-    const start = period.start || (real.totals.firstAt ? new Date(real.totals.firstAt) : new Date(app.clock().getTime() - 30 * DAY_MS));
+    const totals = repo.totals(filter);
+    const start = period.start || (totals.firstAt ? new Date(totals.firstAt) : new Date(app.clock().getTime() - 30 * DAY_MS));
     const { granularity, buckets } = bucketize(repo.salesTimeline(filter), start, period.end, tz);
-    const scaled = buckets.map(bucket => ({ ...bucket, net: Math.round(bucket.net * factor), count: Math.round(bucket.count * factor) }));
+    // Só a exibição é multiplicada; os dados reais não mudam.
+    const shown = factor === 1 ? buckets : buckets.map(bucket => ({ ...bucket, net: Math.round(bucket.net * factor), count: Math.round(bucket.count * factor) }));
+    const net = Math.round(totals.net * factor);
+    const count = Math.round(totals.count * factor);
     const unit = granularity === "day" ? "dia" : granularity === "week" ? "semana" : "mês";
-    const chart = chartAttachment(scaled, {
-      title: `${tag} · ${formatNumber(summary.totals.net)} Robux`,
-      subtitle: `${period.label}${group ? ` · ${group.name}` : ""} · por ${unit} · não são vendas reais`,
-      footer: `${tag} · valores reais multiplicados por ${mult.slice(1)} · ${period.description}`,
-      baseName: `simulacao_${String(factor).replace(/[^0-9]/g, "_")}_${dayKey(app.clock(), tz)}`,
-    });
+    const avg = shown.length ? net / shown.length : 0;
+
+    const title = options.getString("titulo") || `${formatNumber(net)} Robux em ${formatNumber(count)} vendas`;
+    const subtitle = options.getString("subtitulo") ?? `${period.label}${group ? ` · ${group.name}` : ""} · por ${unit}${showAverage ? ` · média ${formatNumber(avg)}/${unit}` : ""}`;
+    const footer = options.getString("rodape") ?? `Valores líquidos · ${period.description}`;
+    const baseName = `grafico_${period.key}_${dayKey(app.clock(), tz)}`;
+    const chart = chartAttachment(shown, { title, titleTag: tag, subtitle, footer, baseName, color, theme, showAverage });
+    const embedTitle = options.getString("titulo") || `Vendas por ${unit} · ${period.label}`;
+    const embed = {
+      color: parseInt((color || "#2F6FDE").slice(1), 16),
+      title: `${embedTitle}${tag ? ` · ${tag}` : ""}`.slice(0, 256),
+      description: `## ${formatNumber(net)} Robux\n${formatNumber(count)} vendas${showAverage ? ` · média ${formatNumber(avg)} por ${unit}` : ""}`,
+      footer: { text: (options.getString("rodape") ?? `Valores líquidos (após a taxa da Roblox) · ${period.description}`).slice(0, 2048) || " " },
+    };
     if (chart.image) embed.image = { url: chart.image };
-    await interaction.editReply({ embeds: [embed], files: [chart.file] });
+    await interaction.editReply({
+      content: chart.image ? undefined : "⚠️ `@resvg/resvg-js` não está instalado; enviei o gráfico em SVG. Rode `npm install` para gerar PNG.",
+      embeds: [embed],
+      files: [chart.file],
+    });
   }
 
   async function saldo(interaction) {
@@ -368,7 +358,7 @@ function createHandlers(app) {
     });
   }
 
-  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, simular, saldo, item, status, sincronizar };
+  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, saldo, item, status, sincronizar };
 
   // ------------------------------------------------------------ autocomplete
 
