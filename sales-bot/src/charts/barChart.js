@@ -78,7 +78,7 @@ function buildBarChartSvg(buckets, options = {}) {
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const total = values.reduce((sum, value) => sum + value, 0);
-  const average = buckets.length ? total / buckets.length : 0;
+  const average = Number.isFinite(options.average) ? options.average : buckets.length ? total / buckets.length : 0;
   const step = buckets.length ? plotWidth / buckets.length : plotWidth;
   const barWidth = Math.max(1, Math.min(48, step * 0.72));
   const y = value => margin.top + plotHeight - (value / maxValue) * plotHeight;
