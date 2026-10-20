@@ -209,6 +209,8 @@ function loadConfig(options = {}) {
     pollIntervalMinutes: int(env, "POLL_INTERVAL_MINUTES", 3, { min: 1, max: 1440 }, errors),
     pendingRecheckDays: int(env, "PENDING_RECHECK_DAYS", 10, { min: 1, max: 60 }, errors),
     backfillPageDelayMs: int(env, "BACKFILL_PAGE_DELAY_MS", 2000, { min: 0, max: 60000 }, errors),
+    // Até quantos dias para trás importar o histórico (0 = tudo).
+    backfillMaxDays: int(env, "BACKFILL_MAX_DAYS", 60, { min: 0, max: 36500 }, errors),
     fundsSnapshotMinutes: int(env, "FUNDS_SNAPSHOT_MINUTES", 30, { min: 5, max: 1440 }, errors),
     backupKeep: int(env, "BACKUP_KEEP", 14, { min: 1, max: 365 }, errors),
     maxIncrementalPages: int(env, "MAX_INCREMENTAL_PAGES", 100, { min: 1, max: 10000 }, errors),
