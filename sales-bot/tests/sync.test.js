@@ -358,3 +358,17 @@ test("ciclo: erro no segundo plano não marca o grupo como falho nem perde o pro
   assert.equal(repo.getSyncState("111").consecutive_failures, 0);
   assert.equal(repo.getSyncState("111").backfill_cursor, "c1", "continua de onde parou");
 });
+
+test("backfill: para no limite de BACKFILL_MAX_DAYS e só guarda vendas dentro dele", async () => {
+  const repo = memoryRepo();
+  const roblox = fakeRoblox(paginate(sales(300, { stepMin: 60 * 24 }), 20)); // 1 venda por dia
+  const alerts = fakeAlerts();
+  const sync = service(repo, roblox, { alerts, config: { sync: { ...testConfig().sync, backfillMaxDays: 60 } } });
+  const result = await sync.runBackfillChunk({ id: "111", name: "Grupo A" });
+  assert.equal(result.done, true);
+  // Vendas de 0 a 60 dias atrás; a página 3 (dias 60–79) já passa do corte → para nela.
+  assert.equal(repo.countSales(), 61);
+  assert.deepEqual(roblox.calls.pages, [null, "c1", "c2", "c3"]);
+  assert.equal(repo.getSyncState("111").backfill_done, 1);
+  assert.ok(alerts.sent.some(alert => /últimos 60 dias/.test(alert.message)));
+});
