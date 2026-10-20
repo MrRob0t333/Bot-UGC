@@ -10,6 +10,7 @@ const { PERIOD_CHOICES } = require("../reports/periods");
 const STRING = 3;
 const BOOLEAN = 5;
 const NUMBER = 10;
+const ATTACHMENT = 11;
 
 function periodOption({ required = false, description = "Período" } = {}) {
   return { type: STRING, name: "periodo", description, required, choices: PERIOD_CHOICES };
@@ -80,6 +81,14 @@ const COMMANDS = [
     name: "status",
     description: "Saúde do bot: sincronização, cookie, backfill, erros",
     options: [publicOption],
+  },
+  {
+    name: "importar",
+    description: "Importa o relatório de vendas (CSV) que a Roblox manda por e-mail",
+    options: [
+      { type: ATTACHMENT, name: "arquivo", description: "Arquivo Sales_Group<ID>_<mês>.csv", required: true },
+      { type: STRING, name: "grupo", description: "Grupo (se o nome do arquivo não tiver o ID)", required: false, autocomplete: true },
+    ],
   },
   {
     name: "sincronizar",
