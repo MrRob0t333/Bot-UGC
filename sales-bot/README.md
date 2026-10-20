@@ -4,7 +4,7 @@ Bot de Discord **privado** (só os dois sócios usam) que acompanha as vendas do
 
 - **aviso a cada venda** no canal de vendas (agrupado quando chegam mais de 10 de uma vez);
 - **resumos automáticos** diário, semanal e mensal;
-- `/resumo`, `/vendas` (lista completa paginada), `/exportar` (CSV para Excel), `/grafico`, `/saldo`, `/item`, `/status`, `/sincronizar`;
+- `/resumo`, `/vendas` (lista completa paginada), `/exportar` (CSV para Excel), `/grafico`, `/simular`, `/saldo`, `/item`, `/status`, `/sincronizar`;
 - **alertas técnicos** (cookie expirado, sem permissão, falhas seguidas, histórico importado).
 
 Roda como processo separado no pm2 (`sales-bot`), com sua **própria aplicação Discord**, sem tocar no `velvet-bot` nem no `group-tenure-bot`.
@@ -94,6 +94,7 @@ Todas as respostas são **efêmeras** (só você vê), a menos que use `publico:
 | `/vendas [periodo] [grupo] [item] [comprador]` | lista **todas** as vendas, 10 por página, com ⏮ ◀ ▶ ⏭ (só quem abriu navega; expira em 10 min) |
 | `/exportar [periodo] [grupo]` | CSV (UTF-8 com BOM, `;`) que abre certo no Excel em português |
 | `/grafico [periodo] [grupo]` | imagem com barras de vendas por dia (por semana/mês em períodos longos) |
+| `/simular multiplicador [periodo] [grupo]` | resumo + gráfico com as vendas reais multiplicadas (ex.: ×10), marcado como **SIMULAÇÃO** no título, no texto e na imagem |
 | `/saldo` | Robux atuais de cada grupo + pendentes |
 | `/item nome` | desempenho de um item ao longo do tempo (com gráfico) |
 | `/status` | última sincronização por grupo, cookie OK?, backfill, erros recentes, uptime |
