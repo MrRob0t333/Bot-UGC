@@ -7,7 +7,7 @@
  */
 
 const { resolvePeriod, PeriodError, LABELS } = require("../reports/periods");
-const { buildSummary, groupName: groupNameOf } = require("../reports/summary");
+const { buildSummary, scaleSummary, groupName: groupNameOf } = require("../reports/summary");
 const { bucketize, chooseGranularity } = require("../reports/timeline");
 const { salesToCsv, BOM } = require("../reports/csv");
 const { buildBarChartSvg, svgToPng } = require("../charts/barChart");
@@ -240,6 +240,44 @@ function createHandlers(app) {
     });
   }
 
+  /** "×10", "×2,5" */
+  function multiplierLabel(factor) {
+    return `×${String(Number(factor.toFixed(2))).replace(".", ",")}`;
+  }
+
+  /**
+   * /simular: resumo + gráfico com as vendas reais multiplicadas, sempre identificado como
+   * simulação no título, na descrição, no rodapé e na imagem (não dá para confundir com o real).
+   */
+  async function simular(interaction) {
+    const factor = interaction.options.getNumber?.("multiplicador");
+    if (!Number.isFinite(factor) || factor <= 0 || factor > 1000) throw new UserError("O multiplicador precisa ser maior que 0 e no máximo 1000.");
+    const mult = multiplierLabel(factor);
+    const tag = `SIMULAÇÃO ${mult}`;
+    const group = groupFromOption(interaction);
+    const period = periodFromOptions(interaction, "hoje", group?.id);
+    const real = buildSummary(repo, { period, groupId: group?.id || null, groups: config.groups, ownerIds: config.ownerIds });
+    const summary = scaleSummary(real, factor);
+    const embed = embeds.summaryEmbed(summary, ctx, { title: `🧪 ${tag} · ${period.label}${group ? ` · ${group.name}` : ""}` });
+    embed.color = embeds.COLORS.warn;
+    embed.description = `**⚠️ ${tag}: vendas reais multiplicadas por ${mult.slice(1)}. Não são vendas reais.**\n${embed.description}`;
+    embed.footer = { text: `${tag} · não são vendas reais · ${period.description}` };
+
+    const filter = { start: period.start, end: period.end, groupId: group?.id || null };
+    const start = period.start || (real.totals.firstAt ? new Date(real.totals.firstAt) : new Date(app.clock().getTime() - 30 * DAY_MS));
+    const { granularity, buckets } = bucketize(repo.salesTimeline(filter), start, period.end, tz);
+    const scaled = buckets.map(bucket => ({ ...bucket, net: Math.round(bucket.net * factor), count: Math.round(bucket.count * factor) }));
+    const unit = granularity === "day" ? "dia" : granularity === "week" ? "semana" : "mês";
+    const chart = chartAttachment(scaled, {
+      title: `${tag} · ${formatNumber(summary.totals.net)} Robux`,
+      subtitle: `${period.label}${group ? ` · ${group.name}` : ""} · por ${unit} · não são vendas reais`,
+      footer: `${tag} · valores reais multiplicados por ${mult.slice(1)} · ${period.description}`,
+      baseName: `simulacao_${String(factor).replace(/[^0-9]/g, "_")}_${dayKey(app.clock(), tz)}`,
+    });
+    if (chart.image) embed.image = { url: chart.image };
+    await interaction.editReply({ embeds: [embed], files: [chart.file] });
+  }
+
   async function saldo(interaction) {
     const results = await app.sync.snapshotFunds();
     const rows = config.groups.map(group => {
@@ -330,7 +368,7 @@ function createHandlers(app) {
     });
   }
 
-  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, saldo, item, status, sincronizar };
+  const COMMAND_HANDLERS = { resumo, vendas, exportar, grafico, simular, saldo, item, status, sincronizar };
 
   // ------------------------------------------------------------ autocomplete
 
