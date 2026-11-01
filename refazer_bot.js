@@ -10358,6 +10358,20 @@ function extractAssetId(text, names) {
   return null;
 }
 
+function dynamicTextureMapIds(text) {
+  return {
+    color: extractAssetId(text, ["ColorMap", "ColorMapContent", "DiffuseTexture", "AlbedoMap", "TextureId", "TextureID", "Texture"]),
+    normal: extractAssetId(text, ["NormalMap", "NormalMapContent"]),
+    roughness: extractAssetId(text, ["RoughnessMap", "RoughnessMapContent"]),
+    metalness: extractAssetId(text, ["MetalnessMap", "MetalnessMapContent"]),
+  };
+}
+
+function ugcTextureAttachmentPaths(result) {
+  const paths = Array.isArray(result?.texturePaths) ? result.texturePaths : [];
+  return [...new Set([result?.texturePath, ...paths].filter(Boolean))];
+}
+
 function writeObj(mesh, objPath) {
   const vertices = mesh.vertices;
   const normals = mesh.normals || [];
@@ -10720,37 +10734,48 @@ async function processUGC(ugcId, options = {}) {
   const rbxmPath = path.join(tempDir, `${ugcId}.rbxm`);
   const objPath = path.join(tempDir, `${ugcId}.obj`);
   const glbPath = path.join(tempDir, `${ugcId}.glb`);
-  const texturePath = path.join(tempDir, `${ugcId}_texture.png`);
+  const texturePath = path.join(tempDir, `${ugcId}_texture_color.png`);
 
   const ugcBuffer = await downloadRobloxAsset(ugcId);
   fs.writeFileSync(rbxmPath, ugcBuffer);
 
   const ugcText = ugcBuffer.toString("utf8");
   const meshId = extractAssetId(ugcText, ["MeshId", "MeshID", "Mesh"]);
-  // Modern UGC can store the diffuse map on SurfaceAppearance instead of TextureId.
-  const textureId = extractAssetId(ugcText, ["TextureId", "TextureID", "ColorMap", "ColorMapContent", "DiffuseTexture", "AlbedoMap", "Texture"]);
+  // Dynamic heads commonly use SurfaceAppearance with separate PBR map references.
+  const textureMapIds = dynamicTextureMapIds(ugcText);
+  const textureId = textureMapIds.color;
 
   if (!meshId) {
     throw new Error(`Nao consegui encontrar MeshId no UGC ${ugcId}.`);
   }
 
   const meshPromise = downloadRobloxAsset(meshId);
-  const texturePromise = textureId
-    ? downloadRobloxAsset(textureId).catch(err => {
-      console.warn("Nao consegui baixar textura:", err.message);
-      return null;
-    })
-    : Promise.resolve(null);
+  const textureMapPromises = Object.entries(textureMapIds).map(async ([mapType, assetId]) => {
+    if (!assetId) return [mapType, null, null];
+    try {
+      return [mapType, assetId, await downloadRobloxAsset(assetId)];
+    } catch (err) {
+      console.warn(`Nao consegui baixar mapa ${mapType}:`, err.message);
+      return [mapType, assetId, null];
+    }
+  });
 
   const meshBuffer = await meshPromise;
   const mesh = loadMeshParser().parse(meshBuffer);
 
   let hasTexture = false;
-  const textureBuffer = await texturePromise;
+  const texturePaths = [];
+  const downloadedTextureMaps = await Promise.all(textureMapPromises);
 
-  if (textureBuffer) {
-    fs.writeFileSync(texturePath, textureBuffer);
-    hasTexture = true;
+  for (const [mapType, assetId, textureBuffer] of downloadedTextureMaps) {
+    if (!textureBuffer) continue;
+    const mapPath = mapType === "color"
+      ? texturePath
+      : path.join(tempDir, `${ugcId}_texture_${mapType}.png`);
+    fs.writeFileSync(mapPath, textureBuffer);
+    texturePaths.push(mapPath);
+    if (mapType === "color") hasTexture = true;
+    console.log(`[ugc_texture] asset=${ugcId} map=${mapType} source=${assetId}`);
   }
 
   writeObj(mesh, objPath);
@@ -10783,10 +10808,12 @@ async function processUGC(ugcId, options = {}) {
     objPath,
     glbPath,
     texturePath,
+    texturePaths,
     hasTexture,
     renderDir,
     meshId,
     textureId,
+    textureMapIds,
   };
 }
 
@@ -12399,34 +12426,29 @@ function publicAssetFileStem(name, assetId) {
   return `${normalizedName} - ${assetId}`;
 }
 
-function publicCopiedAssetAttachmentName(file, { assetName, assetId }) {
-  const extension = path.extname(file).toLowerCase() || ".bin";
-  const baseName = path.basename(file).toLowerCase();
-  const label = extension === ".glb"
-    ? "model"
-    : extension === ".obj"
-      ? "mesh"
-      : extension === ".rbxm" || extension === ".rbxmx"
-        ? "source"
-        : /texture|image|\.png|\.jpg|\.jpeg|\.webp/.test(baseName)
-          ? "texture"
-          : "file";
-  return `${publicAssetFileStem(assetName, assetId)} - ${label}${extension}`;
-}
-
 function publicClothingTemplateAttachmentName(name, catalogId, variant = "template") {
   return `${publicAssetFileStem(name, catalogId)} - ${variant}.png`;
 }
 
+function nextAssetDownloadSequence(count) {
+  const db = readWalletDb();
+  const start = Math.max(0, Math.floor(Number(db.assetDownloadSequence) || 0)) + 1;
+  db.assetDownloadSequence = start + Math.max(0, count - 1);
+  writeWalletDb(db);
+  return Array.from({ length: count }, (_, index) => start + index);
+}
+
 function attachmentsFromPaths(paths, asset = null) {
-  return paths
+  const files = paths
     .filter(Boolean)
-    .filter(file => fs.existsSync(file))
-    .map(file => new AttachmentBuilder(file, {
-      name: asset?.assetId
-        ? publicCopiedAssetAttachmentName(file, asset)
-        : path.basename(file),
-    }));
+    .filter(file => fs.existsSync(file));
+  const downloadNumbers = asset?.assetId && files.length ? nextAssetDownloadSequence(files.length) : [];
+
+  return files.map((file, index) => new AttachmentBuilder(file, {
+    name: asset?.assetId
+      ? `${downloadNumbers[index]}${path.extname(file).toLowerCase() || ".bin"}`
+      : path.basename(file),
+  }));
 }
 
 function formatBytes(bytes) {
@@ -14959,7 +14981,7 @@ async function processSteal2Batch(interaction, action) {
         textureAdjusted = false;
         console.warn("[steal2] no editable external texture; preserving source model for " + id);
       }
-      const files = [result.glbPath, result.objPath, result.rbxmPath, result.hasTexture ? result.texturePath : null];
+      const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)];
       const debit = removeWalletBalance({
         userId: interaction.user.id,
         amount: quote.walletAmount,
@@ -17684,12 +17706,7 @@ client.on("interactionCreate", async interaction => {
         if (isTextureAdjustedSteal) {
           await applyPhotopeaTextureAdjustment(result, textureAdjustment);
         }
-        const files = [
-          result.glbPath,
-          result.objPath,
-          result.rbxmPath,
-          result.hasTexture ? result.texturePath : null,
-        ];
+        const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)];
 
         const debit = removeWalletBalance({
           userId: interaction.user.id,
@@ -17840,12 +17857,7 @@ client.on("interactionCreate", async interaction => {
             itemQuote = calculateClothingCopyPrice(interaction);
           } else {
             const result = await processUGC(id, { render: false });
-            const files = [
-              result.glbPath,
-              result.objPath,
-              result.rbxmPath,
-              result.hasTexture ? result.texturePath : null,
-            ];
+            const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)];
 
             await interaction.followUp({
               content: `## Asset Copied\n**Name:** ${target.details?.Name || `UGC ${id}`}\n**UGC:** \`${id}\``,
@@ -17926,16 +17938,11 @@ client.on("interactionCreate", async interaction => {
         try {
           await interaction.followUp(`⏳ Preparing \`${id}\`...`).catch(() => {});
           const result = await processUGC(id, { render: false });
-          const files = [
-            result.glbPath,
-            result.objPath,
-            result.rbxmPath,
-            result.hasTexture ? result.texturePath : null,
-          ];
+          const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)];
 
           await interaction.followUp({
             content: `## ✅ Asset Copied\n**UGC:** \`${id}\``,
-            files: attachmentsFromPaths(files).slice(0, 10),
+            files: attachmentsFromPaths(files, { assetId: id }).slice(0, 10),
           });
           results.push({ id, ok: true });
         } catch (err) {
@@ -19084,7 +19091,7 @@ client.on("interactionCreate", async interaction => {
       result.glbPath,
       result.objPath,
       result.rbxmPath,
-      result.hasTexture ? result.texturePath : null,
+      ...ugcTextureAttachmentPaths(result),
     ];
 
     if (tripo.skipped) {
