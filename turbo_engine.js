@@ -134,10 +134,13 @@ function createTurboEngine(opts = {}) {
         if (proxy) { const PA = getProxyAgent(); if (PA) { const agent = new PA(proxy); fetchOpts.dispatcher = agent; } }
 
         const res = await fetch(url, fetchOpts);
-        lastText = await res.text().catch(() => "");
         lastStatus = res.status;
 
+        // Success path: return WITHOUT touching the body — callers stream/parse it.
         if (res.ok || res.status < 400) { recordSuccess(cookie, proxy); slot.release(); return res; }
+
+        // Error path: now the body is ours to read for diagnostics.
+        lastText = await res.text().catch(() => "");
 
         if ((res.status === 401 || res.status === 403) && chosen) {
           recordFailure(cookie, proxy, res.status, true); slot.release();
