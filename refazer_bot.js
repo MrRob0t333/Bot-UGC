@@ -13,6 +13,13 @@ const { promisify } = require("util");
 const { ProxyAgent } = require("undici");
 const execFileAsync = promisify(execFile);
 
+// ===== TURBO ENGINE + WATCHDOG =====
+const turbo = require("./turbo_engine");
+const { normalizeCookie, loadRobloxCookies } = require("./roblox_cookies");
+const watchdog = require("./turbo_watchdog");
+let turboEngine = null;
+
+
 const {
   Client,
   GatewayIntentBits,
@@ -67,15 +74,9 @@ function normalizeTripoApiBase(value) {
 const TOKEN = cleanEnv(process.env.REFAZER_DISCORD_TOKEN || process.env.DISCORD_TOKEN);
 const CLIENT_ID = cleanEnv(process.env.REFAZER_CLIENT_ID || process.env.CLIENT_ID);
 const GUILD_ID = cleanEnv(process.env.REFAZER_GUILD_ID || process.env.GUILD_ID);
-const ROBLOSECURITY = cleanEnv(process.env.ROBLOSECURITY);
-const ROBLOX_COOKIES = [
-  ROBLOSECURITY,
-  cleanEnv(process.env.ROBLOSECURITY_2 || process.env.REFAZER_ROBLOSECURITY_2),
-  cleanEnv(process.env.ROBLOSECURITY_3 || process.env.REFAZER_ROBLOSECURITY_3),
-  ...String(process.env.REFAZER_ROBLOSECURITY_POOL || "")
-    .split(/\n|,(?=_\|WARNING:)|,(?=_\|)/)
-    .map(item => cleanEnv(item)),
-].filter((item, index, list) => item && list.indexOf(item) === index).slice(0, 3);
+const ROBLOSECURITY = normalizeCookie(process.env.ROBLOSECURITY);
+const ROBLOX_COOKIES_ALL = loadRobloxCookies(process.env);
+const ROBLOX_COOKIES = ROBLOX_COOKIES_ALL.slice(0, 3); // só para o modo sem turbo
 
 const PREMIUM_ROLE = cleanEnv(process.env.REFAZER_PREMIUM_ROLE, "1521989120745013459");
 const ELITE_ROLE = cleanEnv(process.env.REFAZER_ELITE_ROLE, "1523463473328292013");
@@ -162,6 +163,25 @@ const ROBLOX_MAX_TRIANGLE_LIMIT = 3950;
 const GUIDED_THREAD_FREE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_FREE_CLOSE_HOURS || 24);
 const GUIDED_THREAD_PREMIUM_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_PREMIUM_CLOSE_HOURS || 168);
 const GUIDED_THREAD_ELITE_CLOSE_HOURS = Number(process.env.REFAZER_GUIDED_THREAD_ELITE_CLOSE_HOURS || 336);
+
+// ===== INICIALIZA TURBO ENGINE =====
+turboEngine = turbo.createTurboEngine();
+watchdog.start();
+
+// Substitui funções globais de acesso Roblox pelas versões turbo
+global.__turboEngine = turboEngine;
+global.__turboHeaders = turboEngine.turboHeaders;
+global.__turboFetch = turboEngine.turboFetch;
+global.__turboFetchJson = turboEngine.turboFetchJson;
+global.__turboFetchBuffer = turboEngine.turboFetchBuffer;
+global.__turboWaitForSlot = turboEngine.waitForTurboSlot;
+global.__turboStatus = turboEngine.turboStatus;
+global.__turboResetPause = turboEngine.resetTurboPause;
+global.__turboRecordSuccess = turboEngine.recordSuccess;
+global.__turboRecordFailure = turboEngine.recordFailure;
+global.__watchdogHeartbeat = watchdog.heartbeat;
+
+console.log(`[turbo] engine ativo: ${turboEngine.cookies.length} cookie(s), concorrencia=${turboEngine.maxIntervalMs ? "12" : "?"}, intervalo base=${turboEngine.baseIntervalMs}ms`);
 
 const DEFAULT_RENDER_SETTINGS = {
   lighting: "flat",
@@ -346,6 +366,20 @@ const SNIPER_PLAN_CONFIG = {
 };
 
 const BULK_ITEM_DELAY_MS = Number(process.env.REFAZER_BULK_ITEM_DELAY_MS || 3000);
+// Throughput knobs for the pooled bulk pipeline.
+const REFAZER_BULK_CONCURRENCY = Math.max(1, Number(process.env.REFAZER_BULK_CONCURRENCY || 6));
+const REFAZER_BULK_ZIP_GROUP = Math.max(1, Number(process.env.REFAZER_BULK_ZIP_GROUP || 10));
+const BULK_ASSET_LIMIT_OVERRIDE = Math.max(0, Number(process.env.REFAZER_BULK_ASSET_LIMIT_OVERRIDE || 0));
+const BLENDER_CONCURRENCY = Math.max(1, Number(process.env.REFAZER_BLENDER_CONCURRENCY || 3));
+// Steal-focus mode: non-steal commands are gated behind elevated roles.
+const STEAL_FOCUS_MODE = String(process.env.REFAZER_STEAL_FOCUS ?? "true") !== "false";
+const ELEVATED_ROLE_IDS = new Set(String(process.env.REFAZER_ELEVATED_ROLE_IDS || "").split(/[,\s;]+/).filter(Boolean));
+const STEAL_FOCUS_OPEN_COMMANDS = new Set([
+  "steal", "steal2", "copiar", "bulk_steal", "bulk_steal_clothing",
+  "buy", "velvet_comprar", "velvet_saldo", "balance", "history", "order_status",
+  "refazer_comandos", "commands",
+  ...String(process.env.REFAZER_STEAL_FOCUS_OPEN_EXTRA || "").split(/[,\s;]+/).filter(Boolean),
+]);
 const BULK_ASSET_LIMIT = Number(process.env.REFAZER_BULK_ASSET_LIMIT || 15);
 const BULK_VIEW_LIMIT = Number(process.env.REFAZER_BULK_VIEW_LIMIT || 80);
 const BULK_VIEW_RATE_LIMIT_RETRIES = Math.max(0, Number(process.env.REFAZER_BULK_VIEW_RATE_LIMIT_RETRIES || 2));
@@ -6651,6 +6685,17 @@ function userIsAllowed(interaction) {
   return userCanUseAssetTools(interaction) || hasRole(interaction, ELITE_ROLE) || hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE) || hasRole(interaction, NORMAL_ROLE) || hasRole(interaction, FREE_ROLE) || hasRole(interaction, AFFILIATE_ROLE);
 }
 
+// Steal-focus mode: non-steal commands require an elevated role (premium tiers,
+// asset tools/admin, or any role listed in REFAZER_ELEVATED_ROLE_IDS).
+function userHasElevatedAccess(interaction) {
+  if (userCanUseAssetTools(interaction) || userHasPremiumAccess(interaction)) return true;
+  if (hasRole(interaction, ELITE_LIFETIME_ROLE) || hasRole(interaction, PREMIUM_LIFETIME_ROLE)) return true;
+  for (const roleId of ELEVATED_ROLE_IDS) {
+    if (hasRole(interaction, roleId)) return true;
+  }
+  return false;
+}
+
 function commandChannelIsAllowed(interaction) {
   if (!COMMAND_CHANNEL_IDS.size) return true;
   if (COMMAND_CHANNEL_ADMIN_BYPASS && userIsAdmin(interaction)) return true;
@@ -6706,8 +6751,21 @@ async function checkCooldown(interaction) {
 async function downloadBuffer(url) {
   assertRobloxSafeModeAvailable();
 
-  const headers = {};
+  if (turboEngine) {
+    try {
+      return await turboEngine.turboFetchBuffer(url, {}, {});
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (msg.includes("404")) throw new Error("Nao consegui processar esse item. Talvez seja bundle, cabeca dinamica, emote, corpo ou roupa 3D ainda nao suportado.");
+      if (msg.includes("401") || msg.includes("403")) {
+        markRobloxAuthProblem({ status: 403, url, message: "Roblox denied access with the current cookie/account." });
+        throw new Error("Nao tenho permissao para acessar esse item.");
+      }
+      throw err;
+    }
+  }
 
+  const headers = {};
   if (ROBLOSECURITY) {
     headers.Cookie = `.ROBLOSECURITY=${ROBLOSECURITY}`;
   }
@@ -6738,6 +6796,17 @@ async function downloadRobloxAsset(assetId) {
   assertRobloxSafeModeAvailable();
 
   const url = `https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`;
+
+  if (turboEngine) {
+    try {
+      return await turboEngine.turboFetchBuffer(url, {}, {});
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (msg.includes("404")) throw new Error("Nao consegui processar esse item. Talvez seja bundle, cabeca dinamica, emote, corpo ou roupa 3D ainda nao suportado.");
+      throw err;
+    }
+  }
+
   const headers = {};
   if (ROBLOSECURITY) {
     headers.Cookie = `.ROBLOSECURITY=${ROBLOSECURITY}`;
@@ -6756,20 +6825,18 @@ async function downloadRobloxAsset(assetId) {
   return source.buffer;
 }
 
-function robloxHeaders(extra = {}, cookie = ROBLOX_COOKIES[0]) {
+function robloxHeaders(extra = {}, cookie = null) {
+  // Usa o turbo engine para selecionar o cookie mais saudável automaticamente
+  if (turboEngine) {
+    return turboEngine.turboHeaders(extra, cookie);
+  }
   const headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     "Accept": "application/json,text/plain,*/*",
-    // Keep catalog names in their original English catalog locale. Interface
-    // text is localized separately and should not alter creator-provided names.
     "Accept-Language": "en-US,en;q=0.9",
     ...extra,
   };
-
-  if (cookie) {
-    headers.Cookie = `.ROBLOSECURITY=${cookie}`;
-  }
-
+  if (cookie) headers.Cookie = `.ROBLOSECURITY=${cookie}`;
   return headers;
 }
 
@@ -6959,6 +7026,9 @@ function robloxSafeModeIsPaused() {
 }
 
 function markRobloxAuthProblem({ status, url, message }) {
+  if (turboEngine) {
+    turboEngine.recordFailure(null, null, status, true);
+  }
   robloxHealth.pausedUntil = Date.now() + ROBLOX_AUTH_PAUSE_MS;
   robloxHealth.lastError = message || "Roblox auth/access problem";
   robloxHealth.lastStatus = status || 0;
@@ -6967,12 +7037,19 @@ function markRobloxAuthProblem({ status, url, message }) {
 }
 
 function clearRobloxSafePause() {
+  if (turboEngine) turboEngine.resetTurboPause();
   robloxHealth.pausedUntil = 0;
   robloxHealth.lastError = "";
   robloxHealth.lastStatus = 0;
 }
 
 function assertRobloxSafeModeAvailable() {
+  if (turboEngine && turboEngine.turboStatus) {
+    const st = turboEngine.turboStatus();
+    if (st.globalPaused && st.globalPaused !== "0") {
+      throw new Error(`Turbo Safe Mode is active for about ${st.globalPaused}. Use /admin_status to reset.`);
+    }
+  }
   if (!robloxSafeModeIsPaused()) return;
   const minutes = Math.ceil(robloxPauseRemainingMs() / 60000);
   throw new Error(
@@ -6987,7 +7064,7 @@ function robloxStatusMessage() {
     "## Roblox Access Status",
     `**Safe Mode:** ${paused ? "Paused" : "Ready"}`,
     `**Pause remaining:** ${paused ? `${Math.ceil(robloxPauseRemainingMs() / 60000)} min` : "none"}`,
-    `**Configured cookies:** ${ROBLOX_COOKIES.length}`,
+    `**Configured cookies:** ${ROBLOX_COOKIES_ALL.length}`,
     `**Request interval:** ${ROBLOX_REQUEST_INTERVAL_MS}ms`,
     `**Rate-limit pause:** ${Math.ceil(ROBLOX_RATE_LIMIT_PAUSE_MS / 60000)} min`,
     `**Auth/access pause:** ${Math.ceil(ROBLOX_AUTH_PAUSE_MS / 60000)} min`,
@@ -7039,7 +7116,7 @@ function formatAdminSystemStatusMessage() {
     "## 🧱 Roblox Access",
     uiLine("Safe Mode", paused ? "paused" : "ready"),
     uiLine("Pause remaining", paused ? `${Math.ceil(robloxPauseRemainingMs() / 60000)} min` : "none"),
-    uiLine("Configured cookies", ROBLOX_COOKIES.length),
+    uiLine("Configured cookies", ROBLOX_COOKIES_ALL.length),
     uiLine("Last issue", robloxHealth.lastError || "none"),
     "",
     "## 📦 Queues",
@@ -7071,16 +7148,23 @@ function formatAdminSystemStatusMessage() {
 }
 
 async function waitForRobloxSlot() {
+  if (turboEngine) {
+    await turboEngine.waitForTurboSlot();
+    return;
+  }
   const now = Date.now();
   const waitUntil = Math.max(nextRobloxRequestAt, robloxRateLimitedUntil);
   if (waitUntil > now) {
     await wait(waitUntil - now);
   }
-
   nextRobloxRequestAt = Date.now() + ROBLOX_REQUEST_INTERVAL_MS;
 }
 
 async function waitForRobloxPublicSlot(maxWaitMs = null) {
+  if (turboEngine) {
+    await turboEngine.waitForTurboSlot(maxWaitMs);
+    return;
+  }
   const now = Date.now();
   const waitUntil = Math.max(nextRobloxPublicRequestAt, robloxPublicRateLimitedUntil);
   if (waitUntil > now) {
@@ -7090,7 +7174,6 @@ async function waitForRobloxPublicSlot(maxWaitMs = null) {
     }
     await wait(delay);
   }
-
   nextRobloxPublicRequestAt = Date.now() + Math.max(2000, ROBLOX_REQUEST_INTERVAL_MS);
 }
 
@@ -7108,6 +7191,9 @@ function retryDelayFromResponse(res, attempt) {
 }
 
 async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
+  if (turboEngine) {
+    return turboEngine.turboFetch(url, options, { maxAttempts: attempts });
+  }
   assertRobloxSafeModeAvailable();
 
   let lastText = "";
@@ -10468,21 +10554,48 @@ async function renderImages(objPath, texturePath, tempDir, renderSettings = DEFA
   return renderDir;
 }
 
-function exportGlb(objPath, texturePath, glbPath) {
-  execFileSync(
-    BLENDER_PATH,
-    [
-      "--background",
-      "--factory-startup",
-      "--python",
-      path.join(__dirname, "export_glb.py"),
-      "--",
-      objPath,
-      texturePath || "",
-      glbPath,
-    ],
-    { stdio: "inherit" }
-  );
+let blenderActiveCount = 0;
+const blenderWaiting = [];
+
+function acquireBlenderSlot() {
+  if (blenderActiveCount < BLENDER_CONCURRENCY) {
+    blenderActiveCount += 1;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => blenderWaiting.push(resolve));
+}
+
+function releaseBlenderSlot() {
+  const next = blenderWaiting.shift();
+  if (next) {
+    next();
+  } else {
+    blenderActiveCount = Math.max(0, blenderActiveCount - 1);
+  }
+}
+
+async function exportGlb(objPath, texturePath, glbPath) {
+  await acquireBlenderSlot();
+  try {
+    // execFileAsync keeps the Node event loop free while Blender runs; the slot
+    // pool above caps parallel Blender processes at BLENDER_CONCURRENCY.
+    await execFileAsync(
+      BLENDER_PATH,
+      [
+        "--background",
+        "--factory-startup",
+        "--python",
+        path.join(__dirname, "export_glb.py"),
+        "--",
+        objPath,
+        texturePath || "",
+        glbPath,
+      ],
+      { stdio: "inherit" }
+    );
+  } finally {
+    releaseBlenderSlot();
+  }
 }
 
 async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
@@ -10518,7 +10631,7 @@ async function applyPhotopeaTextureAdjustment(result, adjustments = {}) {
       }
       fs.copyFileSync(adjustedPath, result.texturePath);
       fs.unlinkSync(adjustedPath);
-      exportGlb(result.objPath, result.texturePath, result.glbPath);
+      await exportGlb(result.objPath, result.texturePath, result.glbPath);
       result.textureAdjustment = { brightness, contrast, saturation, maxTextureDimension, originalHash, adjustedHash };
       console.log("[steal2] texture adjusted brightness=" + brightness + " contrast=" + contrast + " saturation=" + saturation + " maxDimension=" + maxTextureDimension + " source=" + originalHash.slice(0, 12) + " result=" + adjustedHash.slice(0, 12));
       return;
@@ -10782,7 +10895,7 @@ async function processUGC(ugcId, options = {}) {
 
   if (shouldExportGlb) {
     try {
-      exportGlb(objPath, hasTexture ? texturePath : "", glbPath);
+      await exportGlb(objPath, hasTexture ? texturePath : "", glbPath);
     } catch (err) {
       console.warn("Nao consegui exportar GLB original:", err.message);
     }
@@ -14856,6 +14969,7 @@ client.once("clientReady", async () => {
   console.log(`Bot laboratorio online como ${client.user.tag}`);
   console.log(`Model engine active: ${activeModelEngineLabel()}`);
   console.log(`Multiview upload order: ${MULTIVIEW_UPLOAD_ORDER.map(publicViewName).join(", ")}`);
+  if (typeof __watchdogHeartbeat === "function") __watchdogHeartbeat();
   loadPendingMultiviewActions();
   await recoverInterruptedPendingGenerations();
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
@@ -14879,6 +14993,9 @@ client.once("clientReady", async () => {
   setInterval(() => {
     expirePrepaidSubscriptions().catch(err => console.warn("Erro ao expirar assinaturas Pix:", err.message));
   }, 60 * 60 * 1000);
+  setInterval(() => {
+    if (typeof __watchdogHeartbeat === "function") __watchdogHeartbeat();
+  }, Number(process.env.REFAZER_WATCHDOG_CHECK_INTERVAL_MS || 30000));
 });
 
 client.on("guildMemberAdd", async member => {
@@ -15956,6 +16073,19 @@ client.on("interactionCreate", async interaction => {
           : lang === "es"
             ? "No tienes el rol necesario para usar este bot."
             : "You do not have the required role to use this bot.",
+        flags: 64,
+      });
+      return;
+    }
+
+    if (STEAL_FOCUS_MODE && !STEAL_FOCUS_OPEN_COMMANDS.has(interaction.commandName) && !userHasElevatedAccess(interaction)) {
+      const lang = languageFor(interaction);
+      await interaction.reply({
+        content: lang === "pt-BR"
+          ? "## Comando exclusivo\nEste comando é apenas para cargos Premium/Elite ou superiores. Os comandos de steal (`/steal`, `/steal2`, `/bulk_steal`, `/bulk_steal_clothing`) estão liberados para todos os planos."
+          : lang === "es"
+            ? "## Comando exclusivo\nEste comando es solo para roles Premium/Elite o superiores. Los comandos de steal están disponibles para todos los planes."
+            : "## Elevated roles only\nThis command is reserved for Premium/Elite roles or higher. Steal commands (`/steal`, `/steal2`, `/bulk_steal`, `/bulk_steal_clothing`) are available to every plan.",
         flags: 64,
       });
       return;
@@ -17765,7 +17895,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "bulk_steal") {
-      const bulkLimit = bulkAssetLimitFor(interaction);
+      const bulkLimit = BULK_ASSET_LIMIT_OVERRIDE || bulkAssetLimitFor(interaction);
       const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, bulkLimit);
       const resetClassicTemplates = interaction.options.getBoolean("reset_template") === true;
 
@@ -17798,22 +17928,100 @@ client.on("interactionCreate", async interaction => {
         return;
       }
 
+      const bulkConcurrency = Math.min(REFAZER_BULK_CONCURRENCY, ids.length);
+
       await interaction.reply(
         `## Bulk Copy Started\n` +
         `**Plan:** ${planLabel}\n` +
         `**Assets:** ${ids.length}/${bulkLimit}\n` +
         `**Estimated price:** ${formatTokenAmount(totalWalletAmount)}\n` +
-        `**Pace:** one item every ${Math.ceil(BULK_ITEM_DELAY_MS / 1000)}s\n\n` +
-        "I will send each asset as soon as it is ready."
+        `**Workers:** ${bulkConcurrency} parallel | Deliveries in zips of up to ${REFAZER_BULK_ZIP_GROUP} assets\n\n` +
+        "Delivery happens right here in the channel as each zip batch closes."
       );
 
+      const bulkZipMaxBytes = Math.min(discordAttachmentLimitBytes(interaction), 45 * 1024 * 1024);
+      const bulkChannel = interaction.channel || null;
       const results = [];
       let charged = 0;
+      const zipAssetEntries = [];
 
-      for (let index = 0; index < ids.length; index += 1) {
-        const id = ids[index];
+      const bulkDeliver = async payload => {
+        // Channel messages outlive the interaction token (15 min), which is what
+        // makes long-running bulk jobs deliverable at all.
         try {
-          await interaction.followUp(`Preparing \`${id}\`...`).catch(() => {});
+          if (bulkChannel?.send) return await bulkChannel.send(payload);
+        } catch (err) {
+          console.warn("[bulk_steal] channel send failed, falling back to followUp:", err.message || err);
+        }
+        return interaction.followUp(payload).catch(() => null);
+      };
+
+      const stealCleanupTempDir = dir => {
+        if (!dir) return;
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      };
+
+      const flushStealZipBatch = async (force = false) => {
+        while (zipAssetEntries.length && (force || zipAssetEntries.length >= REFAZER_BULK_ZIP_GROUP)) {
+          const batch = [];
+          let batchBytes = 0;
+
+          while (zipAssetEntries.length && batch.length < REFAZER_BULK_ZIP_GROUP) {
+            const entry = zipAssetEntries[0];
+            const entryBytes = entry.files.reduce((sum, file) => sum + (fs.existsSync(file.filePath) ? fs.statSync(file.filePath).size : 0), 0);
+
+            if (!batch.length && entryBytes > bulkZipMaxBytes) {
+              zipAssetEntries.shift();
+              await bulkDeliver({
+                content: `## Asset Copied (direct, too large for the zip)\n**UGC:** \`${entry.id}\``,
+                files: entry.files.map(file => file.filePath).slice(0, 10),
+              });
+              entry.tempDirs.forEach(stealCleanupTempDir);
+              continue;
+            }
+            if (batch.length && batchBytes + entryBytes > bulkZipMaxBytes) break;
+
+            batch.push(zipAssetEntries.shift());
+            batchBytes += entryBytes;
+          }
+
+          if (!batch.length) break;
+
+          const zip = new AdmZip();
+          let added = 0;
+          for (const entry of batch) {
+            for (const file of entry.files) {
+              if (!fs.existsSync(file.filePath)) continue;
+              zip.addLocalFile(file.filePath, String(entry.id), file.name);
+              added += 1;
+            }
+          }
+
+          if (added) {
+            const zipPath = path.join(__dirname, "temp", "refazer", `bulk_steal_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.zip`);
+            zip.writeZip(zipPath);
+            await bulkDeliver({
+              content: `## Bulk Copy Delivery\n**Assets in this zip (${batch.length}):** ${batch.map(entry => `\`${entry.id}\``).join(", ")}`,
+              files: [zipPath],
+            });
+            try { fs.rmSync(zipPath, { force: true }); } catch {}
+          }
+
+          for (const entry of batch) entry.tempDirs.forEach(stealCleanupTempDir);
+        }
+      };
+
+      let zipFlushChain = Promise.resolve();
+      const scheduleZipFlush = (force = false) => {
+        zipFlushChain = zipFlushChain
+          .then(() => flushStealZipBatch(force))
+          .catch(err => console.warn("[bulk_steal] zip flush failed:", err.message || err));
+        return zipFlushChain;
+      };
+
+      const processBulkStealItem = async id => {
+        let itemTempDir = null;
+        try {
           const target = await classifyStealTarget(id);
           const isClassicClothing = target.kind === "clothing";
           let itemQuote;
@@ -17822,7 +18030,7 @@ client.on("interactionCreate", async interaction => {
             const clothing = await downloadClassicClothingTemplate(id);
             if (resetClassicTemplates) {
               const resetPath = await createResetTemplateImage(clothing);
-              await interaction.followUp({
+              await bulkDeliver({
                 content:
                   `## Clothing Template Reset\n` +
                   `**Name:** ${clothing.name}\n` +
@@ -17840,7 +18048,7 @@ client.on("interactionCreate", async interaction => {
                 result: clothing,
                 source: "bulk",
               });
-              await interaction.followUp({
+              await bulkDeliver({
                 content:
                   `## Clothing Template Copied\n` +
                   `**Name:** ${clothing.name}\n` +
@@ -17857,15 +18065,19 @@ client.on("interactionCreate", async interaction => {
             itemQuote = calculateClothingCopyPrice(interaction);
           } else {
             const result = await processUGC(id, { render: false });
-            const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)];
+            itemTempDir = result.tempDir;
+            const files = [result.glbPath, result.objPath, result.rbxmPath, ...ugcTextureAttachmentPaths(result)]
+              .filter((file, index, list) => file && fs.existsSync(file) && list.indexOf(file) === index);
 
-            await interaction.followUp({
-              content: `## Asset Copied\n**Name:** ${target.details?.Name || `UGC ${id}`}\n**UGC:** \`${id}\``,
-              files: attachmentsFromPaths(files, {
-                assetId: id,
-                assetName: target.details?.Name || `Roblox Asset ${id}`,
-              }).slice(0, 10),
+            if (!files.length) throw new Error("No files were produced for this asset.");
+
+            zipAssetEntries.push({
+              id,
+              files: files.map(filePath => ({ filePath, name: path.basename(filePath) })),
+              tempDirs: [result.tempDir].filter(Boolean),
             });
+            scheduleZipFlush();
+            itemTempDir = null; // ownership moved to the zip batch
             itemQuote = calculateCopyPrice(interaction);
           }
 
@@ -17889,23 +18101,33 @@ client.on("interactionCreate", async interaction => {
           else addCopyUsage(interaction.user.id, 1);
           results.push({ id, ok: true, type: isClassicClothing ? "clothing" : "asset" });
         } catch (err) {
-          console.error(err);
-          await interaction.followUp(`I could not copy \`${id}\`.`).catch(() => {});
+          console.error("[bulk_steal] item failed", id, err);
+          stealCleanupTempDir(itemTempDir);
+          await bulkDeliver(`## Asset skipped\n**UGC:** \`${id}\`\n${String(err.message || err).slice(0, 300)}`);
           results.push({ id, ok: false });
         }
+      };
 
-        if (index < ids.length - 1) {
-          await wait(BULK_ITEM_DELAY_MS);
+      let bulkCursor = 0;
+      const bulkWorker = async () => {
+        while (true) {
+          const index = bulkCursor;
+          bulkCursor += 1;
+          if (index >= ids.length) return;
+          await processBulkStealItem(ids[index]);
         }
-      }
+      };
 
-      await interaction.followUp(
+      await Promise.all(Array.from({ length: bulkConcurrency }, () => bulkWorker()));
+      await scheduleZipFlush(true);
+
+      await bulkDeliver(
         `## Bulk Copy Finished\n` +
         `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
         `**Charged:** ${formatTokenAmount(charged)}\n` +
         `**Remaining balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
         `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
-      ).catch(() => {});
+      );
       return;
     }
 
