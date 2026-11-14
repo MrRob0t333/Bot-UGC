@@ -106,6 +106,7 @@ function createTurboEngine(opts = {}) {
   let globalIntervalMs = baseIntervalMs;
   let globalPausedUntil = 0;
   let rateLimitedUntil = 0;
+  let nextFetchAt = 0;
   let lastGlobalError = "";
   let lastGlobalStatus = 0;
   const requestQueue = readJsonFile(QUEUE_PATH, { pending: [], processing: [], done: [] });
@@ -156,10 +157,13 @@ function createTurboEngine(opts = {}) {
   }
   const globalLock = { waiting: [] };
   async function waitForTurboSlot(maxWaitMs = null) {
-    const now = Date.now(); const waitUntil = Math.max(globalPausedUntil, rateLimitedUntil);
+    const now = Date.now(); const waitUntil = Math.max(globalPausedUntil, rateLimitedUntil, nextFetchAt);
     if (waitUntil > now) { const delay = waitUntil - now; if (Number.isFinite(maxWaitMs) && delay > maxWaitMs) throw new Error(`Turbo pausado ${Math.ceil(delay / 1000)}s`); await new Promise(r => setTimeout(r, delay)); }
     while (activeCount >= maxConcurrentTotal) { await new Promise(r => globalLock.waiting.push(r)); }
     activeCount += 1;
+    // Global request pacing (anti-429 discipline): adaptive — accelerates on
+    // success, backs off on failure via globalIntervalMs from record*().
+    nextFetchAt = Date.now() + globalIntervalMs;
     return { release: () => { activeCount = Math.max(0, activeCount - 1); if (globalLock.waiting.length) globalLock.waiting.shift()(); } };
   }
 
@@ -195,26 +199,32 @@ function createTurboEngine(opts = {}) {
 
         if ((res.status === 401 || res.status === 403) && chosen) {
           recordFailure(cookie, proxy, res.status, true); slot.release();
+          console.warn(`[turbo] ${res.status} ${new URL(url).hostname} cookie#${cookies.indexOf(cookie) + 1}${proxy ? " via " + proxy : " direto"} tentativa ${attempt + 1}/${attempts}`);
           await new Promise(r => setTimeout(r, 300)); continue;
         }
 
         if (res.status === 429) {
           const retryAfter = Number(res.headers.get("retry-after") || 0);
           const retryDelay = Math.min(retryAfter > 0 ? retryAfter * 1000 : initialRetryMs * (2 ** attempt), 60000);
-          rateLimitedUntil = Date.now() + retryDelay;
+          // 429 sidelines only this cookie/proxy pair; global pace adapts via
+          // recordFailure() below — no engine-wide freeze.
           recordFailure(cookie, proxy, 429); slot.release();
+          console.warn(`[turbo] 429 ${new URL(url).hostname}${proxy ? " via " + proxy : " direto"} tentativa ${attempt + 1}/${attempts} espera ${Math.ceil(retryDelay / 1000)}s`);
           if (attempt < attempts - 1) { await new Promise(r => setTimeout(r, retryDelay)); continue; }
           throw new Error(`Roblox rate limit (429). Aguarde ${Math.ceil(retryDelay / 1000)}s. Último: ${lastText.slice(0, 200)}`);
         }
 
         recordFailure(cookie, proxy, res.status); slot.release();
-        if (chosen && attempt < attempts - 1) { await new Promise(r => setTimeout(r, 500)); continue; }
+        if (chosen && attempt < attempts - 1) { console.warn(`[turbo] ${res.status} ${new URL(url).hostname} tentativa ${attempt + 1}/${attempts}`); await new Promise(r => setTimeout(r, 500)); continue; }
         throw new Error(`Roblox request failed (${res.status}): ${lastText.slice(0, 300)}`);
       } catch (err) {
         slot.release();
-        if (err && err.message && (err.message.includes("fetch") || err.message.includes("ECONN") || err.message.includes("timeout"))) {
+        if (err && err.message && (err.message.includes("fetch") || err.message.includes("ECONN") || err.message.includes("timeout") || err.message.includes("aborted") || err.name === "TimeoutError")) {
+          console.warn(`[turbo] rede ${new URL(url).hostname}${proxy ? " via " + proxy : " direto"} tentativa ${attempt + 1}/${attempts}: ${err.message.slice(0, 120)}`);
           await new Promise(r => setTimeout(r, 800));
           if (attempt < attempts - 1) continue;
+        } else {
+          console.warn(`[turbo] erro ${new URL(url).hostname}: ${String(err && err.message || err).slice(0, 120)}`);
         }
         throw err;
       }
