@@ -18035,14 +18035,21 @@ client.on("interactionCreate", async interaction => {
           if (!batch.length) break;
 
           const zip = new AdmZip();
-          let added = 0;
+          const zipFiles = [];
           for (const entry of batch) {
-            const folder = String(entry.seq).padStart(2, "0");
             for (const file of entry.files) {
               if (!fs.existsSync(file.filePath)) continue;
-              zip.addLocalFile(file.filePath, folder, file.name);
-              added += 1;
+              zipFiles.push({ entry, filePath: file.filePath });
             }
+          }
+          const downloadNumbers = zipFiles.length ? nextAssetDownloadSequence(zipFiles.length) : [];
+          let added = 0;
+          for (let index = 0; index < zipFiles.length; index += 1) {
+            const { entry, filePath } = zipFiles[index];
+            const folder = String(entry.seq).padStart(2, "0");
+            const ext = path.extname(filePath).toLowerCase() || ".bin";
+            zip.addLocalFile(filePath, folder, `${downloadNumbers[index]}${ext}`);
+            added += 1;
           }
 
           if (added) {
