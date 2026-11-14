@@ -1297,7 +1297,10 @@ const commands = [
     .setName("bulk_steal")
     .setDescription("Copies original assets in bulk")
     .addStringOption(o =>
-      o.setName("ids").setDescription("UGC IDs, separated by space or comma").setRequired(true)
+      o.setName("ids").setDescription("UGC IDs, separated by space or comma (or attach a txt file)").setRequired(false)
+    )
+    .addAttachmentOption(o =>
+      o.setName("arquivo").setDescription("TXT file with UGC IDs, one per line").setRequired(false)
     )
     .addBooleanOption(o =>
       o.setName("reset_template").setDescription("For classic clothing, apply the template guide automatically")
@@ -14216,6 +14219,20 @@ function parseBulkIds(raw, limit = BULK_ASSET_LIMIT) {
     .slice(0, limit);
 }
 
+// Bulk input accepts either the text option or an attached TXT file (IDs merged).
+async function resolveBulkIdsInput(interaction) {
+  const raw = (interaction.options.getString("ids") || "").trim();
+  const file = interaction.options.getAttachment("arquivo");
+
+  if (!file) return parseBulkIds(raw, Number.MAX_SAFE_INTEGER);
+  if (file.size && file.size > 8 * 1024 * 1024) throw new Error("Attachment too large (8 MB max).");
+
+  const res = await fetch(file.url, { signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`Could not download the attachment (${res.status}).`);
+  const text = await res.text();
+  return parseBulkIds((raw ? raw + "\n" : "") + text, Number.MAX_SAFE_INTEGER);
+}
+
 const pendingBulkViewPanels = new Map();
 const activeBulkViewJobs = new Map();
 const BULK_VIEW_PANEL_TTL_MS = 20 * 60 * 1000;
@@ -17897,7 +17914,16 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "bulk_steal") {
       const bulkLimit = BULK_ASSET_LIMIT_OVERRIDE || bulkAssetLimitFor(interaction);
-      const ids = parseBulkIds(interaction.options.getString("ids")).slice(0, bulkLimit);
+      let ids;
+      try {
+        ids = (await resolveBulkIdsInput(interaction)).slice(0, bulkLimit);
+      } catch (err) {
+        await interaction.reply({
+          content: `## Could not read the ID list\n${String(err.message || err).slice(0, 300)}`,
+          flags: 64,
+        });
+        return;
+      }
       const resetClassicTemplates = interaction.options.getBoolean("reset_template") === true;
 
       if (!ids.length) {

@@ -80,6 +80,20 @@ function createTurboEngine(opts = {}) {
     const best = pickBestProxy();
     return best ? { proxy: best.proxy, state: best.state } : null;
   }
+
+  // One shared ProxyAgent per proxy URL. Creating a fresh agent per request
+  // leaks sockets and eventually stalls the process after sustained load.
+  const proxyAgents = new Map();
+  function agentForProxyUrl(proxyUrl) {
+    let agent = proxyAgents.get(proxyUrl) || null;
+    if (!agent) {
+      const PA = getProxyAgent();
+      if (!PA) return null;
+      agent = new PA(proxyUrl);
+      proxyAgents.set(proxyUrl, agent);
+    }
+    return agent;
+  }
   const publicMirrorEnabled = String(env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED || "true") !== "false";
 
   const cookieHealth = new Map();
@@ -168,7 +182,7 @@ function createTurboEngine(opts = {}) {
         const reqHeaders = turboHeaders(headers, cookie);
         const fetchOpts = { method, headers: reqHeaders, signal: AbortSignal.timeout(fetchTimeoutMs) };
         if (body) fetchOpts.body = body;
-        if (proxy) { const PA = getProxyAgent(); if (PA) { const agent = new PA(proxy); fetchOpts.dispatcher = agent; } }
+        if (proxy) { const agent = agentForProxyUrl(proxy); if (agent) fetchOpts.dispatcher = agent; }
 
         const res = await fetch(url, fetchOpts);
         lastStatus = res.status;
