@@ -59,6 +59,7 @@ function createTurboEngine(opts = {}) {
   const rateLimitPauseMs = Number(env.REFAZER_ROBLOX_RATE_LIMIT_PAUSE_MS || 60000);
   const cookieSidelineMs = Number(env.REFAZER_TURBO_COOKIE_SIDELINE_MS || 15 * 60 * 1000);
   const fetchTimeoutMs = Number(env.REFAZER_TURBO_FETCH_TIMEOUT_MS || 15000);
+  const turboDebug = String(env.REFAZER_TURBO_DEBUG || "false") === "true";
   // Sticky sessions: a cookie always rides the same proxy, so the account does
   // not "teleport" between countries between requests (which gets sessions
   // invalidated). Deterministic hash pins cookie -> proxy index.
@@ -187,6 +188,8 @@ function createTurboEngine(opts = {}) {
         const fetchOpts = { method, headers: reqHeaders, signal: AbortSignal.timeout(fetchTimeoutMs) };
         if (body) fetchOpts.body = body;
         if (proxy) { const agent = agentForProxyUrl(proxy); if (agent) fetchOpts.dispatcher = agent; }
+
+        if (turboDebug) { let dbgHost = "?"; try { dbgHost = new URL(url).hostname; } catch {} console.log(`[turbo] > ${method} ${dbgHost} cookie#${cookie ? cookies.indexOf(cookie) + 1 : "-"}${proxy ? " via " + proxy : " direto"} t${attempt + 1}`); }
 
         const res = await fetch(url, fetchOpts);
         lastStatus = res.status;
