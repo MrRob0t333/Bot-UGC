@@ -107,7 +107,9 @@ function createTurboEngine(opts = {}) {
   }
   function recordFailure(cookie, proxy, status, isAuth = false) {
     const now = Date.now();
-    if (cookie && cookieHealth.has(cookie)) { const s = cookieHealth.get(cookie); s.fails += 1; s.consecutiveFails += 1; s.totalRequests += 1; s.lastFailAt = now; s.intervalMs = Math.min(maxIntervalMs, s.intervalMs * backoffMultiplier); if (isAuth || status === 401 || status === 403) { s.sidelineUntil = now + cookieSidelineMs; globalPausedUntil = now + authPauseMs; } else if (status === 429) { s.sidelineUntil = now + rateLimitPauseMs; } }
+    // 401/403 sidelines ONLY that cookie — never the whole engine. One dead
+    // account must not freeze every other cookie/proxy in the pool.
+    if (cookie && cookieHealth.has(cookie)) { const s = cookieHealth.get(cookie); s.fails += 1; s.consecutiveFails += 1; s.totalRequests += 1; s.lastFailAt = now; s.intervalMs = Math.min(maxIntervalMs, s.intervalMs * backoffMultiplier); if (isAuth || status === 401 || status === 403) { s.sidelineUntil = now + cookieSidelineMs; } else if (status === 429) { s.sidelineUntil = now + rateLimitPauseMs; } }
     if (proxy && proxyHealth.has(proxy)) { const s = proxyHealth.get(proxy); s.fails += 1; s.lastFailAt = now; s.sidelineUntil = now + rateLimitPauseMs; }
     globalIntervalMs = Math.min(maxIntervalMs, globalIntervalMs * backoffMultiplier);
     lastGlobalError = `Roblox ${status}`; lastGlobalStatus = status;
