@@ -7152,8 +7152,9 @@ function formatAdminSystemStatusMessage() {
 
 async function waitForRobloxSlot() {
   if (turboEngine) {
-    await turboEngine.waitForTurboSlot();
-    return;
+    // Returns the slot handle — caller MUST releaseRobloxSlot() it, or the
+    // turbo pool drains permanently after maxConcurrentTotal acquisitions.
+    return turboEngine.waitForTurboSlot();
   }
   const now = Date.now();
   const waitUntil = Math.max(nextRobloxRequestAt, robloxRateLimitedUntil);
@@ -7161,12 +7162,13 @@ async function waitForRobloxSlot() {
     await wait(waitUntil - now);
   }
   nextRobloxRequestAt = Date.now() + ROBLOX_REQUEST_INTERVAL_MS;
+  return null;
 }
 
 async function waitForRobloxPublicSlot(maxWaitMs = null) {
   if (turboEngine) {
-    await turboEngine.waitForTurboSlot(maxWaitMs);
-    return;
+    // Also returns the slot handle — see waitForRobloxSlot above.
+    return turboEngine.waitForTurboSlot(maxWaitMs);
   }
   const now = Date.now();
   const waitUntil = Math.max(nextRobloxPublicRequestAt, robloxPublicRateLimitedUntil);
@@ -7178,6 +7180,13 @@ async function waitForRobloxPublicSlot(maxWaitMs = null) {
     await wait(delay);
   }
   nextRobloxPublicRequestAt = Date.now() + Math.max(2000, ROBLOX_REQUEST_INTERVAL_MS);
+  return null;
+}
+
+function releaseRobloxSlot(slot) {
+  if (slot && typeof slot.release === "function") {
+    try { slot.release(); } catch {}
+  }
 }
 
 function wait(ms) {
@@ -7208,31 +7217,34 @@ async function fetchRobloxWithRetry(url, options = {}, attempts = 4) {
     let retryDelay = 0;
 
     for (let cookieIndex = 0; cookieIndex < cookies.length; cookieIndex += 1) {
-      await waitForRobloxSlot();
+      const slot = await waitForRobloxSlot();
+      try {
+        const headers = { ...originalHeaders };
+        if (headers.Cookie && cookies[cookieIndex]) {
+          headers.Cookie = `.ROBLOSECURITY=${cookies[cookieIndex]}`;
+        }
 
-      const headers = { ...originalHeaders };
-      if (headers.Cookie && cookies[cookieIndex]) {
-        headers.Cookie = `.ROBLOSECURITY=${cookies[cookieIndex]}`;
-      }
+        const res = await fetch(url, { ...options, headers });
 
-      const res = await fetch(url, { ...options, headers });
+        if ((res.status === 401 || res.status === 403) && cookieIndex < cookies.length - 1) {
+          lastStatus = res.status;
+          lastText = await res.text().catch(() => "");
+          console.warn(`Roblox request returned ${res.status} with cookie ${cookieIndex + 1}/${cookies.length}; trying next cookie.`);
+          continue;
+        }
 
-      if ((res.status === 401 || res.status === 403) && cookieIndex < cookies.length - 1) {
+        if (res.status !== 429) {
+          return res;
+        }
+
         lastStatus = res.status;
         lastText = await res.text().catch(() => "");
-        console.warn(`Roblox request returned ${res.status} with cookie ${cookieIndex + 1}/${cookies.length}; trying next cookie.`);
-        continue;
+        retryDelay = retryDelayFromResponse(res, attempt);
+        robloxRateLimitedUntil = Date.now() + retryDelay;
+        break;
+      } finally {
+        releaseRobloxSlot(slot);
       }
-
-      if (res.status !== 429) {
-        return res;
-      }
-
-      lastStatus = res.status;
-      lastText = await res.text().catch(() => "");
-      retryDelay = retryDelayFromResponse(res, attempt);
-      robloxRateLimitedUntil = Date.now() + retryDelay;
-      break;
     }
 
     if (retryDelay && attempt < attempts - 1) {
@@ -7326,10 +7338,11 @@ async function fetchRobloxPublicJson(url, options = {}) {
   for (let index = 0; index < variants.length; index += 1) {
     const targetUrl = variants[index];
     const isMirror = targetUrl.includes(".roproxy.com/");
+    let slot = null;
 
     if (index === 0 || !isMirror) {
       try {
-        await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+        slot = await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
       } catch (err) {
         lastError = err;
         if (index < variants.length - 1) {
@@ -7340,38 +7353,42 @@ async function fetchRobloxPublicJson(url, options = {}) {
       }
     }
 
-    const dispatcher = getRobloxPublicProxyDispatcher();
-    const res = await fetch(targetUrl, {
-      headers: robloxHeaders({}, ""),
-      ...(dispatcher ? { dispatcher } : {}),
-    });
-    const text = await res.text();
+    try {
+      const dispatcher = getRobloxPublicProxyDispatcher();
+      const res = await fetch(targetUrl, {
+        headers: robloxHeaders({}, ""),
+        ...(dispatcher ? { dispatcher } : {}),
+      });
+      const text = await res.text();
 
-    if (res.status === 429) {
-      const retryDelay = retryDelayFromResponse(res, 0);
-      lastRateLimitDelay = Math.max(lastRateLimitDelay, retryDelay);
-      lastError = new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
-      if (index < variants.length - 1) {
-        console.warn(`${isMirror ? "Roblox public mirror" : "Roblox public catalog"} returned 429; trying fallback for ${url}`);
-        continue;
+      if (res.status === 429) {
+        const retryDelay = retryDelayFromResponse(res, 0);
+        lastRateLimitDelay = Math.max(lastRateLimitDelay, retryDelay);
+        lastError = new Error(`Roblox catalog is rate-limiting public searches right now. Last response (429): ${text.slice(0, 300)}`);
+        if (index < variants.length - 1) {
+          console.warn(`${isMirror ? "Roblox public mirror" : "Roblox public catalog"} returned 429; trying fallback for ${url}`);
+          continue;
+        }
+        robloxPublicRateLimitStrikes = Math.min(6, robloxPublicRateLimitStrikes + 1);
+        const strikeBackoffMs = ROBLOX_RATE_LIMIT_PAUSE_MS * Math.pow(2, robloxPublicRateLimitStrikes - 1);
+        robloxPublicRateLimitedUntil = Date.now() + Math.max(lastRateLimitDelay, strikeBackoffMs);
+        throw lastError;
       }
-      robloxPublicRateLimitStrikes = Math.min(6, robloxPublicRateLimitStrikes + 1);
-      const strikeBackoffMs = ROBLOX_RATE_LIMIT_PAUSE_MS * Math.pow(2, robloxPublicRateLimitStrikes - 1);
-      robloxPublicRateLimitedUntil = Date.now() + Math.max(lastRateLimitDelay, strikeBackoffMs);
-      throw lastError;
-    }
 
-    if (!res.ok) {
-      lastError = new Error(`Roblox public catalog request failed (${res.status}): ${text.slice(0, 300)}`);
-      if (index < variants.length - 1) continue;
-      throw lastError;
-    }
+      if (!res.ok) {
+        lastError = new Error(`Roblox public catalog request failed (${res.status}): ${text.slice(0, 300)}`);
+        if (index < variants.length - 1) continue;
+        throw lastError;
+      }
 
-    if (isMirror) {
-      console.log(`Roblox public mirror served: ${targetUrl}`);
+      if (isMirror) {
+        console.log(`Roblox public mirror served: ${targetUrl}`);
+      }
+      robloxPublicRateLimitStrikes = 0;
+      return JSON.parse(text);
+    } finally {
+      releaseRobloxSlot(slot);
     }
-    robloxPublicRateLimitStrikes = 0;
-    return JSON.parse(text);
   }
 
   throw lastError || new Error("Roblox public catalog request failed.");
@@ -7401,8 +7418,9 @@ async function fetchRobloxCatalogItemDetailsBatch(itemIds, options = {}) {
       });
     };
 
+    let slot = null;
     try {
-      await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
+      slot = await waitForRobloxPublicSlot(options.maxWaitMs ?? null);
       let res = await request();
       const csrfToken = res.headers.get("x-csrf-token");
       if (res.status === 403 && csrfToken) {
@@ -7425,6 +7443,8 @@ async function fetchRobloxCatalogItemDetailsBatch(itemIds, options = {}) {
     } catch (err) {
       lastError = err;
       if (index >= variants.length - 1) throw err;
+    } finally {
+      releaseRobloxSlot(slot);
     }
   }
 
