@@ -200,6 +200,15 @@ function createTurboEngine(opts = {}) {
         // Error path: now the body is ours to read for diagnostics.
         lastText = await res.text().catch(() => "");
 
+        // 401 code 11 = THIS asset requires per-item auth (restricted/deleted/
+        // offsale). Item-level failure: skip fast, don't sideline the session.
+        if (res.status === 401 && /"code"\s*:\s*11/.test(lastText)) {
+          slot.release();
+          const itemErr = new Error("Asset requires item-level authentication (restricted or removed by Roblox).");
+          itemErr.code = "ASSET_AUTH_REQUIRED";
+          throw itemErr;
+        }
+
         if ((res.status === 401 || res.status === 403) && chosen) {
           recordFailure(cookie, proxy, res.status, true); slot.release();
           console.warn(`[turbo] ${res.status} ${new URL(url).hostname} cookie#${cookies.indexOf(cookie) + 1}${proxy ? " via " + proxy : " direto"} tentativa ${attempt + 1}/${attempts}`);

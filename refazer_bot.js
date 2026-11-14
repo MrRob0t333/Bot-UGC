@@ -18020,7 +18020,7 @@ client.on("interactionCreate", async interaction => {
             if (!batch.length && entryBytes > bulkZipMaxBytes) {
               zipAssetEntries.shift();
               await bulkDeliver({
-                content: `## Asset Copied (direct, too large for the zip)\n**UGC:** \`${entry.id}\``,
+                content: `## Asset Copied (direct, too large for the zip)\n**Item #${String(entry.seq).padStart(3, "0")}**`,
                 files: entry.files.map(file => file.filePath).slice(0, 10),
               });
               entry.tempDirs.forEach(stealCleanupTempDir);
@@ -18037,9 +18037,10 @@ client.on("interactionCreate", async interaction => {
           const zip = new AdmZip();
           let added = 0;
           for (const entry of batch) {
+            const folder = String(entry.seq).padStart(2, "0");
             for (const file of entry.files) {
               if (!fs.existsSync(file.filePath)) continue;
-              zip.addLocalFile(file.filePath, String(entry.id), file.name);
+              zip.addLocalFile(file.filePath, folder, file.name);
               added += 1;
             }
           }
@@ -18048,7 +18049,7 @@ client.on("interactionCreate", async interaction => {
             const zipPath = path.join(__dirname, "temp", "refazer", `bulk_steal_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.zip`);
             zip.writeZip(zipPath);
             await bulkDeliver({
-              content: `## Bulk Copy Delivery\n**Assets in this zip (${batch.length}):** ${batch.map(entry => `\`${entry.id}\``).join(", ")}`,
+              content: `## Bulk Copy Delivery\n**Items in this zip (${batch.length}):** ${batch.map(entry => "#" + String(entry.seq).padStart(3, "0")).join(", ")}`,
               files: [zipPath],
             });
             try { fs.rmSync(zipPath, { force: true }); } catch {}
@@ -18066,7 +18067,7 @@ client.on("interactionCreate", async interaction => {
         return zipFlushChain;
       };
 
-      const processBulkStealItem = async id => {
+      const processBulkStealItem = async (id, seq) => {
         let itemTempDir = null;
         try {
           const target = await classifyStealTarget(id);
@@ -18120,6 +18121,7 @@ client.on("interactionCreate", async interaction => {
 
             zipAssetEntries.push({
               id,
+              seq,
               files: files.map(filePath => ({ filePath, name: path.basename(filePath) })),
               tempDirs: [result.tempDir].filter(Boolean),
             });
@@ -18146,12 +18148,12 @@ client.on("interactionCreate", async interaction => {
 
           if (isClassicClothing) addClothingUsage(interaction.user.id, 1);
           else addCopyUsage(interaction.user.id, 1);
-          results.push({ id, ok: true, type: isClassicClothing ? "clothing" : "asset" });
+          results.push({ id, seq, ok: true, type: isClassicClothing ? "clothing" : "asset" });
         } catch (err) {
           console.error("[bulk_steal] item failed", id, err);
           stealCleanupTempDir(itemTempDir);
-          await bulkDeliver(`## Asset skipped\n**UGC:** \`${id}\`\n${String(err.message || err).slice(0, 300)}`);
-          results.push({ id, ok: false });
+          await bulkDeliver(`## Asset skipped\n**Item #${String(seq).padStart(3, "0")}**\n${String(err.message || err).slice(0, 300)}`);
+          results.push({ id, seq, ok: false });
         }
       };
 
@@ -18161,7 +18163,7 @@ client.on("interactionCreate", async interaction => {
           const index = bulkCursor;
           bulkCursor += 1;
           if (index >= ids.length) return;
-          await processBulkStealItem(ids[index]);
+          await processBulkStealItem(ids[index], index + 1);
         }
       };
 
@@ -18173,7 +18175,7 @@ client.on("interactionCreate", async interaction => {
         `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
         `**Charged:** ${formatTokenAmount(charged)}\n` +
         `**Remaining balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
-        `**Failed:** ${results.filter(item => !item.ok).map(item => `\`${item.id}\``).join(", ") || "none"}`
+        `**Failed:** ${results.filter(item => !item.ok).map(item => "#" + String(item.seq).padStart(3, "0")).join(", ") || "none"}`
       );
       return;
     }
