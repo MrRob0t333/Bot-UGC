@@ -10579,6 +10579,7 @@ async function exportGlb(objPath, texturePath, glbPath) {
   try {
     // execFileAsync keeps the Node event loop free while Blender runs; the slot
     // pool above caps parallel Blender processes at BLENDER_CONCURRENCY.
+    // Hard timeout: a stuck Blender export rejects instead of hanging forever.
     await execFileAsync(
       BLENDER_PATH,
       [
@@ -10591,7 +10592,7 @@ async function exportGlb(objPath, texturePath, glbPath) {
         texturePath || "",
         glbPath,
       ],
-      { stdio: "inherit" }
+      { stdio: "inherit", timeout: Math.max(30000, Number(process.env.REFAZER_BLENDER_TIMEOUT_MS || 120000)), killSignal: "SIGKILL" }
     );
   } finally {
     releaseBlenderSlot();

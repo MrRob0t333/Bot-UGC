@@ -21,6 +21,19 @@ const DATA_DIR = path.join(__dirname, "data", "turbo");
 const COOKIE_HEALTH_PATH = path.join(DATA_DIR, "cookie_health.json");
 const QUEUE_PATH = path.join(DATA_DIR, "turbo_queue.json");
 
+// Public mirrors (roproxy etc.) often hold datacenter proxy connections open
+// without answering. Proxies only pay off against official Roblox domains;
+// everything else goes direct from the host IP.
+const PROXY_HOST_SUFFIXES = ["roblox.com", "rbxcdn.com"];
+function useProxyForUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return PROXY_HOST_SUFFIXES.some(suffix => host === suffix || host.endsWith("." + suffix));
+  } catch {
+    return true;
+  }
+}
+
 function ensureDir() { fs.mkdirSync(DATA_DIR, { recursive: true }); }
 function readJsonFile(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function writeJsonFile(file, data) { ensureDir(); const tmp = file + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(data, null, 2)); fs.renameSync(tmp, file); }
@@ -45,6 +58,7 @@ function createTurboEngine(opts = {}) {
   const authPauseMs = Number(env.REFAZER_ROBLOX_AUTH_PAUSE_MS || 10 * 60 * 1000);
   const rateLimitPauseMs = Number(env.REFAZER_ROBLOX_RATE_LIMIT_PAUSE_MS || 60000);
   const cookieSidelineMs = Number(env.REFAZER_TURBO_COOKIE_SIDELINE_MS || 15 * 60 * 1000);
+  const fetchTimeoutMs = Number(env.REFAZER_TURBO_FETCH_TIMEOUT_MS || 15000);
   const publicMirrorEnabled = String(env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED || "true") !== "false";
 
   const cookieHealth = new Map();
@@ -125,11 +139,11 @@ function createTurboEngine(opts = {}) {
       try {
         const chosen = pickBestCookie();
         const cookie = chosen ? chosen.cookie : null;
-        const proxyChoice = pickBestProxy();
+        const proxyChoice = useProxyForUrl(url) ? pickBestProxy() : null;
         const proxy = proxyChoice ? proxyChoice.proxy : null;
 
         const reqHeaders = turboHeaders(headers, cookie);
-        const fetchOpts = { method, headers: reqHeaders };
+        const fetchOpts = { method, headers: reqHeaders, signal: AbortSignal.timeout(fetchTimeoutMs) };
         if (body) fetchOpts.body = body;
         if (proxy) { const PA = getProxyAgent(); if (PA) { const agent = new PA(proxy); fetchOpts.dispatcher = agent; } }
 
