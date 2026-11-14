@@ -59,6 +59,27 @@ function createTurboEngine(opts = {}) {
   const rateLimitPauseMs = Number(env.REFAZER_ROBLOX_RATE_LIMIT_PAUSE_MS || 60000);
   const cookieSidelineMs = Number(env.REFAZER_TURBO_COOKIE_SIDELINE_MS || 15 * 60 * 1000);
   const fetchTimeoutMs = Number(env.REFAZER_TURBO_FETCH_TIMEOUT_MS || 15000);
+  // Sticky sessions: a cookie always rides the same proxy, so the account does
+  // not "teleport" between countries between requests (which gets sessions
+  // invalidated). Deterministic hash pins cookie -> proxy index.
+  function proxyIndexForCookie(cookie) {
+    if (!proxies.length) return -1;
+    let h = 0;
+    for (let i = 0; i < cookie.length; i += 1) h = ((h * 31 + cookie.charCodeAt(i)) | 0);
+    return Math.abs(h) % proxies.length;
+  }
+  function pickProxyFor(cookieForRequest) {
+    if (!proxies.length) return null;
+    const now = Date.now();
+    if (cookieForRequest) {
+      const pinned = proxies[proxyIndexForCookie(cookieForRequest)];
+      const state = proxyHealth.get(pinned);
+      if (state && state.sidelineUntil <= now) return { proxy: pinned, state };
+      return null; // pinned proxy on cooldown: ride direct instead of teleporting
+    }
+    const best = pickBestProxy();
+    return best ? { proxy: best.proxy, state: best.state } : null;
+  }
   const publicMirrorEnabled = String(env.REFAZER_ROBLOX_PUBLIC_MIRROR_ENABLED || "true") !== "false";
 
   const cookieHealth = new Map();
@@ -141,8 +162,8 @@ function createTurboEngine(opts = {}) {
       try {
         const chosen = pickBestCookie();
         const cookie = chosen ? chosen.cookie : null;
-        const proxyChoice = useProxyForUrl(url) ? pickBestProxy() : null;
-        const proxy = proxyChoice ? proxyChoice.proxy : null;
+        const proxyPick = useProxyForUrl(url) ? pickProxyFor(cookie) : null;
+        const proxy = proxyPick ? proxyPick.proxy : null;
 
         const reqHeaders = turboHeaders(headers, cookie);
         const fetchOpts = { method, headers: reqHeaders, signal: AbortSignal.timeout(fetchTimeoutMs) };
