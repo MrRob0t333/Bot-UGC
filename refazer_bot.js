@@ -18159,8 +18159,7 @@ client.on("interactionCreate", async interaction => {
         } catch (err) {
           console.error("[bulk_steal] item failed", id, err);
           stealCleanupTempDir(itemTempDir);
-          await bulkDeliver(`## Asset skipped\n**Item #${String(seq).padStart(3, "0")}**\n${String(err.message || err).slice(0, 300)}`);
-          results.push({ id, seq, ok: false });
+          results.push({ id, seq, ok: false, reason: String(err.message || err).slice(0, 200) });
         }
       };
 
@@ -18177,13 +18176,30 @@ client.on("interactionCreate", async interaction => {
       await Promise.all(Array.from({ length: bulkConcurrency }, () => bulkWorker()));
       await scheduleZipFlush(true);
 
-      await bulkDeliver(
-        `## Bulk Copy Finished\n` +
-        `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
-        `**Charged:** ${formatTokenAmount(charged)}\n` +
-        `**Remaining balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
-        `**Failed:** ${results.filter(item => !item.ok).map(item => "#" + String(item.seq).padStart(3, "0")).join(", ") || "none"}`
-      );
+      const failedResults = results.filter(item => !item.ok);
+      let failedAttachment = null;
+      let failedTempListPath = null;
+      if (failedResults.length) {
+        const failedText = failedResults
+          .map(item => `#${String(item.seq).padStart(3, "0")} ${item.id} — ${item.reason || "erro"}`)
+          .join("\n") + "\n";
+        failedTempListPath = path.join(__dirname, "temp", "refazer", `bulk_falhas_${Date.now()}.txt`);
+        try {
+          fs.writeFileSync(failedTempListPath, failedText);
+          failedAttachment = failedTempListPath;
+        } catch {}
+      }
+
+      await bulkDeliver({
+        content:
+          `## Bulk Copy Finished\n` +
+          `**Success:** ${results.filter(item => item.ok).length}/${results.length}\n` +
+          `**Charged:** ${formatTokenAmount(charged)}\n` +
+          `**Remaining balance:** ${formatTokenAmount(walletBalance(interaction.user.id))}\n` +
+          `**Failed:** ${failedResults.length} (detalhes no falhas.txt anexo)`,
+        files: failedAttachment ? [failedAttachment] : [],
+      });
+      if (failedTempListPath) { try { fs.rmSync(failedTempListPath, { force: true }); } catch {} }
       return;
     }
 
